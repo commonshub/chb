@@ -31,6 +31,11 @@ func SyncAll(args []string, version string) error {
 		fmt.Printf("%s⚠ Messages sync failed: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
 	}
 
+	fmt.Printf("\n%s━━━ Generate ━━━%s\n", Fmt.Bold, Fmt.Reset)
+	if err := Generate(args); err != nil {
+		fmt.Printf("%s⚠ Generate failed: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	}
+
 	fmt.Printf("\n%s✓ All syncs complete!%s\n\n", Fmt.Green, Fmt.Reset)
 	return nil
 }
