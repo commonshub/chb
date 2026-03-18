@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -98,5 +99,9 @@ func DataDir() string {
 	if d := os.Getenv("DATA_DIR"); d != "" {
 		return d
 	}
-	return "./data"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "./data"
+	}
+	return filepath.Join(home, ".chb", "data")
 }
