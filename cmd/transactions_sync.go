@@ -92,7 +92,12 @@ func TransactionsSync(args []string) error {
 	now := time.Now().In(BrusselsTZ())
 	var startMonth, endMonth string
 
-	if posFound {
+	allHistory := HasFlag(args, "--all")
+
+	if allHistory {
+		startMonth = "2000-01"
+		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
+	} else if posFound {
 		if posMonth != "" {
 			startMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
 			endMonth = startMonth
