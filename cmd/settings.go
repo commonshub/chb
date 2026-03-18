@@ -2,11 +2,25 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
-// Settings represents src/settings/settings.json
+// settingsDir returns the directory to look for settings files.
+// Checks ~/.chb/ first, falls back to src/settings/ for monorepo compat.
+func settingsDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		chbDir := filepath.Join(home, ".chb")
+		if _, err := os.Stat(filepath.Join(chbDir, "settings.json")); err == nil {
+			return chbDir
+		}
+	}
+	return filepath.Join("src", "settings")
+}
+
+// Settings represents settings.json
 type Settings struct {
 	Luma struct {
 		CalendarID string `json:"calendarId"`
@@ -71,9 +85,10 @@ type RoomsConfig struct {
 }
 
 func LoadSettings() (*Settings, error) {
-	data, err := os.ReadFile(filepath.Join("src", "settings", "settings.json"))
+	dir := settingsDir()
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load settings: %w\nPlace settings.json in ~/.chb/ or run from the website repo", err)
 	}
 	var s Settings
 	if err := json.Unmarshal(data, &s); err != nil {
@@ -83,7 +98,8 @@ func LoadSettings() (*Settings, error) {
 }
 
 func LoadRooms() ([]RoomInfo, error) {
-	data, err := os.ReadFile(filepath.Join("src", "settings", "rooms.json"))
+	dir := settingsDir()
+	data, err := os.ReadFile(filepath.Join(dir, "rooms.json"))
 	if err != nil {
 		return nil, err
 	}

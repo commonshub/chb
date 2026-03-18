@@ -863,7 +863,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	decimals := 6 // CHT default
 	if settings != nil {
 		// Try reading from settings contributionToken
-		data, _ := os.ReadFile(filepath.Join("src", "settings", "settings.json"))
+		data, _ := os.ReadFile(filepath.Join(settingsDir(), "settings.json"))
 		if data != nil {
 			var s struct {
 				ContributionToken struct {

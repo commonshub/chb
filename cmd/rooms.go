@@ -16,7 +16,7 @@ func Rooms(args []string) {
 
 	rooms, err := LoadRooms()
 	if err != nil || len(rooms) == 0 {
-		fmt.Printf("\n%sNo rooms found. Is src/settings/rooms.json present?%s\n\n", Fmt.Dim, Fmt.Reset)
+		fmt.Printf("\n%sNo rooms found. Place rooms.json in ~/.chb/ or run from the website repo.%s\n\n", Fmt.Dim, Fmt.Reset)
 		return
 	}
 
