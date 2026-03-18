@@ -22,7 +22,8 @@ func PrintHelp(version string) {
   %stransactions stats%s  Show transaction statistics
   %smessages sync%s       Fetch Discord messages
   %smessages stats%s      Show message statistics
-  %ssync%s                Sync everything (events, transactions, bookings, messages, generate)
+  %simages sync%s         Download images from Discord and Luma
+  %ssync%s                Sync everything (events, transactions, bookings, messages, generate, images)
   %sgenerate%s            Generate derived data files (contributors, images, etc.)
   %smembers sync%s        Fetch membership data from Stripe/Odoo
   %sreport%s <period>     Generate monthly/yearly report
@@ -58,6 +59,7 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,

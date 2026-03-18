@@ -82,6 +82,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%sUsage: chb messages [sync|stats]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			os.Exit(1)
 		}
+	case "images":
+		if len(args) > 1 && (args[1] == "sync" || args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
+			if err := cmd.ImagesSync(args[1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "%sUsage: chb images sync [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			os.Exit(1)
+		}
 	case "generate":
 		if err := cmd.Generate(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
