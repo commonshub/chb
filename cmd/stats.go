@@ -166,6 +166,51 @@ func Stats(args []string) {
 		fmt.Printf("  %s %-14s %7s (%d files)\n", icon, t.name, formatBytes(t.size), t.files)
 	}
 
+	// Images breakdown
+	fmt.Printf("\n%sImages%s\n", Fmt.Bold, Fmt.Reset)
+
+	imageExts := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true}
+	var imgSize int64
+	var imgCount int
+	var discordImgSize int64
+	var discordImgCount int
+	var eventImgSize int64
+	var eventImgCount int
+
+	filepath.Walk(dataDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(info.Name()))
+		if !imageExts[ext] {
+			return nil
+		}
+		imgSize += info.Size()
+		imgCount++
+
+		rel, _ := filepath.Rel(dataDir, p)
+		if strings.Contains(rel, filepath.Join("channels", "discord", "images")) {
+			discordImgSize += info.Size()
+			discordImgCount++
+		} else if strings.Contains(rel, filepath.Join("events", "images")) {
+			eventImgSize += info.Size()
+			eventImgCount++
+		}
+		return nil
+	})
+
+	if imgCount > 0 {
+		fmt.Printf("  📸 Total          %7s (%d files)\n", formatBytes(imgSize), imgCount)
+		if discordImgCount > 0 {
+			fmt.Printf("     Discord        %7s (%d files)\n", formatBytes(discordImgSize), discordImgCount)
+		}
+		if eventImgCount > 0 {
+			fmt.Printf("     Event covers   %7s (%d files)\n", formatBytes(eventImgSize), eventImgCount)
+		}
+	} else {
+		fmt.Printf("  %sNo images yet. Run %schb images sync%s to download.%s\n", Fmt.Dim, Fmt.Bold, Fmt.Dim, Fmt.Reset)
+	}
+
 	fmt.Println()
 }
 
