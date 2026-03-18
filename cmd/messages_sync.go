@@ -64,7 +64,7 @@ type MessagesCacheFile struct {
 }
 
 func MessagesSync(args []string) error {
-	if HasFlag(args, "--help", "-h") {
+	if HasFlag(args, "--help", "-h", "help") {
 		printMessagesSyncHelp()
 		return nil
 	}
@@ -312,27 +312,71 @@ func printMessagesSyncHelp() {
 %sUSAGE%s
   %schb messages sync%s [year[/month]] [options]
 
+%sTIME RANGE%s
+  %s(no args)%s              Fetch all messages, save all months
+  %s<year/month>%s           Only save messages from that month (e.g. 2025/03)
+  %s<year>%s                 Only save messages from that year (e.g. 2025)
+  %s--since%s YYYY/MM        Only save messages from that month onward (also: YYYYMM)
+  %s--history%s              Paginate backwards, stop at oldest cached month
+
+%sFILTERING%s
+  %s--channel%s <id|name>    Fetch a specific channel only
+  %s--month%s <YYYY-MM>      Alias for year/month positional arg
+
 %sOPTIONS%s
-  %s<year>%s               Sync all months of the given year (e.g. 2025)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/03)
-  %s--month%s <YYYY-MM>    Fetch specific month only
-  %s--channel%s <id|name>  Fetch specific channel only
-  %s--help, -h%s           Show this help
+  %s--force%s                Re-fetch and overwrite cached months
+  %s--help, -h%s             Show this help
+
+%sBEHAVIOR%s
+  Messages are fetched from newest to oldest (Discord API pagination).
+  Each page returns 100 messages. Data is saved per month to:
+    ~/.chb/data/YYYY/MM/channels/discord/{channelId}/messages.json
+
+  %s--history%s: paginates backwards until hitting a month with cached
+  data, then stops. Saves everything from that point forward.
+  Use %s--history --force%s to re-fetch and overwrite all cached months.
+
+  If a sync fails mid-way (e.g. network error), re-run with:
+    chb messages sync --channel <id> --force
 
 %sENVIRONMENT%s
-  %sDISCORD_BOT_TOKEN%s    Discord bot token
+  %sDISCORD_BOT_TOKEN%s      Discord bot token (configure via chb setup)
+
+%sEXAMPLES%s
+  %schb messages sync%s                             Fetch all channels, all history
+  %schb messages sync --history%s                   Fetch new messages since last sync
+  %schb messages sync --channel general%s           Fetch only #general
+  %schb messages sync --channel 129796 --force%s    Re-fetch a specific channel
+  %schb messages sync --since 2024/06%s             Save messages from Jun 2024 onward
+  %schb messages sync 2025%s                        Save only 2025 messages
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
-		f.Yellow, f.Reset,
+		f.Dim, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 	)
 }
 
