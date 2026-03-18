@@ -33,9 +33,9 @@ func Setup() error {
 		fmt.Println()
 
 		for i, k := range envKeys {
-			status := fmt.Sprintf("%s❌%s", Fmt.Red, Fmt.Reset)
+			status := fmt.Sprintf("%s☐%s", Fmt.Dim, Fmt.Reset)
 			if val, ok := existing[k.Name]; ok && val != "" {
-				status = fmt.Sprintf("%s✅%s", Fmt.Green, Fmt.Reset)
+				status = fmt.Sprintf("%s☑%s", Fmt.Green, Fmt.Reset)
 			}
 			fmt.Printf("  %d. %s  %-22s %s%s%s\n", i+1, status, k.Name, Fmt.Dim, k.Desc, Fmt.Reset)
 		}
