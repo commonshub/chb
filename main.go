@@ -10,6 +10,8 @@ import (
 const VERSION = "2.0.0"
 
 func main() {
+	cmd.LoadEnvFromConfig()
+
 	args := os.Args[1:]
 
 	if len(args) == 0 {
@@ -22,6 +24,11 @@ func main() {
 		cmd.PrintHelp(VERSION)
 	case "--version", "-v", "version":
 		cmd.CheckLatestVersion(VERSION)
+	case "setup":
+		if err := cmd.Setup(); err != nil {
+			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+			os.Exit(1)
+		}
 	case "update":
 		if err := cmd.Update(); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
