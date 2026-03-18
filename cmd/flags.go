@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -139,13 +141,67 @@ func ResolveSinceMonth(args []string, sourceSubdir string) (startMonth string, i
 		}
 	}
 
-	// Check --history flag: always start from 2024/01
-	// Each sync fetches all data in one API call anyway — the month range
-	// only controls which months get saved. Existing months are skipped
-	// unless --force is used, so no wasted work on subsequent runs.
+	// Check --history flag
+	// If --force: start from 2024/01 (re-fetch everything)
+	// Otherwise: find the oldest cached month for this source and start from there
+	// to avoid re-paginating data we already have
 	if HasFlag(args, "--history") {
+		if HasFlag(args, "--force") {
+			return "2024-01", true
+		}
+		oldest := findOldestCachedMonth(sourceSubdir)
+		if oldest != "" {
+			return oldest, true
+		}
 		return "2024-01", true
 	}
 
 	return "", false
+}
+
+// findOldestCachedMonth finds the oldest month in ~/.chb/data/ that has
+// data for the given source subdirectory, ignoring future months.
+func findOldestCachedMonth(sourceSubdir string) string {
+	dataDir := DataDir()
+	now := time.Now()
+	currentYM := fmt.Sprintf("%d-%02d", now.Year(), now.Month())
+	oldest := ""
+
+	years, err := os.ReadDir(dataDir)
+	if err != nil {
+		return ""
+	}
+
+	for _, yd := range years {
+		if !yd.IsDir() || len(yd.Name()) != 4 {
+			continue
+		}
+		year := yd.Name()
+		if _, err := strconv.Atoi(year); err != nil {
+			continue
+		}
+
+		months, _ := os.ReadDir(filepath.Join(dataDir, year))
+		for _, md := range months {
+			if !md.IsDir() || len(md.Name()) != 2 {
+				continue
+			}
+			month := md.Name()
+			ym := year + "-" + month
+
+			// Ignore future months
+			if ym > currentYM {
+				continue
+			}
+
+			srcPath := filepath.Join(dataDir, year, month, sourceSubdir)
+			if _, err := os.Stat(srcPath); err == nil {
+				if oldest == "" || ym < oldest {
+					oldest = ym
+				}
+			}
+		}
+	}
+
+	return oldest
 }
