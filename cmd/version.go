@@ -20,8 +20,9 @@ type commitInfo struct {
 }
 
 type buildInfo struct {
-	SHA  string
-	Date string
+	SHA     string
+	Date    string
+	ModVer  string // module pseudo-version from go install
 }
 
 func getBuildInfo() buildInfo {
@@ -30,6 +31,20 @@ func getBuildInfo() buildInfo {
 		return buildInfo{}
 	}
 	var b buildInfo
+	// Module version (e.g. v0.0.0-20260318154113-2a37e7f84358)
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		b.ModVer = info.Main.Version
+		// Extract SHA from pseudo-version: v0.0.0-YYYYMMDDHHMMSS-abcdef123456
+		parts := strings.Split(info.Main.Version, "-")
+		if len(parts) == 3 {
+			b.SHA = parts[2] // 12-char commit hash
+			// Parse timestamp from pseudo-version
+			if t, err := time.Parse("20060102150405", parts[1]); err == nil {
+				b.Date = t.Format("2006-01-02 15:04")
+			}
+		}
+	}
+	// VCS info (available when built from local git checkout)
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
@@ -79,14 +94,24 @@ func CheckLatestVersion(currentVersion string) {
 
 	isUpToDate := false
 	if bi.SHA != "" {
-		isUpToDate = strings.HasPrefix(latest.SHA, bi.SHA[:7]) || strings.HasPrefix(bi.SHA, latestShort)
+		// VCS revision is 40 chars, pseudo-version hash is 12 chars
+		// Compare by checking if either is a prefix of the other
+		biShort := bi.SHA
+		if len(biShort) > 12 {
+			biShort = biShort[:12]
+		}
+		isUpToDate = strings.HasPrefix(latest.SHA, biShort)
 	}
 
 	if isUpToDate {
 		fmt.Printf("%s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
 	} else {
 		fmt.Printf("%sLatest:%s %s (%s) %s%s%s\n", Fmt.Yellow, Fmt.Reset, latestShort, ts, Fmt.Dim, msg, Fmt.Reset)
-		fmt.Printf("%sUpdate available!%s Run %schb update%s to update\n", Fmt.Yellow, Fmt.Reset, Fmt.Bold, Fmt.Reset)
+		if bi.SHA != "" {
+			fmt.Printf("%sUpdate available!%s Run %schb update%s to update\n", Fmt.Yellow, Fmt.Reset, Fmt.Bold, Fmt.Reset)
+		} else {
+			fmt.Printf("Run %schb update%s to get the latest\n", Fmt.Bold, Fmt.Reset)
+		}
 	}
 }
 
