@@ -79,6 +79,7 @@ func MessagesSync(args []string) error {
 		return fmt.Errorf("DISCORD_BOT_TOKEN environment variable required")
 	}
 
+	force := HasFlag(args, "--force")
 	monthFilter := GetOption(args, "--month")
 	channelFilter := GetOption(args, "--channel")
 
@@ -106,13 +107,21 @@ func MessagesSync(args []string) error {
 
 		fmt.Printf("  #%s (%s)\n", name, channelID)
 
-		// Determine stop month for pagination optimization
-		stopMonth := ""
-		if isSince && !HasFlag(args, "--force") {
-			stopMonth = findOldestCachedMonthForChannel(channelID)
+		var messages []DiscordMessage
+		var err error
+
+		if isSince {
+			// --history or --since: paginate backwards
+			stopMonth := ""
+			if !force {
+				stopMonth = findOldestCachedMonthForChannel(channelID)
+			}
+			messages, err = fetchAllChannelMessages(channelID, token, stopMonth)
+		} else {
+			// Default: fetch one page (latest 100 messages), no pagination
+			messages, err = fetchLatestMessages(channelID, token)
 		}
 
-		messages, err := fetchAllChannelMessages(channelID, token, stopMonth)
 		if err != nil {
 			fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
 			continue
@@ -123,8 +132,24 @@ func MessagesSync(args []string) error {
 		// Group by month
 		byMonth := groupMessagesByMonth(messages)
 
+		// Determine which months to save
+		// For quick sync (no --history): skip the oldest month (likely incomplete)
+		var monthsToSave []string
+		for ym := range byMonth {
+			monthsToSave = append(monthsToSave, ym)
+		}
+		sort.Strings(monthsToSave)
+
+		if !isSince && len(monthsToSave) > 1 {
+			oldestMonth := monthsToSave[0]
+			monthsToSave = monthsToSave[1:]
+			fmt.Printf("    %sSkipping %s (likely incomplete)%s\n", Fmt.Dim, oldestMonth, Fmt.Reset)
+		}
+
 		saved := 0
-		for ym, monthMsgs := range byMonth {
+		for _, ym := range monthsToSave {
+			monthMsgs := byMonth[ym]
+
 			if monthFilter != "" && ym != monthFilter {
 				continue
 			}
@@ -176,19 +201,8 @@ func MessagesSync(args []string) error {
 			totalMessages += len(monthMsgs)
 		}
 
-		channelMsgCount := 0
-		for _, msgs := range byMonth {
-			channelMsgCount += len(msgs)
-		}
-		skippedMonths := len(byMonth) - saved
-
 		if saved > 0 {
 			fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
-			if skippedMonths > 0 {
-				fmt.Printf("    %s(%d months filtered out)%s\n", Fmt.Dim, skippedMonths, Fmt.Reset)
-			}
-		} else if len(byMonth) > 0 {
-			fmt.Printf("    %s⚠ %d months with data but none saved (filtered out)%s\n", Fmt.Yellow, len(byMonth), Fmt.Reset)
 		}
 
 		// Rate limit between channels
@@ -197,6 +211,45 @@ func MessagesSync(args []string) error {
 
 	fmt.Printf("\n%s✓ Done!%s %d messages synced\n\n", Fmt.Green, Fmt.Reset, totalMessages)
 	return nil
+}
+
+// fetchLatestMessages fetches one page (100 messages) from a Discord channel.
+// No pagination — used for quick sync of latest data.
+func fetchLatestMessages(channelID, token string) ([]DiscordMessage, error) {
+	url := fmt.Sprintf("%s/channels/%s/messages?limit=100", discordAPIBase, channelID)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bot "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 429 {
+		var rateLimitResp struct {
+			RetryAfter float64 `json:"retry_after"`
+		}
+		json.NewDecoder(resp.Body).Decode(&rateLimitResp)
+		wait := time.Duration(rateLimitResp.RetryAfter*1000+100) * time.Millisecond
+		time.Sleep(wait)
+		return fetchLatestMessages(channelID, token)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("Discord API error: %d", resp.StatusCode)
+	}
+
+	var messages []DiscordMessage
+	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // fetchAllChannelMessages fetches messages from Discord, paginating backwards.
