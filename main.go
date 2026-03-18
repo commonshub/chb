@@ -97,6 +97,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%sUsage: chb members sync [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			os.Exit(1)
 		}
+	case "stats":
+		cmd.Stats(args[1:])
 	case "sync":
 		if err := cmd.SyncAll(args[1:], VERSION); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)

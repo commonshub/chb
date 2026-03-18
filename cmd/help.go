@@ -26,6 +26,7 @@ func PrintHelp(version string) {
   %sgenerate%s            Generate derived data files (contributors, images, etc.)
   %smembers sync%s        Fetch membership data from Stripe/Odoo
   %sreport%s <period>     Generate monthly/yearly report
+  %sstats%s               Show data directory size and breakdown
 
 %sOPTIONS%s
   %s--help, -h%s          Show help for a command
@@ -78,6 +79,7 @@ func PrintHelp(version string) {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Dim, f.Reset,
 		f.Bold, f.Reset,
@@ -91,33 +93,80 @@ func PrintHelp(version string) {
 func PrintSyncAllHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb sync%s — Sync all data (events, transactions, bookings, messages)
+%schb sync%s — Sync all data sources
+
+%sSources:%s events (Luma), transactions (Gnosis/Stripe), bookings (Google Calendar),
+messages (Discord), members (Stripe/Odoo)
 
 %sUSAGE%s
   %schb sync%s [year[/month]] [options]
+  %schb events sync%s [year[/month]] [options]
+  %schb transactions sync%s [year[/month]] [options]
+  %schb bookings sync%s [year[/month]] [options]
+  %schb messages sync%s [year[/month]] [options]
+  %schb members sync%s [options]
+
+%sTIME RANGE%s
+  %s(no args)%s            Sync current month only
+  %s<year/month>%s         Sync a specific month (e.g. 2025/11)
+  %s<year>%s               Sync all months of a given year (e.g. 2025)
+  %s--all%s                Sync entire history (all years/months)
 
 %sOPTIONS%s
-  %s<year>%s               Sync all months of the given year (e.g. 2025)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/11)
   %s--force%s              Re-fetch even if cached data exists
   %s--help, -h%s           Show this help
 
 %sEXAMPLES%s
-  %schb sync%s                     Sync current data
-  %schb sync 2025 --force%s        Resync all of 2025
-  %schb sync 2025/11 --force%s     Resync November 2025
+  %schb sync%s                     Sync current month (all sources)
+  %schb sync --all%s               Sync entire history
+  %schb sync 2025%s                Sync all of 2025
+  %schb sync 2025/11%s             Sync November 2025
+  %schb sync 2025/11 --force%s     Resync November 2025 (overwrite cache)
+  %schb events sync%s              Sync events only (current month)
+  %schb events sync --all%s        Sync all event history
+  %schb transactions sync 2024%s   Sync transactions for 2024
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
-		f.Cyan, f.Reset,
-		f.Bold, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Dim, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+	)
+}
+
+func PrintStatsHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb stats%s — Show data directory statistics
+
+%sUSAGE%s
+  %schb stats%s
+
+Shows total data size, breakdown by month, and breakdown by data type.
+`,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 	)
 }
