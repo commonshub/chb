@@ -105,10 +105,10 @@ type MembershipSettings struct {
 }
 
 // OdooSettings holds Odoo connection and product configuration
+// OdooSettings holds Odoo product configuration.
+// URL and DB come from env vars (ODOO_URL); DB is derived from the URL hostname.
 type OdooSettings struct {
-	URL      string         `json:"url"`
-	DB       string         `json:"db"`
-	Products []OdooProduct  `json:"products"`
+	Products []OdooProduct `json:"products"`
 }
 
 // OdooProduct represents an Odoo subscription product

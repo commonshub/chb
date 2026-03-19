@@ -154,8 +154,9 @@ func MembersSync(args []string) error {
 
 	dataDir := DataDir()
 	stripeKey := os.Getenv("STRIPE_SECRET_KEY")
-	odooKey := os.Getenv("ODOO_API_KEY")
+	odooURL := os.Getenv("ODOO_URL")
 	odooLogin := os.Getenv("ODOO_LOGIN")
+	odooPassword := os.Getenv("ODOO_PASSWORD")
 	salt := os.Getenv("EMAIL_HASH_SALT")
 
 	if salt == "" {
@@ -199,8 +200,8 @@ func MembersSync(args []string) error {
 		doStripe = false
 	}
 
-	if doOdoo && (odooKey == "" || odooLogin == "") {
-		fmt.Printf("%s⚠ ODOO_API_KEY/ODOO_LOGIN not set, skipping Odoo%s\n", Fmt.Yellow, Fmt.Reset)
+	if doOdoo && (odooURL == "" || odooLogin == "" || odooPassword == "") {
+		fmt.Printf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo%s\n", Fmt.Yellow, Fmt.Reset)
 		doOdoo = false
 	}
 
@@ -237,8 +238,8 @@ func MembersSync(args []string) error {
 		// Odoo (only current month — API returns current state, not historical)
 		now := time.Now()
 		isCurrentMonth := year == now.Year() && month == int(now.Month())
-		if doOdoo && odooKey != "" && odooLogin != "" && isCurrentMonth && settings.Membership.Odoo.URL != "" {
-			snap, err := buildOdooSnapshot(settings, odooLogin, odooKey, salt)
+		if doOdoo && odooURL != "" && odooLogin != "" && odooPassword != "" && isCurrentMonth {
+			snap, err := buildOdooSnapshot(settings, odooURL, odooLogin, odooPassword, salt)
 			if err != nil {
 				fmt.Printf("  %sOdoo: error: %v%s\n", Fmt.Red, err, Fmt.Reset)
 			} else {
@@ -249,7 +250,7 @@ func MembersSync(args []string) error {
 			}
 		}
 		// Load cached Odoo if not just fetched
-		if !isCurrentMonth || !doOdoo || odooKey == "" {
+		if !isCurrentMonth || !doOdoo || odooURL == "" {
 			odooSnapPath := filepath.Join(monthDir, "finance", "odoo", "subscriptions.json")
 			if data, err := os.ReadFile(odooSnapPath); err == nil {
 				var snap providerSnapshot
@@ -708,10 +709,20 @@ func odooRPC(url, service, method string, args []interface{}) (json.RawMessage, 
 	return rpcResp.Result, nil
 }
 
-func odooAuth(settings *Settings, login, apiKey string) (int, error) {
-	odoo := settings.Membership.Odoo
-	result, err := odooRPC(odoo.URL, "common", "authenticate", []interface{}{
-		odoo.DB, login, apiKey, map[string]interface{}{},
+// odooDBFromURL derives the database name from the Odoo URL.
+// e.g. "https://citizen-spring-vzw.odoo.com" → "citizen-spring-vzw"
+func odooDBFromURL(odooURL string) string {
+	u := strings.TrimPrefix(odooURL, "https://")
+	u = strings.TrimPrefix(u, "http://")
+	if idx := strings.Index(u, "."); idx > 0 {
+		return u[:idx]
+	}
+	return u
+}
+
+func odooAuth(odooURL, db, login, password string) (int, error) {
+	result, err := odooRPC(odooURL, "common", "authenticate", []interface{}{
+		db, login, password, map[string]interface{}{},
 	})
 	if err != nil {
 		return 0, err
@@ -724,21 +735,21 @@ func odooAuth(settings *Settings, login, apiKey string) (int, error) {
 	return uid, nil
 }
 
-func odooExec(settings *Settings, uid int, apiKey, model, method string, args []interface{}, kwargs map[string]interface{}) (json.RawMessage, error) {
-	odoo := settings.Membership.Odoo
-	callArgs := []interface{}{odoo.DB, uid, apiKey, model, method, args}
+func odooExec(odooURL, db string, uid int, password, model, method string, args []interface{}, kwargs map[string]interface{}) (json.RawMessage, error) {
+	callArgs := []interface{}{db, uid, password, model, method, args}
 	if kwargs == nil {
 		kwargs = map[string]interface{}{}
 	}
 	callArgs = append(callArgs, kwargs)
-	return odooRPC(odoo.URL, "object", "execute_kw", callArgs)
+	return odooRPC(odooURL, "object", "execute_kw", callArgs)
 }
 
-func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (providerSnapshot, error) {
+func buildOdooSnapshot(settings *Settings, odooURL, login, password, salt string) (providerSnapshot, error) {
 	odoo := settings.Membership.Odoo
+	db := odooDBFromURL(odooURL)
 	empty := providerSnapshot{Provider: "odoo", FetchedAt: time.Now().UTC().Format(time.RFC3339)}
 
-	uid, err := odooAuth(settings, login, apiKey)
+	uid, err := odooAuth(odooURL, db, login, password)
 	if err != nil {
 		return empty, err
 	}
@@ -750,7 +761,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 	}
 
 	// Find product.product IDs for our templates
-	ppResult, err := odooExec(settings, uid, apiKey, "product.product", "search",
+	ppResult, err := odooExec(odooURL, db, uid, password, "product.product", "search",
 		[]interface{}{[]interface{}{[]interface{}{"product_tmpl_id", "in", templateIDs}}}, nil)
 	if err != nil {
 		return empty, fmt.Errorf("product search: %w", err)
@@ -766,7 +777,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 	for i, id := range ppIDs {
 		ppIDsIface[i] = id
 	}
-	orderResult, err := odooExec(settings, uid, apiKey, "sale.order", "search",
+	orderResult, err := odooExec(odooURL, db, uid, password, "sale.order", "search",
 		[]interface{}{[]interface{}{
 			[]interface{}{"is_subscription", "=", true},
 			[]interface{}{"order_line.product_id", "in", ppIDsIface},
@@ -786,7 +797,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 	for i, id := range orderIDs {
 		orderIDsIface[i] = id
 	}
-	ordersRaw, err := odooExec(settings, uid, apiKey, "sale.order", "read",
+	ordersRaw, err := odooExec(odooURL, db, uid, password, "sale.order", "read",
 		[]interface{}{orderIDsIface},
 		map[string]interface{}{"fields": []string{
 			"partner_id", "subscription_state", "recurring_monthly",
@@ -819,7 +830,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 		for id := range allInvoiceIDs {
 			invIDsIface = append(invIDsIface, id)
 		}
-		invRaw, err := odooExec(settings, uid, apiKey, "account.move", "read",
+		invRaw, err := odooExec(odooURL, db, uid, password, "account.move", "read",
 			[]interface{}{invIDsIface},
 			map[string]interface{}{"fields": []string{"payment_state", "invoice_date", "amount_total", "currency_id"}})
 		if err == nil {
@@ -851,7 +862,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 		for id := range partnerIDSet {
 			pIDs = append(pIDs, id)
 		}
-		pRaw, err := odooExec(settings, uid, apiKey, "res.partner", "read",
+		pRaw, err := odooExec(odooURL, db, uid, password, "res.partner", "read",
 			[]interface{}{pIDs},
 			map[string]interface{}{"fields": []string{"name", "email", "is_company"}})
 		if err == nil {
@@ -875,7 +886,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 
 	orderToTemplate := map[int]int{}
 	if len(allLineIDs) > 0 {
-		linesRaw, err := odooExec(settings, uid, apiKey, "sale.order.line", "read",
+		linesRaw, err := odooExec(odooURL, db, uid, password, "sale.order.line", "read",
 			[]interface{}{allLineIDs},
 			map[string]interface{}{"fields": []string{"product_id", "order_id"}})
 		if err == nil {
@@ -897,7 +908,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 				for id := range lineProductIDs {
 					ppIDsList = append(ppIDsList, id)
 				}
-				ppRaw, err := odooExec(settings, uid, apiKey, "product.product", "read",
+				ppRaw, err := odooExec(odooURL, db, uid, password, "product.product", "read",
 					[]interface{}{ppIDsList},
 					map[string]interface{}{"fields": []string{"product_tmpl_id"}})
 				if err == nil {
@@ -1004,7 +1015,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 						Date:   invDate,
 						Amount: MemberAmount{Value: invAmount, Decimals: 2, Currency: "EUR"},
 						Status: "succeeded",
-						URL:    fmt.Sprintf("%s/web#id=%d&model=account.move&view_type=form", odoo.URL, int(iid.(float64))),
+						URL:    fmt.Sprintf("%s/web#id=%d&model=account.move&view_type=form", odooURL, int(iid.(float64))),
 					}
 				}
 			}
@@ -1025,7 +1036,7 @@ func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (provider
 			CurrentPeriodStart: startDate,
 			CurrentPeriodEnd:   nextInvoice,
 			LatestPayment:      latestPayment,
-			SubscriptionURL:    fmt.Sprintf("%s/web#id=%d&model=sale.order&view_type=form", odoo.URL, orderID),
+			SubscriptionURL:    fmt.Sprintf("%s/web#id=%d&model=sale.order&view_type=form", odooURL, orderID),
 			CreatedAt:          startDate,
 			IsOrganization:     isOrg,
 			ProductID:          tmplID,
@@ -1056,8 +1067,9 @@ func printMembersSyncHelp() {
 
 %sENVIRONMENT%s
   %sSTRIPE_SECRET_KEY%s    Stripe secret key (required for Stripe)
-  %sODOO_API_KEY%s         Odoo API key (required for Odoo)
+  %sODOO_URL%s             Odoo instance URL (e.g. https://mycompany.odoo.com)
   %sODOO_LOGIN%s           Odoo login email
+  %sODOO_PASSWORD%s        Odoo password or API key
   %sEMAIL_HASH_SALT%s      Salt for email hashing (required)
 `,
 		f.Bold, f.Reset,
@@ -1070,6 +1082,7 @@ func printMembersSyncHelp() {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

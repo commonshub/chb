@@ -21,8 +21,9 @@ var envKeys = []envKey{
 	{"STRIPE_SECRET_KEY", "Stripe (member/transaction sync)", "https://dashboard.stripe.com/apikeys"},
 	{"MONERIUM_CLIENT_ID", "Monerium OAuth client ID", "https://monerium.dev/docs/getting-started"},
 	{"MONERIUM_CLIENT_SECRET", "Monerium OAuth client secret", "https://monerium.dev/docs/getting-started"},
-	{"ODOO_API_KEY", "Odoo API key (member sync)", "Settings → API Keys in your Odoo instance"},
+	{"ODOO_URL", "Odoo instance URL (member sync)", "e.g. https://mycompany.odoo.com"},
 	{"ODOO_LOGIN", "Odoo login email (member sync)", "The email you use to log into Odoo"},
+	{"ODOO_PASSWORD", "Odoo password or API key (member sync)", "Settings → API Keys (or your password)"},
 	{"EMAIL_HASH_SALT", "Salt for hashing member emails", "Use format: prod-<random> (e.g. prod-abc123)"},
 }
 
