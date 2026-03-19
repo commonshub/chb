@@ -169,21 +169,12 @@ func MembersSync(args []string) error {
 	months := getMemberMonths(args)
 	fmt.Printf("📆 %d month(s) to process\n", len(months))
 
-	// Read settings for product ID
-	settingsData, _ := os.ReadFile(filepath.Join(settingsDir(), "settings.json"))
-	stripeProductID := ""
-	if settingsData != nil {
-		var s struct {
-			Membership struct {
-				Stripe struct {
-					ProductID string `json:"productId"`
-				} `json:"stripe"`
-			} `json:"membership"`
-		}
-		if json.Unmarshal(settingsData, &s) == nil {
-			stripeProductID = s.Membership.Stripe.ProductID
-		}
+	// Read settings
+	settings, err := LoadSettings()
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
 	}
+	stripeProductID := settings.Membership.Stripe.ProductID
 
 	// Fetch all Stripe subscriptions (once)
 	var stripeSubscriptions []stripeSubscription
@@ -239,21 +230,29 @@ func MembersSync(args []string) error {
 			}
 		}
 
-		// Odoo (only current month)
+		// Odoo (only current month — API returns current state, not historical)
 		now := time.Now()
 		isCurrentMonth := year == now.Year() && month == int(now.Month())
-		if doOdoo && isCurrentMonth {
-			// Odoo integration would require JSON-RPC calls
-			// For now, just load from cache if available
-			fmt.Printf("  Odoo: skipped (JSON-RPC not yet implemented in Go)\n")
-		}
-		// Load cached Odoo
-		odooSnapPath := filepath.Join(monthDir, "finance", "odoo", "subscriptions.json")
-		if data, err := os.ReadFile(odooSnapPath); err == nil {
-			var snap providerSnapshot
-			if json.Unmarshal(data, &snap) == nil {
+		if doOdoo && odooKey != "" && odooLogin != "" && isCurrentMonth && settings.Membership.Odoo.URL != "" {
+			snap, err := buildOdooSnapshot(settings, odooLogin, odooKey, salt)
+			if err != nil {
+				fmt.Printf("  %sOdoo: error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+			} else {
+				fmt.Printf("  Odoo: %d subscriptions\n", len(snap.Subscriptions))
+				snapData, _ := json.MarshalIndent(snap, "", "  ")
+				writeMonthFile(dataDir, yearStr, monthStr, filepath.Join("finance", "odoo", "subscriptions.json"), snapData)
 				snapshots = append(snapshots, snap)
-				fmt.Printf("  Odoo: loaded from cache\n")
+			}
+		}
+		// Load cached Odoo if not just fetched
+		if !isCurrentMonth || !doOdoo || odooKey == "" {
+			odooSnapPath := filepath.Join(monthDir, "finance", "odoo", "subscriptions.json")
+			if data, err := os.ReadFile(odooSnapPath); err == nil {
+				var snap providerSnapshot
+				if json.Unmarshal(data, &snap) == nil {
+					snapshots = append(snapshots, snap)
+					fmt.Printf("  Odoo: loaded from cache\n")
+				}
 			}
 		}
 
@@ -642,6 +641,383 @@ func getMemberMonths(args []string) []yearMonth {
 	}
 
 	return []yearMonth{{now.Year(), int(now.Month())}}
+}
+
+// ── Odoo JSON-RPC ───────────────────────────────────────────────────────────
+
+type odooRPCResponse struct {
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
+		Data struct {
+			Message string `json:"message"`
+		} `json:"data"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func odooRPC(url, service, method string, args []interface{}) (json.RawMessage, error) {
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      time.Now().UnixMilli(),
+		"method":  "call",
+		"params": map[string]interface{}{
+			"service": service,
+			"method":  method,
+			"args":    args,
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	resp, err := http.Post(url+"/jsonrpc", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var rpcResp odooRPCResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		return nil, fmt.Errorf("decode failed: %w", err)
+	}
+	if rpcResp.Error != nil {
+		msg := rpcResp.Error.Data.Message
+		if msg == "" {
+			msg = rpcResp.Error.Message
+		}
+		return nil, fmt.Errorf("odoo error: %s", msg)
+	}
+
+	return rpcResp.Result, nil
+}
+
+func odooAuth(settings *Settings, login, apiKey string) (int, error) {
+	odoo := settings.Membership.Odoo
+	result, err := odooRPC(odoo.URL, "common", "authenticate", []interface{}{
+		odoo.DB, login, apiKey, map[string]interface{}{},
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	var uid int
+	if err := json.Unmarshal(result, &uid); err != nil || uid == 0 {
+		return 0, fmt.Errorf("auth failed (uid=0)")
+	}
+	return uid, nil
+}
+
+func odooExec(settings *Settings, uid int, apiKey, model, method string, args []interface{}, kwargs map[string]interface{}) (json.RawMessage, error) {
+	odoo := settings.Membership.Odoo
+	callArgs := []interface{}{odoo.DB, uid, apiKey, model, method, args}
+	if kwargs == nil {
+		kwargs = map[string]interface{}{}
+	}
+	callArgs = append(callArgs, kwargs)
+	return odooRPC(odoo.URL, "object", "execute_kw", callArgs)
+}
+
+func buildOdooSnapshot(settings *Settings, login, apiKey, salt string) (providerSnapshot, error) {
+	odoo := settings.Membership.Odoo
+	empty := providerSnapshot{Provider: "odoo", FetchedAt: time.Now().UTC().Format(time.RFC3339)}
+
+	uid, err := odooAuth(settings, login, apiKey)
+	if err != nil {
+		return empty, err
+	}
+
+	// Get product template IDs from settings
+	templateIDs := make([]interface{}, len(odoo.Products))
+	for i, p := range odoo.Products {
+		templateIDs[i] = p.ID
+	}
+
+	// Find product.product IDs for our templates
+	ppResult, err := odooExec(settings, uid, apiKey, "product.product", "search",
+		[]interface{}{[]interface{}{[]interface{}{"product_tmpl_id", "in", templateIDs}}}, nil)
+	if err != nil {
+		return empty, fmt.Errorf("product search: %w", err)
+	}
+	var ppIDs []int
+	json.Unmarshal(ppResult, &ppIDs)
+	if len(ppIDs) == 0 {
+		return empty, nil
+	}
+
+	// Search active subscriptions
+	ppIDsIface := make([]interface{}, len(ppIDs))
+	for i, id := range ppIDs {
+		ppIDsIface[i] = id
+	}
+	orderResult, err := odooExec(settings, uid, apiKey, "sale.order", "search",
+		[]interface{}{[]interface{}{
+			[]interface{}{"is_subscription", "=", true},
+			[]interface{}{"order_line.product_id", "in", ppIDsIface},
+			[]interface{}{"subscription_state", "in", []interface{}{"3_progress", "4_paused"}},
+		}}, nil)
+	if err != nil {
+		return empty, fmt.Errorf("order search: %w", err)
+	}
+	var orderIDs []int
+	json.Unmarshal(orderResult, &orderIDs)
+	if len(orderIDs) == 0 {
+		return empty, nil
+	}
+
+	// Read orders
+	orderIDsIface := make([]interface{}, len(orderIDs))
+	for i, id := range orderIDs {
+		orderIDsIface[i] = id
+	}
+	ordersRaw, err := odooExec(settings, uid, apiKey, "sale.order", "read",
+		[]interface{}{orderIDsIface},
+		map[string]interface{}{"fields": []string{
+			"partner_id", "subscription_state", "recurring_monthly",
+			"start_date", "next_invoice_date", "amount_total",
+			"currency_id", "order_line", "plan_id", "invoice_ids",
+		}})
+	if err != nil {
+		return empty, fmt.Errorf("order read: %w", err)
+	}
+
+	var orders []map[string]interface{}
+	json.Unmarshal(ordersRaw, &orders)
+
+	// Collect all invoice IDs
+	allInvoiceIDs := map[int]bool{}
+	for _, o := range orders {
+		if invIDs, ok := o["invoice_ids"].([]interface{}); ok {
+			for _, id := range invIDs {
+				if fid, ok := id.(float64); ok {
+					allInvoiceIDs[int(fid)] = true
+				}
+			}
+		}
+	}
+
+	// Fetch paid invoices
+	invoiceMap := map[int]map[string]interface{}{}
+	if len(allInvoiceIDs) > 0 {
+		invIDsIface := make([]interface{}, 0, len(allInvoiceIDs))
+		for id := range allInvoiceIDs {
+			invIDsIface = append(invIDsIface, id)
+		}
+		invRaw, err := odooExec(settings, uid, apiKey, "account.move", "read",
+			[]interface{}{invIDsIface},
+			map[string]interface{}{"fields": []string{"payment_state", "invoice_date", "amount_total", "currency_id"}})
+		if err == nil {
+			var invoices []map[string]interface{}
+			json.Unmarshal(invRaw, &invoices)
+			for _, inv := range invoices {
+				ps, _ := inv["payment_state"].(string)
+				if ps == "paid" || ps == "in_payment" {
+					if id, ok := inv["id"].(float64); ok {
+						invoiceMap[int(id)] = inv
+					}
+				}
+			}
+		}
+	}
+
+	// Fetch partners
+	partnerIDSet := map[int]bool{}
+	for _, o := range orders {
+		if pid, ok := o["partner_id"].([]interface{}); ok && len(pid) > 0 {
+			if fid, ok := pid[0].(float64); ok {
+				partnerIDSet[int(fid)] = true
+			}
+		}
+	}
+	partnerMap := map[int]map[string]interface{}{}
+	if len(partnerIDSet) > 0 {
+		pIDs := make([]interface{}, 0, len(partnerIDSet))
+		for id := range partnerIDSet {
+			pIDs = append(pIDs, id)
+		}
+		pRaw, err := odooExec(settings, uid, apiKey, "res.partner", "read",
+			[]interface{}{pIDs},
+			map[string]interface{}{"fields": []string{"name", "email", "is_company"}})
+		if err == nil {
+			var partners []map[string]interface{}
+			json.Unmarshal(pRaw, &partners)
+			for _, p := range partners {
+				if id, ok := p["id"].(float64); ok {
+					partnerMap[int(id)] = p
+				}
+			}
+		}
+	}
+
+	// Fetch order lines → product template mapping
+	allLineIDs := []interface{}{}
+	for _, o := range orders {
+		if lines, ok := o["order_line"].([]interface{}); ok {
+			allLineIDs = append(allLineIDs, lines...)
+		}
+	}
+
+	orderToTemplate := map[int]int{}
+	if len(allLineIDs) > 0 {
+		linesRaw, err := odooExec(settings, uid, apiKey, "sale.order.line", "read",
+			[]interface{}{allLineIDs},
+			map[string]interface{}{"fields": []string{"product_id", "order_id"}})
+		if err == nil {
+			var lines []map[string]interface{}
+			json.Unmarshal(linesRaw, &lines)
+
+			lineProductIDs := map[int]bool{}
+			for _, l := range lines {
+				if pid, ok := l["product_id"].([]interface{}); ok && len(pid) > 0 {
+					if fid, ok := pid[0].(float64); ok {
+						lineProductIDs[int(fid)] = true
+					}
+				}
+			}
+
+			ppToTmpl := map[int]int{}
+			if len(lineProductIDs) > 0 {
+				ppIDsList := make([]interface{}, 0, len(lineProductIDs))
+				for id := range lineProductIDs {
+					ppIDsList = append(ppIDsList, id)
+				}
+				ppRaw, err := odooExec(settings, uid, apiKey, "product.product", "read",
+					[]interface{}{ppIDsList},
+					map[string]interface{}{"fields": []string{"product_tmpl_id"}})
+				if err == nil {
+					var ppProducts []map[string]interface{}
+					json.Unmarshal(ppRaw, &ppProducts)
+					for _, p := range ppProducts {
+						if tmpl, ok := p["product_tmpl_id"].([]interface{}); ok && len(tmpl) > 0 {
+							if id, ok := p["id"].(float64); ok {
+								if tmplID, ok := tmpl[0].(float64); ok {
+									ppToTmpl[int(id)] = int(tmplID)
+								}
+							}
+						}
+					}
+				}
+			}
+
+			for _, l := range lines {
+				pid, _ := l["product_id"].([]interface{})
+				oid, _ := l["order_id"].([]interface{})
+				if len(pid) > 0 && len(oid) > 0 {
+					ppID := int(pid[0].(float64))
+					orderID := int(oid[0].(float64))
+					if tmplID, ok := ppToTmpl[ppID]; ok {
+						for _, p := range odoo.Products {
+							if p.ID == tmplID {
+								orderToTemplate[orderID] = tmplID
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Build subscriptions
+	var subs []providerSubscription
+	for _, order := range orders {
+		orderID := int(order["id"].(float64))
+		partnerID := 0
+		if pid, ok := order["partner_id"].([]interface{}); ok && len(pid) > 0 {
+			partnerID = int(pid[0].(float64))
+		}
+		partner := partnerMap[partnerID]
+		if partner == nil {
+			continue
+		}
+
+		email, _ := partner["email"].(string)
+		emailHash := email
+		if email != "" {
+			emailHash = hashEmail(email, salt)
+		} else {
+			emailHash = fmt.Sprintf("odoo-noemail-%d", orderID)
+		}
+
+		partnerName, _ := partner["name"].(string)
+		firstName, lastName := splitName(&partnerName)
+		isCompany, _ := partner["is_company"].(bool)
+
+		tmplID := orderToTemplate[orderID]
+		var productConfig *OdooProduct
+		for i := range odoo.Products {
+			if odoo.Products[i].ID == tmplID {
+				productConfig = &odoo.Products[i]
+				break
+			}
+		}
+		interval := "month"
+		if productConfig != nil {
+			interval = productConfig.Interval
+		}
+
+		subState, _ := order["subscription_state"].(string)
+		status := "active"
+		if subState == "4_paused" {
+			status = "paused"
+		}
+
+		recurringMonthly, _ := order["recurring_monthly"].(float64)
+		totalAmount := recurringMonthly
+		if interval == "year" {
+			totalAmount = recurringMonthly * 12
+		}
+
+		startDate, _ := order["start_date"].(string)
+		nextInvoice, _ := order["next_invoice_date"].(string)
+
+		// Find latest paid invoice
+		var latestPayment *MemberPayment
+		if invIDs, ok := order["invoice_ids"].([]interface{}); ok {
+			var bestDate string
+			for _, iid := range invIDs {
+				inv := invoiceMap[int(iid.(float64))]
+				if inv == nil {
+					continue
+				}
+				invDate, _ := inv["invoice_date"].(string)
+				if invDate > bestDate {
+					bestDate = invDate
+					invAmount, _ := inv["amount_total"].(float64)
+					latestPayment = &MemberPayment{
+						Date:   invDate,
+						Amount: MemberAmount{Value: invAmount, Decimals: 2, Currency: "EUR"},
+						Status: "succeeded",
+						URL:    fmt.Sprintf("%s/web#id=%d&model=account.move&view_type=form", odoo.URL, int(iid.(float64))),
+					}
+				}
+			}
+		}
+
+		isOrg := isCompany || tmplID == 104
+
+		subs = append(subs, providerSubscription{
+			ID:                 fmt.Sprintf("odoo-%d", orderID),
+			Source:             "odoo",
+			EmailHash:          emailHash,
+			FirstName:          firstName,
+			LastName:           lastName,
+			Plan:               interval + "ly",
+			Amount:             MemberAmount{Value: math.Round(totalAmount*100) / 100, Decimals: 2, Currency: "EUR"},
+			Interval:           interval,
+			Status:             status,
+			CurrentPeriodStart: startDate,
+			CurrentPeriodEnd:   nextInvoice,
+			LatestPayment:      latestPayment,
+			SubscriptionURL:    fmt.Sprintf("%s/web#id=%d&model=sale.order&view_type=form", odoo.URL, orderID),
+			CreatedAt:          startDate,
+			IsOrganization:     isOrg,
+			ProductID:          tmplID,
+		})
+	}
+
+	return providerSnapshot{
+		Provider:      "odoo",
+		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
+		Subscriptions: subs,
+	}, nil
 }
 
 func printMembersSyncHelp() {

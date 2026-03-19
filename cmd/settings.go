@@ -91,8 +91,31 @@ type Settings struct {
 		Google string `json:"google"`
 		Luma   string `json:"luma"`
 	} `json:"calendars"`
-	Discord DiscordSettings `json:"discord"`
-	Finance FinanceSettings `json:"finance"`
+	Discord    DiscordSettings    `json:"discord"`
+	Finance    FinanceSettings    `json:"finance"`
+	Membership MembershipSettings `json:"membership"`
+}
+
+// MembershipSettings holds membership provider configuration
+type MembershipSettings struct {
+	Stripe struct {
+		ProductID string `json:"productId"`
+	} `json:"stripe"`
+	Odoo OdooSettings `json:"odoo"`
+}
+
+// OdooSettings holds Odoo connection and product configuration
+type OdooSettings struct {
+	URL      string         `json:"url"`
+	DB       string         `json:"db"`
+	Products []OdooProduct  `json:"products"`
+}
+
+// OdooProduct represents an Odoo subscription product
+type OdooProduct struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Interval string `json:"interval"` // "month" or "year"
 }
 
 // DiscordSettings holds Discord configuration
