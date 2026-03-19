@@ -101,8 +101,7 @@ func main() {
 				os.Exit(1)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "%sUsage: chb members sync [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			cmd.MembersStats(args[1:])
 		}
 	case "stats":
 		cmd.Stats(args[1:])

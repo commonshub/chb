@@ -171,7 +171,7 @@ func TransactionsStats(args []string) {
 
 	for _, ms := range months {
 		mNet := ms.In - ms.Out
-		fmt.Printf("  %s%s%s  %d tx  %s↑%s%s  %s↓%s%s  %snet %s%s\n",
+		fmt.Printf("  %s%-10s%s  %4d tx  %s↑%s%-12s  %s↓%s%-12s  %snet %s%s\n",
 			f.Bold, ms.Month, f.Reset,
 			ms.Count,
 			f.Green, f.Reset, fmtEUR(ms.In),
@@ -197,13 +197,13 @@ func TransactionsStats(args []string) {
 		for _, s := range sources {
 			parts := []string{}
 			if s.ss.In > 0 {
-				parts = append(parts, fmt.Sprintf("%s↑%s%s", f.Green, f.Reset, fmtEUR(s.ss.In)))
+				parts = append(parts, fmt.Sprintf("%s↑%s%-12s", f.Green, f.Reset, fmtEUR(s.ss.In)))
 			}
 			if s.ss.Out > 0 {
-				parts = append(parts, fmt.Sprintf("%s↓%s%s", f.Red, f.Reset, fmtEUR(s.ss.Out)))
+				parts = append(parts, fmt.Sprintf("%s↓%s%-12s", f.Red, f.Reset, fmtEUR(s.ss.Out)))
 			}
-			fmt.Printf("    %s%-14s%s %d tx  %s\n",
-				f.Dim, s.name, f.Reset,
+			fmt.Printf("    %-10s  %4d tx  %s\n",
+				s.name,
 				s.ss.Count,
 				strings.Join(parts, "  "),
 			)

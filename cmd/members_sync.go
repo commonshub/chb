@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -157,7 +159,9 @@ func MembersSync(args []string) error {
 	salt := os.Getenv("EMAIL_HASH_SALT")
 
 	if salt == "" {
-		return fmt.Errorf("EMAIL_HASH_SALT environment variable required")
+		// Generate a random salt and persist it
+		salt = generateAndSaveSalt()
+		fmt.Printf("  %sGenerated EMAIL_HASH_SALT: %s%s\n", Fmt.Dim, salt, Fmt.Reset)
 	}
 
 	stripeOnly := HasFlag(args, "--stripe-only")
@@ -498,6 +502,21 @@ func fetchStripeCustomer(apiKey, customerID string) *stripeCustomer {
 	var cust stripeCustomer
 	json.NewDecoder(resp.Body).Decode(&cust)
 	return &cust
+}
+
+func generateAndSaveSalt() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	salt := "prod-" + hex.EncodeToString(b)
+
+	// Persist to config.env
+	configPath := configEnvPath()
+	existing := loadConfigEnv(configPath)
+	existing["EMAIL_HASH_SALT"] = salt
+	saveConfigEnv(configPath, existing)
+	os.Setenv("EMAIL_HASH_SALT", salt)
+
+	return salt
 }
 
 func hashEmail(email, salt string) string {
