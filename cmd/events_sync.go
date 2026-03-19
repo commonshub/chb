@@ -67,7 +67,7 @@ type monthResult struct {
 }
 
 func EventsSync(args []string, version string) error {
-	if HasFlag(args, "--help", "-h") {
+	if HasFlag(args, "--help", "-h", "help") {
 		PrintEventsSyncHelp()
 		return nil
 	}
@@ -124,20 +124,25 @@ func EventsSync(args []string, version string) error {
 	// Group by month and save ICS files
 	byMonth := ical.GroupByMonth(events)
 
-	// Determine which months to process based on --since or positional year/month
+	// Determine which months to process based on --since/--history or positional year/month
 	var sinceMonth string
 	var untilMonth string // exclusive upper bound (empty = no upper bound)
+
+	// Check --since / --history
+	resolvedSince, isSince := ResolveSinceMonth(args, "events")
+
 	if posFound {
 		if posMonth != "" {
-			// Specific month: only process that month
 			sinceMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
-			untilMonth = sinceMonth // will be handled as inclusive below
+			untilMonth = sinceMonth
 		} else {
-			// Whole year
 			sinceMonth = fmt.Sprintf("%s-01", posYear)
 			untilMonth = fmt.Sprintf("%s-12", posYear)
 		}
+	} else if isSince {
+		sinceMonth = resolvedSince
 	} else if sinceStr != "" {
+		// Legacy --since YYYYMMDD support
 		if d, ok := ParseSinceDate(sinceStr); ok {
 			sinceMonth = fmt.Sprintf("%d-%02d", d.Year(), d.Month())
 		}

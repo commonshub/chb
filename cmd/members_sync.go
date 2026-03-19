@@ -143,7 +143,7 @@ type providerSnapshot struct {
 // ── Command ─────────────────────────────────────────────────────────────────
 
 func MembersSync(args []string) error {
-	if HasFlag(args, "--help", "-h") {
+	if HasFlag(args, "--help", "-h", "help") {
 		printMembersSyncHelp()
 		return nil
 	}
@@ -170,7 +170,7 @@ func MembersSync(args []string) error {
 	fmt.Printf("📆 %d month(s) to process\n", len(months))
 
 	// Read settings for product ID
-	settingsData, _ := os.ReadFile(filepath.Join("src", "settings", "settings.json"))
+	settingsData, _ := os.ReadFile(filepath.Join(settingsDir(), "settings.json"))
 	stripeProductID := ""
 	if settingsData != nil {
 		var s struct {

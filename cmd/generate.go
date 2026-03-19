@@ -400,7 +400,7 @@ func getAllChannelIDs() []string {
 // ── Generate command ────────────────────────────────────────────────────────
 
 func Generate(args []string) error {
-	if HasFlag(args, "--help", "-h") {
+	if HasFlag(args, "--help", "-h", "help") {
 		printGenerateHelp()
 		return nil
 	}
@@ -875,7 +875,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	decimals := 6 // CHT default
 	if settings != nil {
 		// Try reading from settings contributionToken
-		data, _ := os.ReadFile(filepath.Join("src", "settings", "settings.json"))
+		data, _ := os.ReadFile(filepath.Join(settingsDir(), "settings.json"))
 		if data != nil {
 			var s struct {
 				ContributionToken struct {
@@ -1639,6 +1639,8 @@ func generateCounterpartiesGo(dataDir, year, month string) {
 	cpData, _ := json.MarshalIndent(out, "", "  ")
 	writeMonthFile(dataDir, year, month, "counterparties.json", cpData)
 }
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

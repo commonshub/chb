@@ -72,7 +72,7 @@ type TransactionsCacheFile struct {
 }
 
 func TransactionsSync(args []string) error {
-	if HasFlag(args, "--help", "-h") {
+	if HasFlag(args, "--help", "-h", "help") {
 		printTransactionsSyncHelp()
 		return nil
 	}
@@ -92,7 +92,13 @@ func TransactionsSync(args []string) error {
 	now := time.Now().In(BrusselsTZ())
 	var startMonth, endMonth string
 
-	if posFound {
+	// Check --since / --history first
+	sinceMonth, isSince := ResolveSinceMonth(args, "finance")
+
+	if isSince {
+		startMonth = sinceMonth
+		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
+	} else if posFound {
 		if posMonth != "" {
 			startMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
 			endMonth = startMonth

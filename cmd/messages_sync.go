@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,7 +64,7 @@ type MessagesCacheFile struct {
 }
 
 func MessagesSync(args []string) error {
-	if HasFlag(args, "--help", "-h") {
+	if HasFlag(args, "--help", "-h", "help") {
 		printMessagesSyncHelp()
 		return nil
 	}
@@ -78,11 +79,15 @@ func MessagesSync(args []string) error {
 		return fmt.Errorf("DISCORD_BOT_TOKEN environment variable required")
 	}
 
+	force := HasFlag(args, "--force")
 	monthFilter := GetOption(args, "--month")
 	channelFilter := GetOption(args, "--channel")
 
 	// Positional year/month arg (e.g. "2025" or "2025/03")
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
+
+	// Check --since / --history
+	resolvedSince, isSince := ResolveSinceMonth(args, "channels")
 
 	fmt.Printf("\n%s💬 Syncing Discord messages%s\n", Fmt.Bold, Fmt.Reset)
 	fmt.Printf("%sDATA_DIR: %s%s\n", Fmt.Dim, DataDir(), Fmt.Reset)
@@ -102,7 +107,21 @@ func MessagesSync(args []string) error {
 
 		fmt.Printf("  #%s (%s)\n", name, channelID)
 
-		messages, err := fetchAllChannelMessages(channelID, token)
+		var messages []DiscordMessage
+		var err error
+
+		if isSince {
+			// --history or --since: paginate backwards
+			stopMonth := ""
+			if !force {
+				stopMonth = findOldestCachedMonthForChannel(channelID)
+			}
+			messages, err = fetchAllChannelMessages(channelID, token, stopMonth)
+		} else {
+			// Default: fetch one page (latest 100 messages), no pagination
+			messages, err = fetchLatestMessages(channelID, token)
+		}
+
 		if err != nil {
 			fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
 			continue
@@ -113,9 +132,29 @@ func MessagesSync(args []string) error {
 		// Group by month
 		byMonth := groupMessagesByMonth(messages)
 
+		// Determine which months to save
+		// For quick sync (no --history): skip the oldest month (likely incomplete)
+		var monthsToSave []string
+		for ym := range byMonth {
+			monthsToSave = append(monthsToSave, ym)
+		}
+		sort.Strings(monthsToSave)
+
+		if !isSince && len(monthsToSave) > 1 {
+			oldestMonth := monthsToSave[0]
+			monthsToSave = monthsToSave[1:]
+			fmt.Printf("    %sSkipping %s (likely incomplete)%s\n", Fmt.Dim, oldestMonth, Fmt.Reset)
+		}
+
 		saved := 0
-		for ym, monthMsgs := range byMonth {
+		for _, ym := range monthsToSave {
+			monthMsgs := byMonth[ym]
+
 			if monthFilter != "" && ym != monthFilter {
+				continue
+			}
+			// --since / --history filter
+			if isSince && ym < resolvedSince {
 				continue
 			}
 			// Positional year/month filter
@@ -169,9 +208,52 @@ func MessagesSync(args []string) error {
 	return nil
 }
 
-func fetchAllChannelMessages(channelID, token string) ([]DiscordMessage, error) {
+// fetchLatestMessages fetches one page (100 messages) from a Discord channel.
+// No pagination — used for quick sync of latest data.
+func fetchLatestMessages(channelID, token string) ([]DiscordMessage, error) {
+	url := fmt.Sprintf("%s/channels/%s/messages?limit=100", discordAPIBase, channelID)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bot "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 429 {
+		var rateLimitResp struct {
+			RetryAfter float64 `json:"retry_after"`
+		}
+		json.NewDecoder(resp.Body).Decode(&rateLimitResp)
+		wait := time.Duration(rateLimitResp.RetryAfter*1000+100) * time.Millisecond
+		time.Sleep(wait)
+		return fetchLatestMessages(channelID, token)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("Discord API error: %d", resp.StatusCode)
+	}
+
+	var messages []DiscordMessage
+	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+// fetchAllChannelMessages fetches messages from Discord, paginating backwards.
+// If stopBeforeMonth is set (e.g. "2025-06"), stop paginating once we hit messages
+// older than that month (they're already cached).
+func fetchAllChannelMessages(channelID, token, stopBeforeMonth string) ([]DiscordMessage, error) {
 	var allMessages []DiscordMessage
 	var before string
+	tz := BrusselsTZ()
 
 	for {
 		url := fmt.Sprintf("%s/channels/%s/messages?limit=100", discordAPIBase, channelID)
@@ -221,7 +303,30 @@ func fetchAllChannelMessages(channelID, token string) ([]DiscordMessage, error) 
 			break
 		}
 
+		// Check if we've reached cached data
+		hitCached := false
+		if stopBeforeMonth != "" {
+			for _, msg := range messages {
+				t, err := time.Parse(time.RFC3339Nano, msg.Timestamp)
+				if err != nil {
+					t, _ = time.Parse("2006-01-02T15:04:05+00:00", msg.Timestamp)
+				}
+				t = t.In(tz)
+				msgYM := fmt.Sprintf("%d-%02d", t.Year(), t.Month())
+				if msgYM < stopBeforeMonth {
+					hitCached = true
+					break
+				}
+			}
+		}
+
 		allMessages = append(allMessages, messages...)
+
+		if hitCached {
+			fmt.Printf("    %sReached cached data at %s, stopping%s\n", Fmt.Dim, stopBeforeMonth, Fmt.Reset)
+			break
+		}
+
 		before = messages[len(messages)-1].ID
 
 		// Rate limit
@@ -266,26 +371,110 @@ func printMessagesSyncHelp() {
 %sUSAGE%s
   %schb messages sync%s [year[/month]] [options]
 
+%sTIME RANGE%s
+  %s(no args)%s              Fetch all messages, save all months
+  %s<year/month>%s           Only save messages from that month (e.g. 2025/03)
+  %s<year>%s                 Only save messages from that year (e.g. 2025)
+  %s--since%s YYYY/MM        Only save messages from that month onward (also: YYYYMM)
+  %s--history%s              Paginate backwards, stop at oldest cached month
+
+%sFILTERING%s
+  %s--channel%s <id|name>    Fetch a specific channel only
+  %s--month%s <YYYY-MM>      Alias for year/month positional arg
+
 %sOPTIONS%s
-  %s<year>%s               Sync all months of the given year (e.g. 2025)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/03)
-  %s--month%s <YYYY-MM>    Fetch specific month only
-  %s--channel%s <id|name>  Fetch specific channel only
-  %s--help, -h%s           Show this help
+  %s--force%s                Re-fetch and overwrite cached months
+  %s--help, -h%s             Show this help
+
+%sBEHAVIOR%s
+  Messages are fetched from newest to oldest (Discord API pagination).
+  Each page returns 100 messages. Data is saved per month to:
+    ~/.chb/data/YYYY/MM/channels/discord/{channelId}/messages.json
+
+  %s--history%s: paginates backwards until hitting a month with cached
+  data, then stops. Saves everything from that point forward.
+  Use %s--history --force%s to re-fetch and overwrite all cached months.
+
+  If a sync fails mid-way (e.g. network error), re-run with:
+    chb messages sync --channel <id> --force
 
 %sENVIRONMENT%s
-  %sDISCORD_BOT_TOKEN%s    Discord bot token
+  %sDISCORD_BOT_TOKEN%s      Discord bot token (configure via chb setup)
+
+%sEXAMPLES%s
+  %schb messages sync%s                             Fetch all channels, all history
+  %schb messages sync --history%s                   Fetch new messages since last sync
+  %schb messages sync --channel general%s           Fetch only #general
+  %schb messages sync --channel 129796 --force%s    Re-fetch a specific channel
+  %schb messages sync --since 2024/06%s             Save messages from Jun 2024 onward
+  %schb messages sync 2025%s                        Save only 2025 messages
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
-		f.Yellow, f.Reset,
+		f.Dim, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 	)
+}
+
+// findOldestCachedMonthForChannel finds the oldest month that has cached
+// Discord messages for any channel. Used as a stop point during pagination.
+func findOldestCachedMonthForChannel(channelID string) string {
+	dataDir := DataDir()
+	oldest := ""
+
+	years, err := os.ReadDir(dataDir)
+	if err != nil {
+		return ""
+	}
+
+	for _, yd := range years {
+		if !yd.IsDir() || len(yd.Name()) != 4 {
+			continue
+		}
+		year := yd.Name()
+		if _, err := strconv.Atoi(year); err != nil {
+			continue
+		}
+
+		months, _ := os.ReadDir(filepath.Join(dataDir, year))
+		for _, md := range months {
+			if !md.IsDir() || len(md.Name()) != 2 {
+				continue
+			}
+			month := md.Name()
+
+			msgPath := filepath.Join(dataDir, year, month, "channels", "discord", channelID, "messages.json")
+			if _, err := os.Stat(msgPath); err == nil {
+				ym := year + "-" + month
+				if oldest == "" || ym < oldest {
+					oldest = ym
+				}
+			}
+		}
+	}
+
+	return oldest
 }
