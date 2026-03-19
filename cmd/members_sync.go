@@ -225,11 +225,11 @@ func MembersSync(args []string) error {
 			snap := buildStripeMonthSnapshot(stripeSubscriptions, year, month, salt, stripeProductID, stripeKey, customerCache)
 			fmt.Printf("  Stripe: %d subscriptions\n", len(snap.Subscriptions))
 			snapData, _ := json.MarshalIndent(snap, "", "  ")
-			writeMonthFile(dataDir, yearStr, monthStr, filepath.Join("members", "stripe", "subscriptions.json"), snapData)
+			writeMonthFile(dataDir, yearStr, monthStr, filepath.Join("finance", "stripe", "subscriptions.json"), snapData)
 			snapshots = append(snapshots, snap)
 		} else {
 			// Try loading cached
-			snapPath := filepath.Join(monthDir, "members", "stripe", "subscriptions.json")
+			snapPath := filepath.Join(monthDir, "finance", "stripe", "subscriptions.json")
 			if data, err := os.ReadFile(snapPath); err == nil {
 				var snap providerSnapshot
 				if json.Unmarshal(data, &snap) == nil {
@@ -248,7 +248,7 @@ func MembersSync(args []string) error {
 			fmt.Printf("  Odoo: skipped (JSON-RPC not yet implemented in Go)\n")
 		}
 		// Load cached Odoo
-		odooSnapPath := filepath.Join(monthDir, "members", "odoo", "subscriptions.json")
+		odooSnapPath := filepath.Join(monthDir, "finance", "odoo", "subscriptions.json")
 		if data, err := os.ReadFile(odooSnapPath); err == nil {
 			var snap providerSnapshot
 			if json.Unmarshal(data, &snap) == nil {

@@ -402,7 +402,7 @@ func printTransactionsSummary(dataDir, year, month string) {
 
 	for _, acc := range settings.Finance.Accounts {
 		if acc.Provider == "etherscan" && acc.Token != nil {
-			filePath := filepath.Join(dataDir, year, month, "transactions", acc.Chain,
+			filePath := filepath.Join(dataDir, year, month, "finance", acc.Chain,
 				fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol))
 
 			data, err := os.ReadFile(filePath)
@@ -448,7 +448,7 @@ func printTransactionsSummary(dataDir, year, month string) {
 			if accountID == "" {
 				accountID = acc.Slug
 			}
-			filePath := filepath.Join(dataDir, year, month, "transactions", "stripe",
+			filePath := filepath.Join(dataDir, year, month, "finance", "stripe",
 				fmt.Sprintf("%s.json", accountID))
 
 			data, err := os.ReadFile(filePath)
@@ -523,7 +523,7 @@ func calculateMonthTransactions(dataDir, year, month string) (income, expenses f
 
 	for _, acc := range settings.Finance.Accounts {
 		if acc.Provider == "etherscan" && acc.Token != nil {
-			filePath := filepath.Join(dataDir, year, month, "transactions", acc.Chain,
+			filePath := filepath.Join(dataDir, year, month, "finance", acc.Chain,
 				fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol))
 
 			data, err := os.ReadFile(filePath)
@@ -552,7 +552,7 @@ func calculateMonthTransactions(dataDir, year, month string) (income, expenses f
 			if accountID == "" {
 				accountID = acc.Slug
 			}
-			filePath := filepath.Join(dataDir, year, month, "transactions", "stripe",
+			filePath := filepath.Join(dataDir, year, month, "finance", "stripe",
 				fmt.Sprintf("%s.json", accountID))
 
 			data, err := os.ReadFile(filePath)

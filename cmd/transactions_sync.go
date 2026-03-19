@@ -94,7 +94,7 @@ func TransactionsSync(args []string) error {
 	var startMonth, endMonth string
 
 	// Check --since / --history first
-	sinceMonth, isSince := ResolveSinceMonth(args, "transactions")
+	sinceMonth, isSince := ResolveSinceMonth(args, "finance")
 
 	if isSince {
 		startMonth = sinceMonth
@@ -176,7 +176,7 @@ func TransactionsSync(args []string) error {
 			// Save to data/YYYY/MM/finance/{chain}/{slug}.{token}.json
 			dataDir := DataDir()
 			filename := fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol)
-			relPath := filepath.Join("transactions", acc.Chain, filename)
+			relPath := filepath.Join("finance", acc.Chain, filename)
 			filePath := filepath.Join(dataDir, year, month, relPath)
 
 			// Skip if exists and not force
@@ -262,7 +262,7 @@ func TransactionsSync(args []string) error {
 					year, month := parts[0], parts[1]
 
 					dataDir := DataDir()
-					relPath := filepath.Join("transactions", "stripe", "transactions.json")
+					relPath := filepath.Join("finance", "stripe", "transactions.json")
 					filePath := filepath.Join(dataDir, year, month, relPath)
 
 					// Skip if exists and not force (but always update current month)
@@ -354,7 +354,7 @@ func TransactionsSync(args []string) error {
 							if slug == "" {
 								slug = acc.Address[:8]
 							}
-							relPath := filepath.Join("transactions", "monerium", "private", slug+".json")
+							relPath := filepath.Join("finance", "monerium", "private", slug+".json")
 							filePath := filepath.Join(dataDir, year, month, relPath)
 
 							if !force && fileExists(filePath) {
@@ -502,9 +502,9 @@ func findFirstIncompleteMonth(settings *Settings, sourceFilter string) string {
 		allPresent := true
 		for _, source := range expectedSources {
 			// Check if any file exists in transactions/<source>/
-			sourceDir := filepath.Join(dataDir, year, month, "transactions", source)
+			sourceDir := filepath.Join(dataDir, year, month, "finance", source)
 			if source == "monerium" {
-				sourceDir = filepath.Join(dataDir, year, month, "transactions", "monerium", "private")
+				sourceDir = filepath.Join(dataDir, year, month, "finance", "monerium", "private")
 			}
 			entries, err := os.ReadDir(sourceDir)
 			if err != nil || len(entries) == 0 {

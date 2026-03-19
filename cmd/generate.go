@@ -842,7 +842,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	}
 
 	// Read CHT transactions
-	chtPath := filepath.Join(dataDir, year, month, "transactions", "celo", "CHT.json")
+	chtPath := filepath.Join(dataDir, year, month, "finance", "celo", "CHT.json")
 	type chtTx struct {
 		From  string `json:"from"`
 		To    string `json:"to"`
@@ -858,7 +858,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	}
 
 	// Also try the new file format (slug.token.json)
-	financeDir := filepath.Join(dataDir, year, month, "transactions", "celo")
+	financeDir := filepath.Join(dataDir, year, month, "finance", "celo")
 	if entries, err := os.ReadDir(financeDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".CHT.json") {
@@ -1392,7 +1392,7 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 // ── Transactions ────────────────────────────────────────────────────────────
 
 func generateTransactionsGo(dataDir, year, month string, settings *Settings) int {
-	financeDir := filepath.Join(dataDir, year, month, "transactions")
+	financeDir := filepath.Join(dataDir, year, month, "finance")
 	if _, err := os.Stat(financeDir); os.IsNotExist(err) {
 		return 0
 	}

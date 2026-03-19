@@ -260,7 +260,7 @@ func typeIcon(name string) string {
 		return "📅"
 	case "calendars":
 		return "📆"
-	case "transactions":
+	case "finance":
 		return "💰"
 	case "messages":
 		return "💬"
