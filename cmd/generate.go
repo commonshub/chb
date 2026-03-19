@@ -1566,6 +1566,118 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		processChainDir(chain)
 	}
 
+	// Process Monerium orders (SEPA in/out)
+	moneriumDir := filepath.Join(financeDir, "monerium", "private")
+	if entries, err := os.ReadDir(moneriumDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(moneriumDir, e.Name()))
+			if err != nil {
+				continue
+			}
+
+			var cacheFile struct {
+				Orders []struct {
+					ID       string `json:"id"`
+					Kind     string `json:"kind"` // "redeem" = out, "issue" = in
+					Address  string `json:"address"`
+					Chain    string `json:"chain"`
+					Currency string `json:"currency"`
+					Amount   string `json:"amount"`
+					State    string `json:"state"`
+					Memo     string `json:"memo"`
+					Counterpart struct {
+						Details struct {
+							Name        string `json:"name"`
+							CompanyName string `json:"companyName"`
+						} `json:"details"`
+					} `json:"counterpart"`
+					Meta struct {
+						PlacedAt    string   `json:"placedAt"`
+						ProcessedAt string   `json:"processedAt"`
+						TxHashes    []string `json:"txHashes"`
+					} `json:"meta"`
+				} `json:"orders"`
+				Address string `json:"address"`
+			}
+			if json.Unmarshal(data, &cacheFile) != nil || len(cacheFile.Orders) == 0 {
+				continue
+			}
+
+			slug := strings.TrimSuffix(e.Name(), ".json")
+
+			for _, order := range cacheFile.Orders {
+				if order.State != "processed" && order.State != "pending" {
+					continue
+				}
+
+				amount := 0.0
+				fmt.Sscanf(order.Amount, "%f", &amount)
+
+				txType := "CREDIT"
+				if order.Kind == "redeem" {
+					txType = "DEBIT"
+				}
+
+				// Use company/name as counterparty (public, no IBAN)
+				counterparty := order.Counterpart.Details.CompanyName
+				if counterparty == "" {
+					counterparty = order.Counterpart.Details.Name
+				}
+				if counterparty == "" {
+					counterparty = "SEPA " + order.Kind
+				}
+
+				ts := int64(0)
+				dateStr := order.Meta.ProcessedAt
+				if dateStr == "" {
+					dateStr = order.Meta.PlacedAt
+				}
+				if t, err := time.Parse(time.RFC3339, dateStr); err == nil {
+					ts = t.Unix()
+				} else if t, err := time.Parse(time.RFC3339Nano, dateStr); err == nil {
+					ts = t.Unix()
+				}
+
+				txHash := order.ID
+				if len(order.Meta.TxHashes) > 0 {
+					txHash = order.Meta.TxHashes[0]
+				}
+
+				currency := strings.ToUpper(order.Currency)
+				if currency == "" {
+					currency = "EUR"
+				}
+
+				chain := "monerium"
+				transactions = append(transactions, TransactionEntry{
+					ID:               fmt.Sprintf("monerium:%s", order.ID),
+					TxHash:           txHash,
+					Provider:         "monerium",
+					Chain:            &chain,
+					Account:          cacheFile.Address,
+					AccountSlug:      slug,
+					AccountName:      "🏦 Monerium",
+					Currency:         currency,
+					Value:            order.Amount,
+					Amount:           amount,
+					GrossAmount:      amount,
+					NormalizedAmount: amount,
+					Fee:              0,
+					Type:             txType,
+					Counterparty:     counterparty,
+					Timestamp:        ts,
+					Metadata: map[string]interface{}{
+						"memo":  order.Memo,
+						"state": order.State,
+					},
+				})
+			}
+		}
+	}
+
 	if len(transactions) == 0 {
 		return 0
 	}

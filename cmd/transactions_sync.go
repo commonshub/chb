@@ -84,6 +84,7 @@ func TransactionsSync(args []string) error {
 
 	force := HasFlag(args, "--force")
 	monthFilter := GetOption(args, "--month")
+	sourceFilter := strings.ToLower(GetOption(args, "--source"))
 
 	// Positional year/month arg (e.g. "2025" or "2025/03")
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
@@ -116,35 +117,35 @@ func TransactionsSync(args []string) error {
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
 	}
 
-	fmt.Printf("\n%s⛓️  Syncing blockchain transactions%s\n", Fmt.Bold, Fmt.Reset)
+	fmt.Printf("\n%s⛓️  Syncing transactions%s\n", Fmt.Bold, Fmt.Reset)
 	fmt.Printf("%sDATA_DIR: %s%s\n", Fmt.Dim, DataDir(), Fmt.Reset)
-	fmt.Printf("%sMonth range: %s → %s%s\n\n", Fmt.Dim, startMonth, endMonth, Fmt.Reset)
-
-	// Process each etherscan account
-	etherscanAccounts := make([]FinanceAccount, 0)
-	for _, acc := range settings.Finance.Accounts {
-		if acc.Provider == "etherscan" && acc.Token != nil {
-			etherscanAccounts = append(etherscanAccounts, acc)
-		}
+	fmt.Printf("%sMonth range: %s → %s%s\n", Fmt.Dim, startMonth, endMonth, Fmt.Reset)
+	if sourceFilter != "" {
+		fmt.Printf("%sSource filter: %s%s\n", Fmt.Dim, sourceFilter, Fmt.Reset)
 	}
-
-	if len(etherscanAccounts) == 0 {
-		fmt.Println("No etherscan accounts configured in settings.json")
-		return nil
-	}
-
-	// Get API key
-	apiKey := os.Getenv("ETHERSCAN_API_KEY")
-	if apiKey == "" {
-		// Try chain-specific keys
-		apiKey = os.Getenv("GNOSISSCAN_API_KEY")
-	}
-	if apiKey == "" {
-		return fmt.Errorf("ETHERSCAN_API_KEY or GNOSISSCAN_API_KEY environment variable required")
-	}
+	fmt.Println()
 
 	totalProcessed := 0
-	for _, acc := range etherscanAccounts {
+
+	// --- Etherscan / blockchain sync ---
+	if sourceFilter == "" || sourceFilter == "gnosis" || sourceFilter == "etherscan" || sourceFilter == "blockchain" {
+		etherscanAccounts := make([]FinanceAccount, 0)
+		for _, acc := range settings.Finance.Accounts {
+			if acc.Provider == "etherscan" && acc.Token != nil {
+				etherscanAccounts = append(etherscanAccounts, acc)
+			}
+		}
+
+		if len(etherscanAccounts) > 0 {
+			apiKey := os.Getenv("ETHERSCAN_API_KEY")
+			if apiKey == "" {
+				apiKey = os.Getenv("GNOSISSCAN_API_KEY")
+			}
+			if apiKey == "" {
+				fmt.Printf("%s⚠ ETHERSCAN_API_KEY not set, skipping blockchain sync%s\n", Fmt.Yellow, Fmt.Reset)
+			} else {
+				fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
+				for _, acc := range etherscanAccounts {
 		fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
 
 		transfers, err := fetchTokenTransfers(acc, apiKey)
@@ -208,17 +209,21 @@ func TransactionsSync(args []string) error {
 
 		// Rate limit between accounts
 		time.Sleep(400 * time.Millisecond)
-	}
-
-	// --- Stripe sync ---
-	stripeAccounts := make([]FinanceAccount, 0)
-	for _, acc := range settings.Finance.Accounts {
-		if acc.Provider == "stripe" {
-			stripeAccounts = append(stripeAccounts, acc)
+				}
+			}
 		}
 	}
 
-	if len(stripeAccounts) > 0 {
+	// --- Stripe sync ---
+	if sourceFilter == "" || sourceFilter == "stripe" {
+		stripeAccounts := make([]FinanceAccount, 0)
+		for _, acc := range settings.Finance.Accounts {
+			if acc.Provider == "stripe" {
+				stripeAccounts = append(stripeAccounts, acc)
+			}
+		}
+
+		if len(stripeAccounts) > 0 {
 		stripeKey := os.Getenv("STRIPE_SECRET_KEY")
 		if stripeKey == "" {
 			fmt.Printf("\n%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe sync%s\n", Fmt.Yellow, Fmt.Reset)
@@ -284,6 +289,98 @@ func TransactionsSync(args []string) error {
 
 				if saved > 0 {
 					fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+				}
+			}
+		}
+		}
+	}
+
+	// --- Monerium sync ---
+	if sourceFilter == "" || sourceFilter == "monerium" {
+		moneriumAccounts := make([]FinanceAccount, 0)
+		for _, acc := range settings.Finance.Accounts {
+			if acc.Provider == "monerium" {
+				moneriumAccounts = append(moneriumAccounts, acc)
+			}
+		}
+
+		if len(moneriumAccounts) > 0 {
+			clientID := os.Getenv("MONERIUM_CLIENT_ID")
+			clientSecret := os.Getenv("MONERIUM_CLIENT_SECRET")
+			moneriumEnv := os.Getenv("MONERIUM_ENV")
+			if moneriumEnv == "" {
+				moneriumEnv = "production"
+			}
+
+			if clientID == "" || clientSecret == "" {
+				fmt.Printf("\n%s⚠ MONERIUM_CLIENT_ID/MONERIUM_CLIENT_SECRET not set, skipping Monerium sync%s\n", Fmt.Yellow, Fmt.Reset)
+			} else {
+				fmt.Printf("\n%s🏦 Syncing Monerium orders%s\n\n", Fmt.Bold, Fmt.Reset)
+
+				token, err := authenticateMonerium(clientID, clientSecret, moneriumEnv)
+				if err != nil {
+					fmt.Printf("  %s✗ Auth failed: %v%s\n", Fmt.Red, err, Fmt.Reset)
+				} else {
+					for _, acc := range moneriumAccounts {
+						fmt.Printf("  %s%s%s (%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Address)
+
+						orders, err := fetchMoneriumOrders(token, acc.Address, moneriumEnv)
+						if err != nil {
+							fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							continue
+						}
+
+						fmt.Printf("    %sFetched %d orders%s\n", Fmt.Dim, len(orders), Fmt.Reset)
+
+						// Group by month
+						byMonth := groupMoneriumByMonth(orders)
+						saved := 0
+
+						for ym, monthOrders := range byMonth {
+							if ym < startMonth || ym > endMonth {
+								continue
+							}
+
+							parts := strings.Split(ym, "-")
+							if len(parts) != 2 {
+								continue
+							}
+							year, month := parts[0], parts[1]
+
+							dataDir := DataDir()
+							slug := acc.Slug
+							if slug == "" {
+								slug = acc.Address[:8]
+							}
+							relPath := filepath.Join("finance", "monerium", "private", slug+".json")
+							filePath := filepath.Join(dataDir, year, month, relPath)
+
+							if !force && fileExists(filePath) {
+								if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
+									continue
+								}
+							}
+
+							cache := MoneriumCacheFile{
+								Orders:   monthOrders,
+								CachedAt: time.Now().UTC().Format(time.RFC3339),
+								Address:  acc.Address,
+							}
+
+							data, _ := json.MarshalIndent(cache, "", "  ")
+							if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
+								fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
+								continue
+							}
+
+							saved++
+							totalProcessed += len(monthOrders)
+						}
+
+						if saved > 0 {
+							fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+						}
+					}
 				}
 			}
 		}
@@ -460,25 +557,183 @@ func groupStripeByMonth(txs []StripeTransaction) map[string][]StripeTransaction 
 	return byMonth
 }
 
+// ── Monerium ────────────────────────────────────────────────────────────────
+
+// MoneriumOrder represents a single Monerium order (redeem = outgoing SEPA, issue = incoming mint)
+type MoneriumOrder struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"` // "redeem" or "issue"
+	Profile  string `json:"profile"`
+	Address  string `json:"address"`
+	Chain    string `json:"chain"`
+	Currency string `json:"currency"`
+	Amount   string `json:"amount"`
+	Counterpart struct {
+		Identifier struct {
+			Standard string `json:"standard"`
+			IBAN     string `json:"iban,omitempty"`
+		} `json:"identifier"`
+		Details struct {
+			Name        string `json:"name,omitempty"`
+			CompanyName string `json:"companyName,omitempty"`
+			FirstName   string `json:"firstName,omitempty"`
+			LastName    string `json:"lastName,omitempty"`
+			Country     string `json:"country,omitempty"`
+		} `json:"details"`
+	} `json:"counterpart"`
+	Memo  string `json:"memo,omitempty"`
+	State string `json:"state"`
+	Meta  struct {
+		PlacedAt    string   `json:"placedAt"`
+		ProcessedAt string   `json:"processedAt,omitempty"`
+		TxHashes    []string `json:"txHashes,omitempty"`
+	} `json:"meta"`
+}
+
+type MoneriumCacheFile struct {
+	Orders   []MoneriumOrder `json:"orders"`
+	CachedAt string          `json:"cachedAt"`
+	Address  string          `json:"address"`
+}
+
+func authenticateMonerium(clientID, clientSecret, environment string) (string, error) {
+	baseURL := "https://api.monerium.app"
+	if environment == "sandbox" {
+		baseURL = "https://api.monerium.dev"
+	}
+
+	data := fmt.Sprintf("grant_type=client_credentials&client_id=%s&client_secret=%s", clientID, clientSecret)
+	req, err := http.NewRequest("POST", baseURL+"/auth/token", strings.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("auth request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		return "", fmt.Errorf("auth failed (%d): %s", resp.StatusCode, errResp.Error)
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("failed to decode token: %w", err)
+	}
+
+	return tokenResp.AccessToken, nil
+}
+
+func fetchMoneriumOrders(accessToken, address, environment string) ([]MoneriumOrder, error) {
+	baseURL := "https://api.monerium.app"
+	if environment == "sandbox" {
+		baseURL = "https://api.monerium.dev"
+	}
+
+	url := fmt.Sprintf("%s/orders?address=%s", baseURL, address)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/vnd.monerium.api-v2+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API error: %d", resp.StatusCode)
+	}
+
+	// API may return array directly or { orders: [...] }
+	var raw json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	var orders []MoneriumOrder
+	if err := json.Unmarshal(raw, &orders); err != nil {
+		// Try wrapped format
+		var wrapped struct {
+			Orders []MoneriumOrder `json:"orders"`
+		}
+		if err := json.Unmarshal(raw, &wrapped); err != nil {
+			return nil, fmt.Errorf("failed to parse orders: %w", err)
+		}
+		orders = wrapped.Orders
+	}
+
+	return orders, nil
+}
+
+func groupMoneriumByMonth(orders []MoneriumOrder) map[string][]MoneriumOrder {
+	byMonth := make(map[string][]MoneriumOrder)
+	tz := BrusselsTZ()
+
+	for _, order := range orders {
+		dateStr := order.Meta.PlacedAt
+		if dateStr == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, dateStr)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339Nano, dateStr)
+			if err != nil {
+				continue
+			}
+		}
+		t = t.In(tz)
+		ym := fmt.Sprintf("%d-%02d", t.Year(), t.Month())
+		byMonth[ym] = append(byMonth[ym], order)
+	}
+
+	return byMonth
+}
+
 func printTransactionsSyncHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb transactions sync%s — Fetch blockchain + Stripe transactions
+%schb transactions sync%s — Fetch blockchain, Stripe & Monerium transactions
 
 %sUSAGE%s
   %schb transactions sync%s [year[/month]] [options]
 
 %sOPTIONS%s
-  %s<year>%s               Sync all months of the given year (e.g. 2025)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/03)
-  %s--month%s <YYYY-MM>    Fetch specific month only
-  %s--force%s              Re-fetch even if cached data exists
-  %s--help, -h%s           Show this help
+  %s<year>%s                  Sync all months of a year (e.g. 2025)
+  %s<year/month>%s            Sync a specific month (e.g. 2025/03)
+  %s--source%s <name>         Sync only: gnosis, stripe, monerium
+  %s--month%s <YYYY-MM>       Alias for year/month filter
+  %s--force%s                 Re-fetch even if cached
+  %s--help, -h%s              Show this help
+
+%sSOURCES%s
+  %sgnosis%s      ERC20 token transfers via Etherscan V2 API
+  %sstripe%s      Balance transactions from Stripe
+  %smonerium%s    SEPA orders from Monerium (stored in finance/monerium/private/)
 
 %sENVIRONMENT%s
-  %sETHERSCAN_API_KEY%s    Etherscan/Gnosisscan API key
-  %sGNOSISSCAN_API_KEY%s   Fallback API key for Gnosis chain
-  %sSTRIPE_SECRET_KEY%s    Stripe secret key (for Stripe sync)
+  %sETHERSCAN_API_KEY%s         Etherscan/Gnosisscan API key
+  %sSTRIPE_SECRET_KEY%s         Stripe secret key
+  %sMONERIUM_CLIENT_ID%s        Monerium OAuth client ID
+  %sMONERIUM_CLIENT_SECRET%s    Monerium OAuth client secret
+  %sMONERIUM_ENV%s              "production" (default) or "sandbox"
+
+%sEXAMPLES%s
+  %schb transactions sync%s                       Sync all sources, last 2 months
+  %schb transactions sync --source monerium%s     Monerium only
+  %schb transactions sync 2025 --source stripe%s  Stripe for all of 2025
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
@@ -489,9 +744,20 @@ func printTransactionsSyncHelp() {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 	)
 }

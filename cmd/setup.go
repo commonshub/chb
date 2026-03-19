@@ -19,6 +19,8 @@ var envKeys = []envKey{
 	{"ETHERSCAN_API_KEY", "Gnosisscan (transaction sync)", "https://gnosisscan.io/myapikey"},
 	{"DISCORD_BOT_TOKEN", "Discord (message sync)", "https://discord.com/developers/applications"},
 	{"STRIPE_SECRET_KEY", "Stripe (member/transaction sync)", "https://dashboard.stripe.com/apikeys"},
+	{"MONERIUM_CLIENT_ID", "Monerium OAuth client ID", "https://monerium.dev/docs/getting-started"},
+	{"MONERIUM_CLIENT_SECRET", "Monerium OAuth client secret", "https://monerium.dev/docs/getting-started"},
 }
 
 // Setup runs the interactive key configuration wizard
