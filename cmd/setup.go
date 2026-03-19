@@ -80,6 +80,11 @@ func Setup() error {
 		value, _ := reader.ReadString('\n')
 		value = strings.TrimSpace(value)
 
+		// Overwrite the input line to hide the pasted secret
+		if value != "" {
+			fmt.Printf("\033[1A\033[2K  Paste key (or Enter to cancel): %s\n", maskValue(value))
+		}
+
 		if value == "" {
 			continue
 		}
@@ -90,7 +95,7 @@ func Setup() error {
 			continue
 		}
 
-		fmt.Printf("  %s✓ Saved %s%s\n", Fmt.Green, k.Name, Fmt.Reset)
+		fmt.Printf("  %s✓ Saved %s%s = %s%s%s\n", Fmt.Green, k.Name, Fmt.Reset, Fmt.Dim, maskValue(value), Fmt.Reset)
 	}
 }
 
