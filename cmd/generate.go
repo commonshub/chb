@@ -417,6 +417,9 @@ func Generate(args []string) error {
 
 	fmt.Printf("📋 Found %d year(s): %s\n\n", len(years), strings.Join(years, ", "))
 
+	// Write generated/ README
+	writeGeneratedReadme(dataDir)
+
 	settings, _ := LoadSettings()
 
 	// 1. Generate images.json per month
@@ -639,7 +642,7 @@ func generateMonthImagesGo(dataDir, year, month string) int {
 
 	out := ImagesFile{Year: year, Month: month, Count: len(images), Images: images}
 	imgData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("messages", "discord", "images.json"), imgData)
+	writeMonthFile(dataDir, year, month, filepath.Join("generated", "images.json"), imgData)
 
 	return len(images)
 }
@@ -704,7 +707,7 @@ func generateLatestImagesGo(dataDir string) int {
 		return allImages[i].Timestamp > allImages[j].Timestamp
 	})
 
-	outputPath := filepath.Join(dataDir, "latest", "messages", "discord", "images.json")
+	outputPath := filepath.Join(dataDir, "latest", "generated", "images.json")
 	os.MkdirAll(filepath.Dir(outputPath), 0755)
 	out := ImagesFile{Source: "latest", Count: len(allImages), Images: allImages}
 	writeJSONFile(outputPath, out)
@@ -754,7 +757,7 @@ func generateActivityGridGo(dataDir string, years []string) ActivityGridData {
 		grid.Years = append(grid.Years, ActivityGridYear{Year: year, Months: yearMonths})
 	}
 
-	outputPath := filepath.Join(dataDir, "activitygrid.json")
+	outputPath := filepath.Join(dataDir, "generated", "activitygrid.json")
 	writeJSONFile(outputPath, grid)
 	fmt.Printf("  ✓ Generated global activity grid\n")
 
@@ -768,7 +771,7 @@ func generateYearActivityGridGo(dataDir, year string, grid ActivityGridData) {
 				Year   string              `json:"year"`
 				Months []ActivityGridMonth `json:"months"`
 			}{Year: year, Months: y.Months}
-			outputPath := filepath.Join(dataDir, year, "activitygrid.json")
+			outputPath := filepath.Join(dataDir, year, "generated", "activitygrid.json")
 			os.MkdirAll(filepath.Dir(outputPath), 0755)
 			writeJSONFile(outputPath, out)
 			fmt.Printf("  ✓ %s activity grid\n", year)
@@ -957,7 +960,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	}
 
 	contribData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, "contributors.json", contribData)
+	writeMonthFile(dataDir, year, month, filepath.Join("generated", "contributors.json"), contribData)
 
 	return len(contributors)
 }
@@ -1129,7 +1132,7 @@ func generateTopContributorsGo(dataDir string, settings *Settings) {
 		IsMockData:      false,
 	}
 
-	outputPath := filepath.Join(dataDir, "contributors.json")
+	outputPath := filepath.Join(dataDir, "generated", "contributors.json")
 	writeJSONFile(outputPath, out)
 	fmt.Printf("  ✓ Generated contributors.json (%d contributors, %d active)\n", len(list), len(contributorMap))
 }
@@ -1147,7 +1150,7 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 	contributors := map[string]*contribData{}
 
 	// From global contributors.json
-	globalPath := filepath.Join(dataDir, "contributors.json")
+	globalPath := filepath.Join(dataDir, "generated", "contributors.json")
 	if data, err := os.ReadFile(globalPath); err == nil {
 		var f TopContributorsFile
 		if json.Unmarshal(data, &f) == nil {
@@ -1238,7 +1241,7 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 				}
 
 				// Images
-				imagesPath := filepath.Join(dataDir, year, month, "messages", "discord", "images.json")
+				imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
 				if data, err := os.ReadFile(imagesPath); err == nil {
 					var imf ImagesFile
 					if json.Unmarshal(data, &imf) == nil {
@@ -1291,7 +1294,7 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 	}{}
 
 	for _, month := range months {
-		contribPath := filepath.Join(dataDir, year, month, "contributors.json")
+		contribPath := filepath.Join(dataDir, year, month, "generated", "contributors.json")
 		data, err := os.ReadFile(contribPath)
 		if err != nil {
 			continue
@@ -1380,7 +1383,7 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 
-	outputPath := filepath.Join(dataDir, year, "contributors.json")
+	outputPath := filepath.Join(dataDir, year, "generated", "contributors.json")
 	os.MkdirAll(filepath.Dir(outputPath), 0755)
 	writeJSONFile(outputPath, out)
 	fmt.Printf("  ✓ %s: %d contributors\n", year, len(contributors))
@@ -1695,7 +1698,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	}
 
 	txData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, "transactions.json", txData)
+	writeMonthFile(dataDir, year, month, filepath.Join("generated", "transactions.json"), txData)
 
 	return len(transactions)
 }
@@ -1703,7 +1706,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 // ── Counterparties ──────────────────────────────────────────────────────────
 
 func generateCounterpartiesGo(dataDir, year, month string) {
-	txPath := filepath.Join(dataDir, year, month, "transactions.json")
+	txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
 	data, err := os.ReadFile(txPath)
 	if err != nil {
 		return
@@ -1749,10 +1752,34 @@ func generateCounterpartiesGo(dataDir, year, month string) {
 	}
 
 	cpData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, "counterparties.json", cpData)
+	writeMonthFile(dataDir, year, month, filepath.Join("generated", "counterparties.json"), cpData)
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Generated README ────────────────────────────────────────────────────────
+
+func writeGeneratedReadme(dataDir string) {
+	readme := `# generated/
+
+Files in this folder are produced by ` + "`chb generate`" + `.
+They are derived from raw synced data and can be regenerated at any time.
+
+**Do not edit manually** — they will be overwritten on the next run.
+
+## Files
+
+| File | Description |
+|------|-------------|
+| events.json | Merged events from ICS + Luma API |
+| transactions.json | Aggregated transactions (gnosis, stripe, monerium) |
+| contributors.json | Monthly contributor stats (tokens, messages) |
+| counterparties.json | Unique counterparties from transactions |
+| members.json | Membership snapshot (Stripe + Odoo) |
+| images.json | Images extracted from Discord messages |
+`
+	readmePath := filepath.Join(dataDir, "generated", "README.md")
+	os.MkdirAll(filepath.Dir(readmePath), 0755)
+	os.WriteFile(readmePath, []byte(readme), 0644)
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

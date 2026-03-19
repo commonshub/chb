@@ -276,7 +276,7 @@ func MembersSync(args []string) error {
 		}
 
 		membersData, _ := json.MarshalIndent(out, "", "  ")
-		writeMonthFile(dataDir, yearStr, monthStr, "members.json", membersData)
+		writeMonthFile(dataDir, yearStr, monthStr, filepath.Join("generated", "members.json"), membersData)
 		fmt.Printf("  %s✅ %d members (active: %d, MRR: €%.2f)%s\n",
 			Fmt.Green, len(members), summary.ActiveMembers, summary.MRR.Value, Fmt.Reset)
 	}

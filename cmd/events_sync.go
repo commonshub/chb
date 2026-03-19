@@ -165,10 +165,10 @@ func EventsSync(args []string, version string) error {
 		parts := strings.SplitN(ym, "-", 2)
 		year, month := parts[0], parts[1]
 
-		icsDir := filepath.Join(dataDir, year, month, "events", "ics")
+		icsDir := filepath.Join(dataDir, year, month, "calendars", "ics")
 		os.MkdirAll(icsDir, 0755)
 
-		icsPath := filepath.Join(icsDir, "luma.ics")
+		icsPath := filepath.Join(icsDir, "public.ics")
 		if !force {
 			if _, err := os.Stat(icsPath); err == nil {
 				// Already exists, still overwrite to keep fresh
@@ -176,7 +176,7 @@ func EventsSync(args []string, version string) error {
 		}
 
 		content := ical.WrapICS(monthEvents, "-//Commons Hub Brussels//Luma//EN")
-		writeMonthFile(dataDir, year, month, filepath.Join("events", "ics", "luma.ics"), []byte(content))
+		writeMonthFile(dataDir, year, month, filepath.Join("calendars", "ics", "public.ics"), []byte(content))
 	}
 	sort.Strings(affectedMonths)
 
@@ -199,7 +199,7 @@ func EventsSync(args []string, version string) error {
 		icsCount := icsCountsByMonth[ym]
 
 		if !force {
-			existingPath := filepath.Join(dataDir, year, month, "events.json")
+			existingPath := filepath.Join(dataDir, year, month, "generated", "events.json")
 			if data, err := os.ReadFile(existingPath); err == nil {
 				var ef FullEventsFile
 				if json.Unmarshal(data, &ef) == nil {
@@ -357,7 +357,7 @@ func fetchURL(rawURL string) (string, error) {
 }
 
 func fetchLumaForMonth(dataDir, calendarID, year, month string, force bool) {
-	lumaDir := filepath.Join(dataDir, year, month, "events", "luma")
+	lumaDir := filepath.Join(dataDir, year, month, "calendars", "luma")
 	lumaPath := filepath.Join(lumaDir, calendarID+".json")
 
 	if !force {
@@ -401,7 +401,7 @@ func fetchLumaForMonth(dataDir, calendarID, year, month string, force bool) {
 	}
 
 	data, _ := json.MarshalIndent(flat, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("events", "luma", calendarID+".json"), data)
+	writeMonthFile(dataDir, year, month, filepath.Join("calendars", "luma", calendarID+".json"), data)
 }
 
 func processMonth(dataDir, calendarID, year, month string) (*monthResult, error) {
@@ -413,7 +413,7 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 	// Load existing event IDs to detect new ones
 	existingIDs := map[string]bool{}
 	existingMetadata := map[string]EventMetadata{}
-	existingPath := filepath.Join(monthPath, "events.json")
+	existingPath := filepath.Join(monthPath, "generated", "events.json")
 	if data, err := os.ReadFile(existingPath); err == nil {
 		var ef FullEventsFile
 		if json.Unmarshal(data, &ef) == nil {
@@ -428,7 +428,7 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 	lumaEventsMap := map[string]*luma.Event{}
 	lumaEventsNameMap := map[string]*luma.Event{}
 	if calendarID != "" {
-		lumaPath := filepath.Join(dataDir, year, month, "events", "luma", calendarID+".json")
+		lumaPath := filepath.Join(dataDir, year, month, "calendars", "luma", calendarID+".json")
 		if data, err := os.ReadFile(lumaPath); err == nil {
 			var lumaEvents []luma.Event
 			if json.Unmarshal(data, &lumaEvents) == nil {
@@ -444,7 +444,7 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 	}
 
 	// Load ICS events
-	icsPath := filepath.Join(dataDir, year, month, "events", "ics", "luma.ics")
+	icsPath := filepath.Join(dataDir, year, month, "calendars", "ics", "public.ics")
 	icsData, err := os.ReadFile(icsPath)
 	if err != nil {
 		return nil, nil // No ICS data for this month
@@ -623,7 +623,7 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 
 	// Add Luma API events not in ICS
 	if calendarID != "" {
-		lumaPath := filepath.Join(dataDir, year, month, "events", "luma", calendarID+".json")
+		lumaPath := filepath.Join(dataDir, year, month, "calendars", "luma", calendarID+".json")
 		if data, err := os.ReadFile(lumaPath); err == nil {
 			var lumaAPIEvents []luma.Event
 			if json.Unmarshal(data, &lumaAPIEvents) == nil {
@@ -706,7 +706,7 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 		Events:      fullEvents,
 	}
 	data, _ := json.MarshalIndent(ef, "", "  ")
-	writeMonthFile(dataDir, year, month, "events.json", data)
+	writeMonthFile(dataDir, year, month, filepath.Join("generated", "events.json"), data)
 
 	return &monthResult{
 		yearMonth:   fmt.Sprintf("%s-%s", year, month),
@@ -728,7 +728,7 @@ func generateYearlyEvents(dataDir, year string) {
 		if !d.IsDir() || len(d.Name()) != 2 {
 			continue
 		}
-		eventsPath := filepath.Join(yearPath, d.Name(), "events.json")
+		eventsPath := filepath.Join(yearPath, d.Name(), "generated", "events.json")
 		data, err := os.ReadFile(eventsPath)
 		if err != nil {
 			continue
@@ -749,12 +749,12 @@ func generateYearlyEvents(dataDir, year string) {
 		Events:      allEvents,
 	}
 	data, _ := json.MarshalIndent(ef, "", "  ")
-	os.WriteFile(filepath.Join(yearPath, "events.json"), data, 0644)
+	os.WriteFile(filepath.Join(yearPath, "generated", "events.json"), data, 0644)
 }
 
 func generateYearlyCSV(dataDir, year string) {
 	yearPath := filepath.Join(dataDir, year)
-	eventsPath := filepath.Join(yearPath, "events.json")
+	eventsPath := filepath.Join(yearPath, "generated", "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return
@@ -823,7 +823,7 @@ func generateYearlyCSV(dataDir, year string) {
 	}
 
 	csvContent := headers + "\n" + strings.Join(rows, "\n") + "\n"
-	os.WriteFile(filepath.Join(yearPath, "events.csv"), []byte(csvContent), 0644)
+	os.WriteFile(filepath.Join(yearPath, "generated", "events.csv"), []byte(csvContent), 0644)
 }
 
 func csvEscape(s string) string {
@@ -857,7 +857,7 @@ func generateEventsMd(dataDir string) {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			eventsPath := filepath.Join(yearPath, md.Name(), "events.json")
+			eventsPath := filepath.Join(yearPath, md.Name(), "generated", "events.json")
 			data, err := os.ReadFile(eventsPath)
 			if err != nil {
 				continue

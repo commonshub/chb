@@ -258,7 +258,7 @@ func typeIcon(name string) string {
 	switch name {
 	case "events":
 		return "📅"
-	case "bookings":
+	case "calendars":
 		return "📆"
 	case "transactions":
 		return "💰"

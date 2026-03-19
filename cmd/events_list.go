@@ -65,7 +65,7 @@ func loadAllEvents() []EventEntry {
 		sort.Strings(months)
 
 		for _, month := range months {
-			eventsPath := filepath.Join(yearPath, month, "events.json")
+			eventsPath := filepath.Join(yearPath, month, "generated", "events.json")
 			data, err := os.ReadFile(eventsPath)
 			if err != nil {
 				continue

@@ -220,7 +220,7 @@ func yearlyReport(year string) error {
 // ── Data loading helpers ──
 
 func loadMonthEvents(dataDir, year, month string) []EventEntry {
-	eventsPath := filepath.Join(dataDir, year, month, "events.json")
+	eventsPath := filepath.Join(dataDir, year, month, "generated", "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return nil
@@ -275,7 +275,7 @@ func printEventsSummary(events []EventEntry) {
 }
 
 func printMembersSummary(dataDir, year, month string) {
-	membersPath := filepath.Join(dataDir, year, month, "members.json")
+	membersPath := filepath.Join(dataDir, year, month, "generated", "members.json")
 	data, err := os.ReadFile(membersPath)
 	if err != nil {
 		return

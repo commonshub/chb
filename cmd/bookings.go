@@ -48,7 +48,7 @@ func loadAllBookings() ([]BookingEntry, error) {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			icsDir := filepath.Join(yearPath, md.Name(), "bookings")
+			icsDir := filepath.Join(yearPath, md.Name(), "calendars", "ics")
 			if _, err := os.Stat(icsDir); os.IsNotExist(err) {
 				continue
 			}
@@ -234,7 +234,7 @@ func BookingsSync(args []string) error {
 	var startMonth, endMonth string
 
 	// Check --since / --history first
-	sinceMonth, isSince := ResolveSinceMonth(args, "bookings")
+	sinceMonth, isSince := ResolveSinceMonth(args, "calendars")
 
 	if isSince {
 		startMonth = sinceMonth
@@ -310,7 +310,7 @@ func BookingsSync(args []string) error {
 			parts := strings.SplitN(ym, "-", 2)
 			year, month := parts[0], parts[1]
 
-			relPath := filepath.Join("bookings", room.Slug+".ics")
+			relPath := filepath.Join("calendars", "ics", room.Slug+".ics")
 			filePath := filepath.Join(dataDir, year, month, relPath)
 
 			if !force {

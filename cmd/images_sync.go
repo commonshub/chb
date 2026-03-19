@@ -96,7 +96,7 @@ func ImagesSync(args []string) error {
 
 // syncDiscordImages reads images.json for a month and downloads Discord attachments.
 func syncDiscordImages(dataDir, year, month, token string, force bool) (downloaded, skipped int) {
-	imagesPath := filepath.Join(dataDir, year, month, "messages", "discord", "images.json")
+	imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
 	data, err := os.ReadFile(imagesPath)
 	if err != nil {
 		return 0, 0
@@ -211,7 +211,7 @@ func fetchDiscordAttachmentURL(channelID, messageID, attachmentID, token string)
 
 // syncLumaImages reads events.json for a month and downloads event cover images.
 func syncLumaImages(dataDir, year, month string, force bool) (downloaded, skipped int) {
-	eventsPath := filepath.Join(dataDir, year, month, "events.json")
+	eventsPath := filepath.Join(dataDir, year, month, "generated", "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return 0, 0
