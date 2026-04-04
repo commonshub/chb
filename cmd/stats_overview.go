@@ -162,14 +162,24 @@ func StatsOverview(args []string) {
 			}
 		}
 
-		// ── CHT tokens (from finance/celo/*.CHT.json) ───────────────
-		celoDir := filepath.Join(dataDir, p.year, p.month, "finance", "celo")
-		if entries, err := os.ReadDir(celoDir); err == nil {
+		// ── CHT tokens (from finance/celo/contribution-token.CHT.json or any *.CHT.json) ──
+		// Look in all chain dirs for CHT files
+		for _, chainName := range []string{"celo", "gnosis", "ethereum"} {
+			chainDir := filepath.Join(dataDir, p.year, p.month, "finance", chainName)
+			entries, err := os.ReadDir(chainDir)
+			if err != nil {
+				continue
+			}
 			for _, e := range entries {
-				if e.IsDir() || !strings.Contains(strings.ToUpper(e.Name()), "CHT") {
+				if e.IsDir() {
 					continue
 				}
-				data, err := os.ReadFile(filepath.Join(celoDir, e.Name()))
+				// Match CHT token files (e.g. contribution-token.CHT.json)
+				upper := strings.ToUpper(e.Name())
+				if !strings.Contains(upper, ".CHT.") {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(chainDir, e.Name()))
 				if err != nil {
 					continue
 				}

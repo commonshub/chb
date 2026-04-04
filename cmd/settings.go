@@ -83,6 +83,18 @@ func DownloadSettings(dir string) error {
 }
 
 // Settings represents settings.json
+// ContributionTokenConfig holds the CHT token config from settings.json
+type ContributionTokenConfig struct {
+	Chain       string `json:"chain"`
+	ChainID     int    `json:"chainId"`
+	RPCUrl      string `json:"rpcUrl"`
+	ExplorerURL string `json:"explorerUrl"`
+	Address     string `json:"address"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Decimals    int    `json:"decimals"`
+}
+
 type Settings struct {
 	Luma struct {
 		CalendarID string `json:"calendarId"`
@@ -91,9 +103,10 @@ type Settings struct {
 		Google string `json:"google"`
 		Luma   string `json:"luma"`
 	} `json:"calendars"`
-	Discord    DiscordSettings    `json:"discord"`
-	Finance    FinanceSettings    `json:"finance"`
-	Membership MembershipSettings `json:"membership"`
+	Discord            DiscordSettings         `json:"discord"`
+	Finance            FinanceSettings         `json:"finance"`
+	Membership         MembershipSettings      `json:"membership"`
+	ContributionToken  *ContributionTokenConfig `json:"contributionToken,omitempty"`
 }
 
 // MembershipSettings holds membership provider configuration

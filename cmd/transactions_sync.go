@@ -388,6 +388,74 @@ func TransactionsSync(args []string) error {
 		}
 	}
 
+	// --- Contribution Token (CHT) sync ---
+	if sourceFilter == "" || sourceFilter == "celo" || sourceFilter == "cht" || sourceFilter == "contribution" {
+		if settings.ContributionToken != nil && settings.ContributionToken.Address != "" {
+			apiKey := os.Getenv("ETHERSCAN_API_KEY")
+			if apiKey == "" {
+				apiKey = os.Getenv("CELOSCAN_API_KEY")
+			}
+			if apiKey == "" {
+				fmt.Printf("\n%s⚠ ETHERSCAN_API_KEY not set, skipping CHT sync%s\n", Fmt.Yellow, Fmt.Reset)
+			} else {
+				ct := settings.ContributionToken
+				fmt.Printf("\n%s🪙  Syncing %s (%s)%s\n\n", Fmt.Bold, ct.Name, ct.Symbol, Fmt.Reset)
+
+				transfers, err := fetchAllTokenTransfers(ct.ChainID, ct.Address, apiKey)
+				if err != nil {
+					fmt.Printf("  %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+				} else {
+					fmt.Printf("  %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
+
+					byMonth := groupTransfersByMonth(transfers)
+					saved := 0
+					for ym, monthTxs := range byMonth {
+						if ym < startMonth || ym > endMonth {
+							continue
+						}
+						parts := strings.Split(ym, "-")
+						if len(parts) != 2 {
+							continue
+						}
+						year, month := parts[0], parts[1]
+
+						dataDir := DataDir()
+						filename := fmt.Sprintf("contribution-token.%s.json", ct.Symbol)
+						relPath := filepath.Join("finance", ct.Chain, filename)
+						filePath := filepath.Join(dataDir, year, month, relPath)
+
+						if !force && fileExists(filePath) {
+							if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
+								continue
+							}
+						}
+
+						cache := TransactionsCacheFile{
+							Transactions: monthTxs,
+							CachedAt:     time.Now().UTC().Format(time.RFC3339),
+							Account:      ct.Address,
+							Chain:        ct.Chain,
+							Token:        ct.Symbol,
+						}
+
+						data, _ := json.MarshalIndent(cache, "", "  ")
+						if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
+							fmt.Printf("  %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							continue
+						}
+
+						saved++
+						totalProcessed += len(monthTxs)
+					}
+
+					if saved > 0 {
+						fmt.Printf("  %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+					}
+				}
+			}
+		}
+	}
+
 	fmt.Printf("\n%s✓ Done!%s %d transactions processed\n\n", Fmt.Green, Fmt.Reset, totalProcessed)
 	return nil
 }
@@ -439,6 +507,80 @@ func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, er
 	}
 
 	return nil, fmt.Errorf("failed after 3 attempts: %v", lastErr)
+}
+
+// fetchAllTokenTransfers fetches ALL transfers of a token contract (no wallet address filter).
+// Used for contribution tokens like CHT where we want the full transfer history.
+func fetchAllTokenTransfers(chainID int, contractAddress string, apiKey string) ([]TokenTransfer, error) {
+	var allTransfers []TokenTransfer
+	page := 1
+	pageSize := 1000
+
+	for {
+		url := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d&module=account&action=tokentx&contractaddress=%s&page=%d&offset=%d&sort=asc&apikey=%s",
+			chainID, contractAddress, page, pageSize, apiKey)
+
+		var lastErr error
+		var transfers []TokenTransfer
+		success := false
+
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				time.Sleep(time.Duration(attempt) * time.Second)
+			}
+
+			resp, err := http.Get(url)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			defer resp.Body.Close()
+
+			var result struct {
+				Status  string          `json:"status"`
+				Message string          `json:"message"`
+				Result  json.RawMessage `json:"result"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				lastErr = err
+				continue
+			}
+
+			if result.Status == "0" {
+				if result.Message == "No transactions found" || result.Message == "No records found" {
+					success = true
+					break
+				}
+				if strings.Contains(strings.ToLower(result.Message), "rate limit") {
+					lastErr = fmt.Errorf("rate limited: %s", result.Message)
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				return nil, fmt.Errorf("API error: %s", result.Message)
+			}
+
+			if err := json.Unmarshal(result.Result, &transfers); err != nil {
+				success = true
+				break
+			}
+			success = true
+			break
+		}
+
+		if !success {
+			return nil, fmt.Errorf("failed after 3 attempts: %v", lastErr)
+		}
+
+		allTransfers = append(allTransfers, transfers...)
+
+		if len(transfers) < pageSize {
+			break
+		}
+		page++
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	return allTransfers, nil
 }
 
 func groupTransfersByMonth(transfers []TokenTransfer) map[string][]TokenTransfer {
