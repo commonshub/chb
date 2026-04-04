@@ -12,7 +12,7 @@ func PrintHelp(version string) {
 
 %sCOMMANDS%s
   %sevents%s              List upcoming events
-  %sevents sync%s         Fetch events from Luma feeds
+  %sevents sync%s         Fetch events from room calendars
   %sevents stats%s        Show event statistics
   %srooms%s               List all rooms with pricing
   %sbookings%s            List upcoming room bookings
@@ -38,7 +38,7 @@ func PrintHelp(version string) {
 
 %sEXAMPLES%s
   %s$ chb events                          # next 10 upcoming events
-  $ chb events sync                      # sync events from Luma
+  $ chb events sync                      # sync events from room calendars
   $ chb events sync 2025/11              # sync events for Nov 2025
   $ chb events sync 2025                 # sync events for all of 2025
   $ chb sync 2025/11 --force             # resync everything for Nov 2025
@@ -51,7 +51,7 @@ func PrintHelp(version string) {
 
 %sENVIRONMENT%s
   %sDATA_DIR%s            Data directory (default: ./data)
-  %sLUMA_API_KEY%s        Luma API key (enables rich event data)
+
   %sETHERSCAN_API_KEY%s   Etherscan/Gnosisscan API key
   %sDISCORD_BOT_TOKEN%s   Discord bot token
 `,
@@ -97,7 +97,7 @@ func PrintSyncAllHelp() {
 	fmt.Printf(`
 %schb sync%s — Sync all data sources
 
-%sSources:%s events (Luma), transactions (Gnosis/Stripe), bookings (Google Calendar),
+%sSources:%s events (room calendars), transactions (Gnosis/Stripe), bookings (Google Calendar),
 messages (Discord), members (Stripe/Odoo)
 
 %sUSAGE%s
@@ -207,7 +207,7 @@ func PrintEventsHelp() {
 func PrintEventsSyncHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb events sync%s — Fetch events from Luma and regenerate data
+%schb events sync%s — Fetch events from room calendars
 
 %sUSAGE%s
   %schb events sync%s [year[/month]] [options]
@@ -221,8 +221,8 @@ func PrintEventsSyncHelp() {
   %s--help, -h%s           Show this help
 
 %sSOURCES%s
-  • Luma ICS feed (calendar events)
-  • Luma API (covers, guests, tags — requires LUMA_API_KEY)
+  • Room Google Calendar ICS feeds (events with a URL/website are included)
+  • OpenGraph scraping for cover images
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,

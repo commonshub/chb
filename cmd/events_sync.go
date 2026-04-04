@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/CommonsHub/chb/ical"
-	"github.com/CommonsHub/chb/luma"
 	"github.com/CommonsHub/chb/og"
 )
 
@@ -79,56 +78,19 @@ func EventsSync(args []string, version string) error {
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
 	dataDir := DataDir()
-	lumaAPIKey := os.Getenv("LUMA_API_KEY")
 
-	settings, err := LoadSettings()
+	rooms, err := LoadRooms()
 	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
+		return fmt.Errorf("failed to load rooms: %w", err)
 	}
-
-	lumaIcsURL := settings.Calendars.Luma
-	calendarID := settings.Luma.CalendarID
 
 	// Show env info
 	fmt.Printf("\n%sDATA_DIR: %s%s\n", Fmt.Dim, dataDir, Fmt.Reset)
-	lumaKeyStatus := "missing (falling back to OG scraping)"
-	if lumaAPIKey != "" {
-		lumaKeyStatus = "set"
-	}
-	fmt.Printf("%sLUMA_API_KEY: %s%s\n", Fmt.Dim, lumaKeyStatus, Fmt.Reset)
 
-	// Step 1: Fetch ICS feed
-	fmt.Printf("\n📅 Fetching Luma calendar...\n")
-	fmt.Printf("  %s%s%s\n", Fmt.Dim, lumaIcsURL, Fmt.Reset)
-
-	icsData, err := fetchURL(lumaIcsURL)
-	if err != nil {
-		return fmt.Errorf("failed to fetch ICS: %w", err)
-	}
-
-	events, err := ical.ParseICS(icsData)
-	if err != nil {
-		return fmt.Errorf("failed to parse ICS: %w", err)
-	}
-
-	// Count upcoming
 	now := time.Now()
-	upcoming := 0
-	for _, e := range events {
-		if e.Start.After(now) {
-			upcoming++
-		}
-	}
-	fmt.Printf("  %d events in ICS (%d upcoming)\n", len(events), upcoming)
 
-	// Group by month and save ICS files
-	byMonth := ical.GroupByMonth(events)
-
-	// Determine which months to process based on --since/--history or positional year/month
-	var sinceMonth string
-	var untilMonth string // exclusive upper bound (empty = no upper bound)
-
-	// Check --since / --history
+	// Determine time range
+	var sinceMonth, untilMonth string
 	resolvedSince, isSince := ResolveSinceMonth(args, "events")
 
 	if posFound {
@@ -142,87 +104,123 @@ func EventsSync(args []string, version string) error {
 	} else if isSince {
 		sinceMonth = resolvedSince
 	} else if sinceStr != "" {
-		// Legacy --since YYYYMMDD support
 		if d, ok := ParseSinceDate(sinceStr); ok {
 			sinceMonth = fmt.Sprintf("%d-%02d", d.Year(), d.Month())
 		}
 	}
 
-	// Save ICS files per month
-	affectedMonths := []string{}
-	icsCountsByMonth := map[string]int{}
+	if untilMonth == "" {
+		future := time.Date(now.Year(), now.Month()+3, 1, 0, 0, 0, 0, time.UTC)
+		untilMonth = fmt.Sprintf("%d-%02d", future.Year(), future.Month())
+	}
+	if sinceMonth == "" {
+		prev := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC)
+		sinceMonth = fmt.Sprintf("%d-%02d", prev.Year(), prev.Month())
+	}
 
-	for ym, monthEvents := range byMonth {
-		if sinceMonth != "" && ym < sinceMonth {
+	// Step 1: Fetch ICS from all room calendars
+	fmt.Printf("\n📅 Fetching room calendars...\n")
+
+	// Collect all events with URLs from room calendars
+	var allRoomEvents []roomEvent
+	roomsWithCalendar := 0
+
+	for _, room := range rooms {
+		if room.GoogleCalendarID == nil {
 			continue
 		}
-		if untilMonth != "" && ym > untilMonth {
+		roomsWithCalendar++
+
+		calURL := getGoogleCalendarURL(*room.GoogleCalendarID)
+		fmt.Printf("  Fetching %s...\n", room.Slug)
+
+		icsData, err := fetchURL(calURL)
+		if err != nil {
+			fmt.Printf("  %sWarning: failed to fetch %s: %v%s\n", Fmt.Yellow, room.Slug, err, Fmt.Reset)
 			continue
 		}
-		affectedMonths = append(affectedMonths, ym)
-		icsCountsByMonth[ym] = len(monthEvents)
 
-		parts := strings.SplitN(ym, "-", 2)
-		year, month := parts[0], parts[1]
+		events, err := ical.ParseICS(icsData)
+		if err != nil {
+			fmt.Printf("  %sWarning: failed to parse %s ICS: %v%s\n", Fmt.Yellow, room.Slug, err, Fmt.Reset)
+			continue
+		}
 
-		icsDir := filepath.Join(dataDir, year, month, "calendars", "ics")
-		os.MkdirAll(icsDir, 0755)
-
-		icsPath := filepath.Join(icsDir, "public.ics")
-		if !force {
-			if _, err := os.Stat(icsPath); err == nil {
-				// Already exists, still overwrite to keep fresh
+		eventCount := 0
+		for _, ev := range events {
+			// Only include events that have a URL (website) defined
+			eventURL := ev.URL
+			if eventURL == "" {
+				// Check if location is a URL
+				if ev.Location != "" && (strings.HasPrefix(ev.Location, "http://") || strings.HasPrefix(ev.Location, "https://")) {
+					eventURL = ev.Location
+				}
 			}
-		}
-
-		content := ical.WrapICS(monthEvents, "-//Commons Hub Brussels//Luma//EN")
-		writeMonthFile(dataDir, year, month, filepath.Join("calendars", "ics", "public.ics"), []byte(content))
-	}
-	sort.Strings(affectedMonths)
-
-	// Fetch Luma API data per month if key is set
-	if lumaAPIKey != "" && calendarID != "" {
-		for _, ym := range affectedMonths {
-			parts := strings.SplitN(ym, "-", 2)
-			year, month := parts[0], parts[1]
-			fetchLumaForMonth(dataDir, calendarID, year, month, force)
-		}
-	}
-
-	// Determine which months need regeneration
-	monthsToProcess := []struct{ year, month string }{}
-	skippedCount := 0
-
-	for _, ym := range affectedMonths {
-		parts := strings.SplitN(ym, "-", 2)
-		year, month := parts[0], parts[1]
-		icsCount := icsCountsByMonth[ym]
-
-		if !force {
-			existingPath := filepath.Join(dataDir, year, month, "generated", "events.json")
-			if data, err := os.ReadFile(existingPath); err == nil {
-				var ef FullEventsFile
-				if json.Unmarshal(data, &ef) == nil {
-					if len(ef.Events) == icsCount {
-						skippedCount++
-						continue
+			if eventURL == "" {
+				// Try to extract URL from description
+				if ev.Description != "" {
+					re := regexp.MustCompile(`https?://[^\s\n<>"']+`)
+					if m := re.FindString(ev.Description); m != "" {
+						eventURL = strings.TrimRight(m, ".,;:!?")
 					}
 				}
 			}
+			if eventURL == "" {
+				continue // Skip events without a URL
+			}
+			eventCount++
+			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: room.Slug, roomName: room.Name})
 		}
-		monthsToProcess = append(monthsToProcess, struct{ year, month string }{year, month})
+		fmt.Printf("  %s✓%s %s: %d events with URLs\n", Fmt.Green, Fmt.Reset, room.Slug, eventCount)
 	}
 
-	if skippedCount > 0 {
-		fmt.Printf("  %s%d months unchanged, %d to process%s\n", Fmt.Dim, skippedCount, len(monthsToProcess), Fmt.Reset)
+	if roomsWithCalendar == 0 {
+		fmt.Printf("  %sNo rooms with Google Calendar IDs found.%s\n", Fmt.Yellow, Fmt.Reset)
+		return nil
+	}
+
+	// Group events by month and save ICS files
+	affectedMonths := map[string]bool{}
+	eventsByMonth := map[string][]roomEvent{}
+
+	for _, re := range allRoomEvents {
+		ym := re.event.YearMonth()
+		if ym < sinceMonth || ym > untilMonth {
+			continue
+		}
+		affectedMonths[ym] = true
+		eventsByMonth[ym] = append(eventsByMonth[ym], re)
+	}
+
+	sortedMonths := []string{}
+	for ym := range affectedMonths {
+		sortedMonths = append(sortedMonths, ym)
+	}
+	sort.Strings(sortedMonths)
+
+	// Save ICS files per month (public.ics = all events with URLs across rooms)
+	for _, ym := range sortedMonths {
+		parts := strings.SplitN(ym, "-", 2)
+		year, month := parts[0], parts[1]
+
+		var icsEvents []ical.Event
+		for _, re := range eventsByMonth[ym] {
+			icsEvents = append(icsEvents, re.event)
+		}
+
+		content := ical.WrapICS(icsEvents, "-//Commons Hub Brussels//Room Calendars//EN")
+		writeMonthFile(dataDir, year, month, filepath.Join("calendars", "ics", "public.ics"), []byte(content))
 	}
 
 	// Process each month
 	var results []monthResult
-	for _, m := range monthsToProcess {
-		r, err := processMonth(dataDir, calendarID, m.year, m.month)
+	for _, ym := range sortedMonths {
+		parts := strings.SplitN(ym, "-", 2)
+		year, month := parts[0], parts[1]
+
+		r, err := processMonthFromRooms(dataDir, year, month, eventsByMonth[ym], force)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: error processing %s-%s: %v\n", m.year, m.month, err)
+			fmt.Fprintf(os.Stderr, "  Warning: error processing %s-%s: %v\n", year, month, err)
 			continue
 		}
 		if r != nil {
@@ -232,8 +230,9 @@ func EventsSync(args []string, version string) error {
 
 	// Generate yearly aggregates for affected years
 	years := map[string]bool{}
-	for _, m := range monthsToProcess {
-		years[m.year] = true
+	for _, ym := range sortedMonths {
+		parts := strings.SplitN(ym, "-", 2)
+		years[parts[0]] = true
 	}
 	for year := range years {
 		generateYearlyEvents(dataDir, year)
@@ -285,16 +284,6 @@ func EventsSync(args []string, version string) error {
 		}
 	}
 
-	ownCount := 0
-	communityCount := 0
-	for _, e := range futureEvents {
-		if e.CalendarSource == "luma-api" {
-			ownCount++
-		} else {
-			communityCount++
-		}
-	}
-
 	// Domain breakdown
 	domainCounts := map[string]int{}
 	for _, e := range futureEvents {
@@ -307,8 +296,18 @@ func EventsSync(args []string, version string) error {
 		domainCounts[domain]++
 	}
 
+	// By room breakdown
+	roomCounts := map[string]int{}
+	for _, e := range futureEvents {
+		src := e.CalendarSource
+		if src == "" {
+			src = "unknown"
+		}
+		roomCounts[src]++
+	}
+
 	// Count events.md entries
-	eventsMdPath := filepath.Join("public", "events.md")
+	eventsMdPath := filepath.Join(dataDir, "latest", "events.md")
 	eventsMdCount := 0
 	if data, err := os.ReadFile(eventsMdPath); err == nil {
 		re := regexp.MustCompile(`(?m)^### `)
@@ -316,7 +315,16 @@ func EventsSync(args []string, version string) error {
 	}
 
 	fmt.Printf("\n%s✓ Done!%s %d total events, %d upcoming\n", Fmt.Green, Fmt.Reset, len(allEvents), len(futureEvents))
-	fmt.Printf("  %sown: %d (via Luma API) · community: %d%s\n", Fmt.Dim, ownCount, communityCount, Fmt.Reset)
+
+	// Room breakdown
+	var roomParts []string
+	for room, count := range roomCounts {
+		roomParts = append(roomParts, fmt.Sprintf("%s: %d", room, count))
+	}
+	sort.Strings(roomParts)
+	if len(roomParts) > 0 {
+		fmt.Printf("  %s%s%s\n", Fmt.Dim, strings.Join(roomParts, ", "), Fmt.Reset)
+	}
 
 	// Domain breakdown sorted by count desc
 	type domainCount struct {
@@ -356,59 +364,15 @@ func fetchURL(rawURL string) (string, error) {
 	return string(data), nil
 }
 
-func fetchLumaForMonth(dataDir, calendarID, year, month string, force bool) {
-	lumaDir := filepath.Join(dataDir, year, month, "calendars", "luma")
-	lumaPath := filepath.Join(lumaDir, calendarID+".json")
-
-	if !force {
-		if _, err := os.Stat(lumaPath); err == nil {
-			return // Already exists
-		}
-	}
-
-	monthStart := fmt.Sprintf("%s-%s-01T00:00:00Z", year, month)
-	nextMonth := month
-	nextYear := year
-	if month == "12" {
-		nextMonth = "01"
-		y := 0
-		fmt.Sscanf(year, "%d", &y)
-		nextYear = fmt.Sprintf("%d", y+1)
-	} else {
-		m := 0
-		fmt.Sscanf(month, "%d", &m)
-		nextMonth = fmt.Sprintf("%02d", m+1)
-	}
-	monthEnd := fmt.Sprintf("%s-%s-01T00:00:00Z", nextYear, nextMonth)
-
-	entries, err := luma.GetAllCalendarEvents(calendarID, monthStart, monthEnd)
-	if err != nil || entries == nil {
-		return
-	}
-
-	// Flatten: extract event + tags from entries
-	type flatEvent struct {
-		luma.Event
-		Tags json.RawMessage `json:"tags,omitempty"`
-	}
-	var flat []flatEvent
-	for _, entry := range entries {
-		e := entry.Event
-		if e.APIID == "" {
-			e.APIID = entry.APIID
-		}
-		flat = append(flat, flatEvent{Event: e, Tags: entry.Tags})
-	}
-
-	data, _ := json.MarshalIndent(flat, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("calendars", "luma", calendarID+".json"), data)
+// roomEvent pairs an ical event with its room source
+type roomEvent struct {
+	event    ical.Event
+	roomSlug string
+	roomName string
 }
 
-func processMonth(dataDir, calendarID, year, month string) (*monthResult, error) {
+func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, force bool) (*monthResult, error) {
 	monthPath := filepath.Join(dataDir, year, month)
-	if _, err := os.Stat(monthPath); os.IsNotExist(err) {
-		return nil, nil
-	}
 
 	// Load existing event IDs to detect new ones
 	existingIDs := map[string]bool{}
@@ -424,49 +388,21 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 		}
 	}
 
-	// Load Luma API cached data
-	lumaEventsMap := map[string]*luma.Event{}
-	lumaEventsNameMap := map[string]*luma.Event{}
-	if calendarID != "" {
-		lumaPath := filepath.Join(dataDir, year, month, "calendars", "luma", calendarID+".json")
-		if data, err := os.ReadFile(lumaPath); err == nil {
-			var lumaEvents []luma.Event
-			if json.Unmarshal(data, &lumaEvents) == nil {
-				for i := range lumaEvents {
-					e := &lumaEvents[i]
-					lumaEventsMap[e.APIID] = e
-					if e.Name != "" {
-						lumaEventsNameMap[strings.ToLower(e.Name)] = e
-					}
-				}
-			}
-		}
-	}
-
-	// Load ICS events
-	icsPath := filepath.Join(dataDir, year, month, "calendars", "ics", "public.ics")
-	icsData, err := os.ReadFile(icsPath)
-	if err != nil {
-		return nil, nil // No ICS data for this month
-	}
-
-	icsEvents, err := ical.ParseICS(string(icsData))
-	if err != nil {
-		return nil, err
+	// Check if we can skip (same event count, not forced)
+	if !force && len(existingIDs) == len(roomEvents) && len(existingIDs) > 0 {
+		return nil, nil
 	}
 
 	processedIDs := map[string]bool{}
 	var newEvents []newEventInfo
 	var fullEvents []FullEvent
 
-	for _, icsEv := range icsEvents {
-		eventID := strings.TrimSuffix(icsEv.UID, "@events.lu.ma")
+	for _, re := range roomEvents {
+		icsEv := re.event
+		eventID := icsEv.UID
 		name := icsEv.Summary
 		eventURL := icsEv.URL
 		location := icsEv.Location
-		source := "ical"
-		calSrc := "luma"
-		metadataSource := "none"
 
 		// Check if location is a URL
 		if location != "" && (strings.HasPrefix(location, "http://") || strings.HasPrefix(location, "https://")) {
@@ -474,79 +410,30 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 			location = "Commons Hub Brussels, Rue de la Madeleine 51, 1000 Bruxelles, Belgium"
 		}
 
-		// Try to find Luma data — check cache first, avoid API calls
-		var lumaEv *luma.Event
-
-		// 1. Direct match by evt- API ID (most reliable)
-		if strings.HasPrefix(eventID, "evt-") {
-			lumaEv = lumaEventsMap[eventID]
-		}
-
-		// 2. Match by slug extracted from URL
-		if lumaEv == nil {
-			lumaSlug := extractLumaSlug(eventURL)
-			if lumaSlug == "" {
-				lumaSlug = extractLumaSlug(icsEv.Location)
-			}
-			if lumaSlug != "" {
-				lumaEv = lumaEventsMap[lumaSlug]
+		// Try to extract URL from description if none set
+		if eventURL == "" && icsEv.Description != "" {
+			urlRe := regexp.MustCompile(`https?://[^\s\n<>"']+`)
+			if m := urlRe.FindString(icsEv.Description); m != "" {
+				eventURL = strings.TrimRight(m, ".,;:!?")
 			}
 		}
 
-		// 3. Match by name
-		if lumaEv == nil {
-			lumaEv = lumaEventsNameMap[strings.ToLower(name)]
+		// Skip events without a URL (these are regular bookings, not public events)
+		if eventURL == "" {
+			continue
 		}
 
-		// 4. No API call — events not in cache are community events
-		//    we don't own (GetEvent returns 403 anyway). Fall through
-		//    to OG scraping instead.
-
-		var coverImage string
 		startAt := icsEv.Start.Format(time.RFC3339)
 		endAt := ""
 		if !icsEv.End.IsZero() {
 			endAt = icsEv.End.Format(time.RFC3339)
 		}
 
-		if lumaEv != nil {
-			eventID = lumaEv.APIID
-			source = "luma"
-			calSrc = "luma-api"
-			coverImage = lumaEv.CoverURL
-			eventURL = lumaEv.URL
-			if lumaEv.StartAt != "" {
-				startAt = lumaEv.StartAt
-			}
-			if lumaEv.EndAt != "" {
-				endAt = lumaEv.EndAt
-			}
-			metadataSource = "Luma API"
-
-			// Parse geo address
-			if lumaEv.GeoAddressJSON != nil {
-				var geo luma.GeoAddress
-				if json.Unmarshal(lumaEv.GeoAddressJSON, &geo) == nil && geo.FullAddress != "" {
-					location = geo.FullAddress
-				}
-			}
-		} else {
-			// Try to extract URL from description if none
-			if eventURL == "" && icsEv.Description != "" {
-				re := regexp.MustCompile(`https?://[^\s\n<>"']+`)
-				if m := re.FindString(icsEv.Description); m != "" {
-					eventURL = strings.TrimRight(m, ".,;:!?")
-				}
-			}
-
-			// Fallback: scrape og:image
-			if eventURL != "" {
-				ogImg := og.FetchOGImage(eventURL)
-				if ogImg != "" {
-					coverImage = ogImg
-					metadataSource = "scraping"
-				}
-			}
+		// Scrape og:image for cover
+		var coverImage string
+		ogImg := og.FetchOGImage(eventURL)
+		if ogImg != "" {
+			coverImage = ogImg
 		}
 
 		if processedIDs[eventID] {
@@ -556,142 +443,30 @@ func processMonth(dataDir, calendarID, year, month string) (*monthResult, error)
 
 		// Track new events
 		if !existingIDs[eventID] {
-			newEvents = append(newEvents, newEventInfo{name, startAt, metadataSource})
+			newEvents = append(newEvents, newEventInfo{name, startAt, re.roomSlug})
 		}
 
 		// Preserve existing metadata
 		metadata := existingMetadata[eventID]
 
-		// Build tags JSON from lumaEv
-		var tagsJSON json.RawMessage
-		if lumaEv != nil && lumaEv.Tags != nil {
-			tagsJSON = lumaEv.Tags
-		}
-
-		// Build lumaData JSON
-		var lumaDataJSON json.RawMessage
-		if lumaEv != nil {
-			ld := map[string]interface{}{
-				"api_id":           lumaEv.APIID,
-				"start_at":         lumaEv.StartAt,
-				"end_at":           lumaEv.EndAt,
-				"timezone":         lumaEv.Timezone,
-				"url":              lumaEv.URL,
-				"cover_url":        lumaEv.CoverURL,
-				"geo_address_json": lumaEv.GeoAddressJSON,
-				"meeting_url":      lumaEv.MeetingURL,
-				"visibility":       lumaEv.Visibility,
-				"event_type":       lumaEv.EventType,
-				"capacity":         lumaEv.Capacity,
-				"guest_count":      lumaEv.GuestCount,
-				"hosts":            lumaEv.Hosts,
-				"hosted_by":        lumaEv.HostedBy,
-			}
-			lumaDataJSON, _ = json.Marshal(ld)
-		}
-
-		// Description priority
-		desc := ""
-		if lumaEv != nil && lumaEv.Description != "" {
-			desc = lumaEv.Description
-		} else {
-			desc = icsEv.Description
-		}
-
-		tz := ""
-		if lumaEv != nil {
-			tz = lumaEv.Timezone
+		// Default location if not set
+		if location == "" {
+			location = "Commons Hub Brussels, Rue de la Madeleine 51, 1000 Bruxelles, Belgium"
 		}
 
 		fullEvents = append(fullEvents, FullEvent{
 			ID:             eventID,
 			Name:           name,
-			Description:    desc,
+			Description:    icsEv.Description,
 			StartAt:        startAt,
 			EndAt:          endAt,
-			Timezone:       tz,
 			Location:       location,
 			URL:            eventURL,
 			CoverImage:     coverImage,
-			Source:          source,
-			CalendarSource: calSrc,
-			Tags:           tagsJSON,
-			LumaData:       lumaDataJSON,
+			Source:          "calendar",
+			CalendarSource: re.roomSlug,
 			Metadata:       metadata,
 		})
-	}
-
-	// Add Luma API events not in ICS
-	if calendarID != "" {
-		lumaPath := filepath.Join(dataDir, year, month, "calendars", "luma", calendarID+".json")
-		if data, err := os.ReadFile(lumaPath); err == nil {
-			var lumaAPIEvents []luma.Event
-			if json.Unmarshal(data, &lumaAPIEvents) == nil {
-				for _, le := range lumaAPIEvents {
-					if le.APIID == "" || processedIDs[le.APIID] {
-						continue
-					}
-					if le.StartAt == "" {
-						continue
-					}
-					processedIDs[le.APIID] = true
-
-					metadata := existingMetadata[le.APIID]
-
-					var tagsJSON json.RawMessage
-					if le.Tags != nil {
-						tagsJSON = le.Tags
-					}
-
-					ld := map[string]interface{}{
-						"api_id":           le.APIID,
-						"start_at":         le.StartAt,
-						"end_at":           le.EndAt,
-						"timezone":         le.Timezone,
-						"url":              le.URL,
-						"cover_url":        le.CoverURL,
-						"geo_address_json": le.GeoAddressJSON,
-						"meeting_url":      le.MeetingURL,
-						"visibility":       le.Visibility,
-						"event_type":       le.EventType,
-						"capacity":         le.Capacity,
-						"guest_count":      le.GuestCount,
-						"hosts":            le.Hosts,
-						"hosted_by":        le.HostedBy,
-					}
-					lumaDataJSON, _ := json.Marshal(ld)
-
-					location := ""
-					if le.GeoAddressJSON != nil {
-						var geo luma.GeoAddress
-						if json.Unmarshal(le.GeoAddressJSON, &geo) == nil {
-							location = geo.FullAddress
-						}
-					}
-
-					fullEvents = append(fullEvents, FullEvent{
-						ID:             le.APIID,
-						Name:           le.Name,
-						Description:    le.Description,
-						StartAt:        le.StartAt,
-						EndAt:          le.EndAt,
-						Timezone:       le.Timezone,
-						Location:       location,
-						URL:            le.URL,
-						CoverImage:     le.CoverURL,
-						Source:         "luma",
-						CalendarSource: "luma-api",
-						Tags:           tagsJSON,
-						LumaData:       lumaDataJSON,
-						Metadata:       metadata,
-					})
-
-					if !existingIDs[le.APIID] {
-						newEvents = append(newEvents, newEventInfo{le.Name, le.StartAt, "Luma API"})
-					}
-				}
-			}
-		}
 	}
 
 	// Sort by start date
@@ -835,7 +610,7 @@ func csvEscape(s string) string {
 
 func generateMarkdownFiles(dataDir string) {
 	generateEventsMd(dataDir)
-	generateRoomsMd()
+	generateRoomsMd(dataDir)
 }
 
 func generateEventsMd(dataDir string) {
@@ -882,17 +657,11 @@ func generateEventsMd(dataDir string) {
 		return events[i].StartAt < events[j].StartAt
 	})
 
-	settings, _ := LoadSettings()
-	icsURL := ""
-	if settings != nil {
-		icsURL = settings.Calendars.Google
-	}
-
 	baseURL := "https://commonshub.brussels"
 
 	var eventsMarkdown string
 	if len(events) == 0 {
-		eventsMarkdown = fmt.Sprintf("No upcoming events found. Check our [Luma calendar](https://lu.ma/commonshub) or [website](%s) for the latest updates.", baseURL)
+		eventsMarkdown = fmt.Sprintf("No upcoming events found. Check our [website](%s) for the latest updates.", baseURL)
 	} else {
 		var parts []string
 		for _, e := range events {
@@ -940,9 +709,6 @@ func generateEventsMd(dataDir string) {
 	}
 
 	icsLine := ""
-	if icsURL != "" {
-		icsLine = fmt.Sprintf("- [Google Calendar (ICS)](%s)\n", icsURL)
-	}
 
 	content := fmt.Sprintf(`# Upcoming Events at Commons Hub Brussels
 
@@ -950,12 +716,7 @@ func generateEventsMd(dataDir string) {
 
 This file is automatically generated. Last updated: %s
 
-## Calendar
-
-You can subscribe to our calendar:
-- [Luma calendar](https://lu.ma/commonshub)
-%s
-## Upcoming Events
+%s## Upcoming Events
 
 %s
 
@@ -966,11 +727,12 @@ You can subscribe to our calendar:
 Want to host an event at Commons Hub Brussels? [Contact us](%s/contact) or [book a room](%s/rooms).
 `, time.Now().UTC().Format(time.RFC3339), icsLine, eventsMarkdown, baseURL, baseURL)
 
-	os.MkdirAll("public", 0755)
-	os.WriteFile(filepath.Join("public", "events.md"), []byte(content), 0644)
+	latestDir := filepath.Join(dataDir, "latest")
+	os.MkdirAll(latestDir, 0755)
+	os.WriteFile(filepath.Join(latestDir, "events.md"), []byte(content), 0644)
 }
 
-func generateRoomsMd() {
+func generateRoomsMd(dataDir string) {
 	rooms, err := LoadRooms()
 	if err != nil || len(rooms) == 0 {
 		return
@@ -1039,19 +801,8 @@ Rooms can be booked by visiting the individual room pages above and filling out 
 For questions about bookings, contact us at hello@commonshub.brussels or visit [commonshub.brussels/contact](%s/contact).
 `, time.Now().UTC().Format(time.RFC3339), roomsMarkdown, baseURL)
 
-	os.MkdirAll("public", 0755)
-	os.WriteFile(filepath.Join("public", "rooms.md"), []byte(content), 0644)
+	latestDir := filepath.Join(dataDir, "latest")
+	os.MkdirAll(latestDir, 0755)
+	os.WriteFile(filepath.Join(latestDir, "rooms.md"), []byte(content), 0644)
 }
 
-var lumaSlugRe = regexp.MustCompile(`lu\.ma/([a-zA-Z0-9-]+)`)
-
-func extractLumaSlug(text string) string {
-	if text == "" {
-		return ""
-	}
-	m := lumaSlugRe.FindStringSubmatch(text)
-	if m != nil {
-		return m[1]
-	}
-	return ""
-}

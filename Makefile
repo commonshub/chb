@@ -1,13 +1,13 @@
 .PHONY: build build-small clean
 
-OUTPUT = ../dist/chb
+OUTPUT = ./dist/chb
 
 build:
-	@mkdir -p ../dist
+	@mkdir -p ./dist
 	go build -o $(OUTPUT) .
 
 build-small:
-	@mkdir -p ../dist
+	@mkdir -p ./dist
 	go build -ldflags="-s -w" -trimpath -o $(OUTPUT) .
 
 clean:
