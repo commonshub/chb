@@ -1,145 +1,73 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
 )
 
-type commitInfo struct {
-	SHA    string `json:"sha"`
-	Commit struct {
-		Author struct {
-			Date string `json:"date"`
-		} `json:"author"`
-		Message string `json:"message"`
-	} `json:"commit"`
-}
+// Build-time variables — can be injected via ldflags, but also
+// auto-detected from Go build info (VCS stamps, pseudo-versions).
+var (
+	Version    string // set from main.go
+	CommitSHA  string
+	CommitDate string
+	CommitMsg  string
+)
 
-type buildInfo struct {
-	SHA     string
-	Date    string
-	ModVer  string // module pseudo-version from go install
-}
-
-func getBuildInfo() buildInfo {
-	info, ok := debug.ReadBuildInfo()
+func init() {
+	bi, ok := debug.ReadBuildInfo()
 	if !ok {
-		return buildInfo{}
+		return
 	}
-	var b buildInfo
-	// Module version (e.g. v0.0.0-20260318154113-2a37e7f84358)
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		b.ModVer = info.Main.Version
-		// Extract SHA from pseudo-version: v0.0.0-YYYYMMDDHHMMSS-abcdef123456
-		parts := strings.Split(info.Main.Version, "-")
-		if len(parts) == 3 {
-			b.SHA = parts[2] // 12-char commit hash
-			// Parse timestamp from pseudo-version
-			if t, err := time.Parse("20060102150405", parts[1]); err == nil {
-				b.Date = t.Format("2006-01-02 15:04")
-			}
-		}
-	}
-	// VCS info (available when built from local git checkout)
-	for _, s := range info.Settings {
+	// VCS info from local git build
+	for _, s := range bi.Settings {
 		switch s.Key {
 		case "vcs.revision":
-			b.SHA = s.Value
+			if CommitSHA == "" {
+				CommitSHA = s.Value
+			}
 		case "vcs.time":
-			if t, err := time.Parse(time.RFC3339, s.Value); err == nil {
-				b.Date = t.Format("2006-01-02 15:04")
-			} else {
-				b.Date = s.Value
+			if CommitDate == "" {
+				if t, err := time.Parse(time.RFC3339, s.Value); err == nil {
+					CommitDate = t.Format("2006-01-02 15:04")
+				} else {
+					CommitDate = s.Value
+				}
 			}
 		}
 	}
-	return b
+	// Pseudo-version fallback (from go install)
+	if CommitSHA == "" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		parts := strings.Split(bi.Main.Version, "-")
+		if len(parts) == 3 {
+			CommitSHA = parts[2]
+			if t, err := time.Parse("20060102150405", parts[1]); err == nil {
+				CommitDate = t.Format("2006-01-02 15:04")
+			}
+		}
+	}
 }
 
-// CheckLatestVersion checks GitHub for the latest commit and compares
-func CheckLatestVersion(currentVersion string) {
-	bi := getBuildInfo()
+// PrintVersion prints version info to stdout.
+func PrintVersion() {
+	f := Fmt
+	short := CommitSHA
+	if len(short) > 7 {
+		short = short[:7]
+	}
 
-	fmt.Printf("chb v%s", currentVersion)
-	if bi.SHA != "" {
-		short := bi.SHA
-		if len(short) > 7 {
-			short = short[:7]
-		}
-		fmt.Printf(" (%s, %s)", short, bi.Date)
+	fmt.Printf("chb %s%s%s", f.Bold, Version, f.Reset)
+	if short != "" {
+		fmt.Printf(" %s(%s, %s)%s", f.Dim, short, CommitDate, f.Reset)
 	}
 	fmt.Println()
-
-	fmt.Printf("%sChecking for updates...%s", Fmt.Dim, Fmt.Reset)
-
-	latest, err := getLatestCommit()
-	if err != nil {
-		fmt.Printf("\r\033[K%sCould not check for updates:%s %v\n", Fmt.Yellow, Fmt.Reset, err)
-		return
+	fmt.Printf("  %sOS:%s    %s/%s\n", f.Cyan, f.Reset, runtime.GOOS, runtime.GOARCH)
+	if CommitMsg != "" {
+		fmt.Printf("  %sCommit:%s %s\n", f.Cyan, f.Reset, firstLine(CommitMsg))
 	}
-
-	fmt.Print("\r\033[K")
-
-	if latest == nil {
-		return
-	}
-
-	latestShort := latest.SHA[:7]
-	ts := formatCommitDate(latest.Commit.Author.Date)
-	msg := firstLine(latest.Commit.Message)
-
-	isUpToDate := false
-	if bi.SHA != "" {
-		// VCS revision is 40 chars, pseudo-version hash is 12 chars
-		// Compare by checking if either is a prefix of the other
-		biShort := bi.SHA
-		if len(biShort) > 12 {
-			biShort = biShort[:12]
-		}
-		isUpToDate = strings.HasPrefix(latest.SHA, biShort)
-	}
-
-	if isUpToDate {
-		fmt.Printf("%s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
-	} else {
-		fmt.Printf("%sLatest:%s %s (%s) %s%s%s\n", Fmt.Yellow, Fmt.Reset, latestShort, ts, Fmt.Dim, msg, Fmt.Reset)
-		if bi.SHA != "" {
-			fmt.Printf("%sUpdate available!%s Run %schb update%s to update\n", Fmt.Yellow, Fmt.Reset, Fmt.Bold, Fmt.Reset)
-		} else {
-			fmt.Printf("Run %schb update%s to get the latest\n", Fmt.Bold, Fmt.Reset)
-		}
-	}
-}
-
-func getLatestCommit() (*commitInfo, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/CommonsHub/chb/commits/main")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
-
-	var info commitInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, err
-	}
-	return &info, nil
-}
-
-func formatCommitDate(isoDate string) string {
-	t, err := time.Parse(time.RFC3339, isoDate)
-	if err != nil {
-		return isoDate
-	}
-	return t.Format("2006-01-02 15:04")
 }
 
 func firstLine(s string) string {

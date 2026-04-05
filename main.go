@@ -7,7 +7,7 @@ import (
 	"github.com/CommonsHub/chb/cmd"
 )
 
-const VERSION = "2.1.3"
+const VERSION = "2.1.4"
 
 func main() {
 	cmd.LoadEnvFromConfig()
@@ -19,18 +19,22 @@ func main() {
 		return
 	}
 
+	// Set version for cmd package
+	cmd.Version = VERSION
+
 	switch args[0] {
 	case "--help", "-h", "help":
 		cmd.PrintHelp(VERSION)
 	case "--version", "-v", "version":
-		cmd.CheckLatestVersion(VERSION)
+		cmd.PrintVersion()
 	case "setup":
 		if err := cmd.Setup(); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 			os.Exit(1)
 		}
 	case "update":
-		if err := cmd.Update(); err != nil {
+		yes := cmd.HasFlag(args[1:], "--yes", "-y")
+		if err := cmd.Update(yes); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 			os.Exit(1)
 		}

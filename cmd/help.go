@@ -31,10 +31,11 @@ func PrintHelp(version string) {
 
 %sOPTIONS%s
   %s--help, -h%s          Show help for a command
-  %s--version, -v%s       Show version and check for updates
+  %s--version, -v%s       Show version info
   %ssetup%s               Configure API keys interactively
-  %sversion%s             Show version and check for updates
-  %supdate%s              Update chb to the latest version
+  %sversion%s             Show version info
+  %supdate%s              Check for updates and install latest release
+  %supdate -y%s           Update without confirmation
 
 %sEXAMPLES%s
   %s$ chb events                          # next 10 upcoming events
