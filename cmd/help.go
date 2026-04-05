@@ -161,21 +161,7 @@ messages (Discord), members (Stripe/Odoo)
 	)
 }
 
-func PrintStatsHelp() {
-	f := Fmt
-	fmt.Printf(`
-%schb stats%s — Show data directory statistics
-
-%sUSAGE%s
-  %schb stats%s
-
-Shows total data size, breakdown by month, and breakdown by data type.
-`,
-		f.Bold, f.Reset,
-		f.Bold, f.Reset,
-		f.Cyan, f.Reset,
-	)
-}
+// PrintStatsHelp is defined in stats.go
 
 func PrintEventsHelp() {
 	f := Fmt
