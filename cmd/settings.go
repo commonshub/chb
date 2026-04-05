@@ -82,6 +82,18 @@ func DownloadSettings(dir string) error {
 	return nil
 }
 
+// ContributionTokenSettings holds the contribution token config from settings.json
+type ContributionTokenSettings struct {
+	Chain       string `json:"chain"`
+	ChainID     int    `json:"chainId"`
+	RpcUrl      string `json:"rpcUrl,omitempty"`
+	ExplorerUrl string `json:"explorerUrl,omitempty"`
+	Address     string `json:"address"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Decimals    int    `json:"decimals"`
+}
+
 // Settings represents settings.json
 type Settings struct {
 	Luma struct {
@@ -92,8 +104,9 @@ type Settings struct {
 		Luma   string `json:"luma"`
 	} `json:"calendars"`
 	Discord    DiscordSettings    `json:"discord"`
-	Finance    FinanceSettings    `json:"finance"`
-	Membership MembershipSettings `json:"membership"`
+	Finance            FinanceSettings            `json:"finance"`
+	Membership         MembershipSettings         `json:"membership"`
+	ContributionToken  *ContributionTokenSettings `json:"contributionToken"`
 }
 
 // MembershipSettings holds membership provider configuration

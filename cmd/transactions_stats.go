@@ -23,10 +23,11 @@ func TransactionsStats(args []string) {
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
 	type sourceStats struct {
-		Count   int     `json:"count"`
-		In      float64 `json:"in"`
-		Out     float64 `json:"out"`
-		Net     float64 `json:"net"`
+		Count    int     `json:"count"`
+		In       float64 `json:"in"`
+		Out      float64 `json:"out"`
+		Net      float64 `json:"net"`
+		Currency string  `json:"currency,omitempty"`
 	}
 
 	type monthStats struct {
@@ -100,10 +101,22 @@ func TransactionsStats(args []string) {
 					source = "unknown"
 				}
 
-				ss, ok := ms.Sources[source]
+				// Track currency per source (e.g. CHT vs EUR)
+				currency := tx.Currency
+				if currency == "" {
+					currency = "EUR"
+				}
+
+				// Key sources by "source:currency" when non-EUR to keep them separate
+				sourceKey := source
+				if !isEURCurrency(currency) {
+					sourceKey = source + ":" + currency
+				}
+
+				ss, ok := ms.Sources[sourceKey]
 				if !ok {
-					ss = &sourceStats{}
-					ms.Sources[source] = ss
+					ss = &sourceStats{Currency: currency}
+					ms.Sources[sourceKey] = ss
 				}
 
 				ss.Count++
@@ -111,14 +124,23 @@ func TransactionsStats(args []string) {
 				totalCount++
 
 				absAmount := math.Abs(amount)
-				if tx.Type == "CREDIT" || amount > 0 {
-					ss.In += absAmount
-					ms.In += absAmount
-					totalIn += absAmount
+				if isEURCurrency(currency) {
+					if tx.Type == "CREDIT" || amount > 0 {
+						ss.In += absAmount
+						ms.In += absAmount
+						totalIn += absAmount
+					} else {
+						ss.Out += absAmount
+						ms.Out += absAmount
+						totalOut += absAmount
+					}
 				} else {
-					ss.Out += absAmount
-					ms.Out += absAmount
-					totalOut += absAmount
+					// Non-EUR token: track in/out without adding to EUR totals
+					if tx.Type == "CREDIT" || amount > 0 {
+						ss.In += absAmount
+					} else {
+						ss.Out += absAmount
+					}
 				}
 			}
 
@@ -179,22 +201,30 @@ func TransactionsStats(args []string) {
 			f.Dim, fmtEURSigned(mNet), f.Reset,
 		)
 
-		// Sources sorted by volume
-		var sources []struct {
+		// Separate EUR and non-EUR sources
+		type namedSource struct {
 			name string
 			ss   *sourceStats
 		}
+		var eurSources []namedSource
+		var tokenSources []namedSource
+
 		for name, ss := range ms.Sources {
-			sources = append(sources, struct {
-				name string
-				ss   *sourceStats
-			}{name, ss})
+			if isEURCurrency(ss.Currency) || ss.Currency == "" {
+				eurSources = append(eurSources, namedSource{name, ss})
+			} else {
+				tokenSources = append(tokenSources, namedSource{name, ss})
+			}
 		}
-		sort.Slice(sources, func(i, j int) bool {
-			return (sources[i].ss.In + sources[i].ss.Out) > (sources[j].ss.In + sources[j].ss.Out)
+		sort.Slice(eurSources, func(i, j int) bool {
+			return (eurSources[i].ss.In + eurSources[i].ss.Out) > (eurSources[j].ss.In + eurSources[j].ss.Out)
+		})
+		sort.Slice(tokenSources, func(i, j int) bool {
+			return (tokenSources[i].ss.In + tokenSources[i].ss.Out) > (tokenSources[j].ss.In + tokenSources[j].ss.Out)
 		})
 
-		for _, s := range sources {
+		// Print EUR sources
+		for _, s := range eurSources {
 			parts := []string{}
 			if s.ss.In > 0 {
 				parts = append(parts, fmt.Sprintf("%s↑%s%-12s", f.Green, f.Reset, fmtEUR(s.ss.In)))
@@ -208,8 +238,40 @@ func TransactionsStats(args []string) {
 				strings.Join(parts, "  "),
 			)
 		}
+
+		// Print non-EUR token sources (e.g. CHT)
+		for _, s := range tokenSources {
+			sym := s.ss.Currency
+			parts := []string{}
+			if s.ss.In > 0 {
+				parts = append(parts, fmt.Sprintf("%s↑%s%-16s", f.Green, f.Reset, fmtToken(s.ss.In, sym)))
+			}
+			if s.ss.Out > 0 {
+				parts = append(parts, fmt.Sprintf("%s↓%s%-16s", f.Red, f.Reset, fmtToken(s.ss.Out, sym)))
+			}
+			// Strip ":SYMBOL" suffix from key for display
+			displayName := s.name
+			if idx := strings.Index(displayName, ":"); idx >= 0 {
+				displayName = displayName[:idx]
+			}
+			fmt.Printf("    %-10s  %4d tx  %s\n",
+				displayName+"("+sym+")",
+				s.ss.Count,
+				strings.Join(parts, "  "),
+			)
+		}
 	}
 	fmt.Println()
+}
+
+// isEURCurrency returns true for EUR-family currencies (EUR, EURe, EURb, etc.)
+func isEURCurrency(currency string) bool {
+	return currency == "" || strings.HasPrefix(strings.ToUpper(currency), "EUR")
+}
+
+// fmtToken formats a token amount with its symbol, e.g. "1,234.56 CHT"
+func fmtToken(v float64, symbol string) string {
+	return fmtNumber(math.Abs(v)) + " " + symbol
 }
 
 // fmtEUR formats a number as €12,345.67

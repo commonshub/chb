@@ -130,11 +130,46 @@ func TransactionsSync(args []string) error {
 	totalProcessed := 0
 
 	// --- Etherscan / blockchain sync ---
-	if sourceFilter == "" || sourceFilter == "gnosis" || sourceFilter == "etherscan" || sourceFilter == "blockchain" {
+	if sourceFilter == "" || sourceFilter == "gnosis" || sourceFilter == "celo" || sourceFilter == "etherscan" || sourceFilter == "blockchain" {
 		etherscanAccounts := make([]FinanceAccount, 0)
 		for _, acc := range settings.Finance.Accounts {
 			if acc.Provider == "etherscan" && acc.Token != nil {
 				etherscanAccounts = append(etherscanAccounts, acc)
+			}
+		}
+
+		// Auto-include the contribution token (CHT) if present in settings
+		if settings.ContributionToken != nil {
+			ct := settings.ContributionToken
+			// Only add if not already tracked (by token address match)
+			found := false
+			for _, acc := range etherscanAccounts {
+				if acc.Token != nil && strings.EqualFold(acc.Token.Address, ct.Address) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				etherscanAccounts = append(etherscanAccounts, FinanceAccount{
+					Name:     "🪙 " + ct.Name,
+					Slug:     strings.ToLower(ct.Symbol),
+					Provider: "etherscan",
+					Chain:    ct.Chain,
+					ChainID:  ct.ChainID,
+					Address:  "", // empty = fetch all transfers for this token
+					Currency: ct.Symbol,
+					Token: &struct {
+						Address  string `json:"address"`
+						Name     string `json:"name"`
+						Symbol   string `json:"symbol"`
+						Decimals int    `json:"decimals"`
+					}{
+						Address:  ct.Address,
+						Name:     ct.Name,
+						Symbol:   ct.Symbol,
+						Decimals: ct.Decimals,
+					},
+				})
 			}
 		}
 
@@ -394,8 +429,17 @@ func TransactionsSync(args []string) error {
 
 func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, error) {
 	baseURL := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d", acc.ChainID)
-	url := fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&address=%s&startblock=0&endblock=99999999&sort=desc&apikey=%s",
-		baseURL, acc.Token.Address, acc.Address, apiKey)
+
+	// If address is empty or equals the token contract, fetch ALL transfers for the token
+	// (contribution token mode — no specific wallet to filter on)
+	var url string
+	if acc.Address == "" || strings.EqualFold(acc.Address, acc.Token.Address) {
+		url = fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&startblock=0&endblock=99999999&sort=desc&apikey=%s",
+			baseURL, acc.Token.Address, apiKey)
+	} else {
+		url = fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&address=%s&startblock=0&endblock=99999999&sort=desc&apikey=%s",
+			baseURL, acc.Token.Address, acc.Address, apiKey)
+	}
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
