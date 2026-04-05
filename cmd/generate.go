@@ -1397,7 +1397,18 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		return 0
 	}
 
+	// Build set of all tracked wallet addresses to detect internal transfers
+	trackedAddresses := map[string]string{} // lowercase address -> account slug
+	if settings != nil {
+		for _, acc := range settings.Finance.Accounts {
+			if acc.Address != "" {
+				trackedAddresses[strings.ToLower(acc.Address)] = acc.Slug
+			}
+		}
+	}
+
 	var transactions []TransactionEntry
+	seenTxHash := map[string]bool{} // track blockchain tx hashes to dedup internal transfers
 
 	// Process Stripe transactions
 	stripeDir := filepath.Join(financeDir, "stripe")
@@ -1545,6 +1556,21 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					counterparty = tx.To
 				}
 
+				// Detect internal transfers: both from and to are tracked accounts
+				_, fromTracked := trackedAddresses[strings.ToLower(tx.From)]
+				_, toTracked := trackedAddresses[strings.ToLower(tx.To)]
+				isInternal := fromTracked && toTracked
+
+				if isInternal {
+					// Only keep one side of internal transfers (skip if we already saw this tx)
+					if seenTxHash[strings.ToLower(tx.Hash)] {
+						continue
+					}
+					seenTxHash[strings.ToLower(tx.Hash)] = true
+					// Mark as internal — neither in nor out for reporting
+					txType = "INTERNAL"
+				}
+
 				ts := int64(0)
 				fmt.Sscanf(tx.TimeStamp, "%d", &ts)
 
@@ -1679,6 +1705,12 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				if len(order.Meta.TxHashes) > 0 {
 					txHash = order.Meta.TxHashes[0]
 				}
+
+				// Skip if this on-chain tx was already counted from the blockchain sync
+				if txHash != order.ID && seenTxHash[strings.ToLower(txHash)] {
+					continue
+				}
+				seenTxHash[strings.ToLower(txHash)] = true
 
 				currency := strings.ToUpper(order.Currency)
 				if currency == "" {

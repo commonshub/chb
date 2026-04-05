@@ -123,6 +123,11 @@ func TransactionsStats(args []string) {
 				ms.Count++
 				totalCount++
 
+				// Skip internal transfers from In/Out totals
+				if tx.Type == "INTERNAL" {
+					continue
+				}
+
 				absAmount := math.Abs(amount)
 				if isEURCurrency(currency) {
 					if tx.Type == "CREDIT" || amount > 0 {
