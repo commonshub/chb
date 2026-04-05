@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,7 +17,7 @@ type dirSize struct {
 	files int
 }
 
-// Stats shows data directory statistics
+// Stats shows data directory statistics, optionally filtered by year or year/month.
 func Stats(args []string) {
 	if HasFlag(args, "--help", "-h", "help") {
 		PrintStatsHelp()
@@ -23,36 +25,41 @@ func Stats(args []string) {
 	}
 
 	dataDir := DataDir()
+	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
-	fmt.Printf("\n%sData Directory%s\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("  Location: %s\n", dataDir)
-
-	totalSize, totalFiles := dirStats(dataDir)
-	fmt.Printf("  Total:    %s (%d files)\n", formatBytes(totalSize), totalFiles)
-
-	// Check if data dir exists
-	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
-		fmt.Printf("\n  %sNo data yet. Run %schb sync%s to get started.%s\n\n", Fmt.Dim, Fmt.Bold, Fmt.Dim, Fmt.Reset)
-		return
+	// Header
+	if posFound {
+		label := posYear
+		if posMonth != "" {
+			label += "/" + posMonth
+		}
+		fmt.Printf("\n%s📊 Stats for %s%s\n", Fmt.Bold, label, Fmt.Reset)
+	} else {
+		fmt.Printf("\n%s📊 Stats (all time)%s\n", Fmt.Bold, Fmt.Reset)
 	}
+	fmt.Printf("  %sData:%s %s\n", Fmt.Dim, Fmt.Reset, dataDir)
 
-	// Breakdown by year/month
-	fmt.Printf("\n%sBy Month%s\n", Fmt.Bold, Fmt.Reset)
-
-	years, _ := os.ReadDir(dataDir)
+	// Collect matching year/month directories
 	type monthEntry struct {
+		year  string
+		month string
 		label string
+		path  string
 		size  int64
 		files int
 	}
 	var months []monthEntry
 
-	for _, yd := range years {
+	yearDirs, _ := os.ReadDir(dataDir)
+	for _, yd := range yearDirs {
 		if !yd.IsDir() {
 			continue
 		}
 		year := yd.Name()
 		if _, err := strconv.Atoi(year); err != nil || len(year) != 4 {
+			continue
+		}
+		if posFound && posMonth == "" && year != posYear {
 			continue
 		}
 
@@ -65,15 +72,26 @@ func Stats(args []string) {
 			if _, err := strconv.Atoi(month); err != nil || len(month) != 2 {
 				continue
 			}
+			if posFound && posMonth != "" && (year != posYear || month != posMonth) {
+				continue
+			}
 
 			mPath := filepath.Join(dataDir, year, month)
 			size, files := dirStats(mPath)
 			months = append(months, monthEntry{
+				year:  year,
+				month: month,
 				label: year + "/" + month,
+				path:  mPath,
 				size:  size,
 				files: files,
 			})
 		}
+	}
+
+	if len(months) == 0 {
+		fmt.Printf("\n  %sNo data found.%s\n\n", Fmt.Dim, Fmt.Reset)
+		return
 	}
 
 	// Sort chronologically
@@ -81,134 +99,171 @@ func Stats(args []string) {
 		return months[i].label < months[j].label
 	})
 
-	// Find max size for bar chart
-	var maxSize int64
+	// ── Storage breakdown ──
+	var totalSize int64
+	var totalFiles int
 	for _, m := range months {
-		if m.size > maxSize {
-			maxSize = m.size
-		}
+		totalSize += m.size
+		totalFiles += m.files
 	}
+	fmt.Printf("  %sStorage:%s %s (%d files)\n", Fmt.Dim, Fmt.Reset, formatBytes(totalSize), totalFiles)
+
+	// ── Transaction stats ──
+	type txSummary struct {
+		Count int
+		In    float64
+		Out   float64
+	}
+	grandTx := txSummary{}
+	monthTx := map[string]*txSummary{}
+	sourceTotals := map[string]*txSummary{}
 
 	for _, m := range months {
-		bar := makeBar(m.size, maxSize, 20)
-		fmt.Printf("  %s  %s %s%7s%s (%d files)\n", m.label, bar, Fmt.Dim, formatBytes(m.size), Fmt.Reset, m.files)
-	}
-
-	// Breakdown by data type
-	fmt.Printf("\n%sBy Type%s\n", Fmt.Bold, Fmt.Reset)
-
-	typeMap := make(map[string]dirSize)
-	for _, yd := range years {
-		if !yd.IsDir() {
+		txPath := filepath.Join(m.path, "generated", "transactions.json")
+		data, err := os.ReadFile(txPath)
+		if err != nil {
 			continue
 		}
-		year := yd.Name()
-		if _, err := strconv.Atoi(year); err != nil || len(year) != 4 {
+		var txFile TransactionsFile
+		if json.Unmarshal(data, &txFile) != nil {
 			continue
 		}
-		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, year))
-		for _, md := range monthDirs {
-			if !md.IsDir() {
+
+		ms := &txSummary{}
+		for _, tx := range txFile.Transactions {
+			if tx.Type == "INTERNAL" {
 				continue
 			}
-			month := md.Name()
-			if _, err := strconv.Atoi(month); err != nil || len(month) != 2 {
-				continue
+
+			currency := tx.Currency
+			if currency == "" {
+				currency = "EUR"
 			}
-			typeDirs, _ := os.ReadDir(filepath.Join(dataDir, year, month))
-			for _, td := range typeDirs {
-				if !td.IsDir() {
+			if !isEURCurrency(currency) {
+				continue // only EUR in the main summary
+			}
+
+			amount := tx.NormalizedAmount
+			if amount == 0 {
+				amount = tx.Amount
+			}
+
+			source := tx.Provider
+			if source == "etherscan" && tx.Chain != nil {
+				source = *tx.Chain
+			}
+			if source == "" {
+				source = "unknown"
+			}
+
+			ss, ok := sourceTotals[source]
+			if !ok {
+				ss = &txSummary{}
+				sourceTotals[source] = ss
+			}
+
+			absAmount := math.Abs(amount)
+			ms.Count++
+			ss.Count++
+			if tx.Type == "CREDIT" || amount > 0 {
+				ms.In += absAmount
+				ss.In += absAmount
+			} else {
+				ms.Out += absAmount
+				ss.Out += absAmount
+			}
+		}
+		monthTx[m.label] = ms
+		grandTx.Count += ms.Count
+		grandTx.In += ms.In
+		grandTx.Out += ms.Out
+	}
+
+	if grandTx.Count > 0 {
+		net := grandTx.In - grandTx.Out
+		fmt.Printf("\n%s💰 Transactions%s (%d)\n", Fmt.Bold, Fmt.Reset, grandTx.Count)
+		fmt.Printf("  %s↑ In:%s  %s\n", Fmt.Green, Fmt.Reset, fmtEUR(grandTx.In))
+		fmt.Printf("  %s↓ Out:%s %s\n", Fmt.Red, Fmt.Reset, fmtEUR(grandTx.Out))
+		fmt.Printf("  %sNet:%s  %s\n", Fmt.Bold, Fmt.Reset, fmtEURSigned(net))
+
+		// Per-source breakdown
+		type namedSource struct {
+			name string
+			s    *txSummary
+		}
+		var sources []namedSource
+		for name, s := range sourceTotals {
+			sources = append(sources, namedSource{name, s})
+		}
+		sort.Slice(sources, func(i, j int) bool {
+			return (sources[i].s.In + sources[i].s.Out) > (sources[j].s.In + sources[j].s.Out)
+		})
+		for _, s := range sources {
+			parts := []string{}
+			if s.s.In > 0 {
+				parts = append(parts, fmt.Sprintf("%s↑%s%s", Fmt.Green, Fmt.Reset, fmtEUR(s.s.In)))
+			}
+			if s.s.Out > 0 {
+				parts = append(parts, fmt.Sprintf("%s↓%s%s", Fmt.Red, Fmt.Reset, fmtEUR(s.s.Out)))
+			}
+			fmt.Printf("    %-10s %4d tx  %s\n", s.name, s.s.Count, strings.Join(parts, "  "))
+		}
+
+		// Per-month breakdown (only if multiple months)
+		if len(months) > 1 {
+			fmt.Printf("\n%s  By Month%s\n", Fmt.Bold, Fmt.Reset)
+			for _, m := range months {
+				ms, ok := monthTx[m.label]
+				if !ok || ms.Count == 0 {
 					continue
 				}
-				tName := td.Name()
-				tPath := filepath.Join(dataDir, year, month, tName)
-				size, files := dirStats(tPath)
-				ds := typeMap[tName]
-				ds.bytes += size
-				ds.files += files
-				typeMap[tName] = ds
+				mNet := ms.In - ms.Out
+				fmt.Printf("    %-8s %4d tx  %s↑%s%-12s %s↓%s%-12s %snet %s%s\n",
+					m.label, ms.Count,
+					Fmt.Green, Fmt.Reset, fmtEUR(ms.In),
+					Fmt.Red, Fmt.Reset, fmtEUR(ms.Out),
+					Fmt.Dim, fmtEURSigned(mNet), Fmt.Reset,
+				)
 			}
 		}
 	}
 
-	// Also check top-level non-year dirs (e.g. "latest")
-	for _, d := range years {
-		if !d.IsDir() {
-			continue
+	// ── Data types breakdown ──
+	typeMap := make(map[string]dirSize)
+	for _, m := range months {
+		typeDirs, _ := os.ReadDir(m.path)
+		for _, td := range typeDirs {
+			if !td.IsDir() {
+				continue
+			}
+			tName := td.Name()
+			tPath := filepath.Join(m.path, tName)
+			size, files := dirStats(tPath)
+			ds := typeMap[tName]
+			ds.bytes += size
+			ds.files += files
+			typeMap[tName] = ds
 		}
-		name := d.Name()
-		if _, err := strconv.Atoi(name); err == nil && len(name) == 4 {
-			continue // skip year dirs
-		}
-		size, files := dirStats(filepath.Join(dataDir, name))
-		ds := typeMap[name]
-		ds.bytes += size
-		ds.files += files
-		typeMap[name] = ds
 	}
 
-	// Sort by size descending
-	type typeEntry struct {
-		name  string
-		size  int64
-		files int
-	}
-	var types []typeEntry
-	for name, ds := range typeMap {
-		types = append(types, typeEntry{name, ds.bytes, ds.files})
-	}
-	sort.Slice(types, func(i, j int) bool {
-		return types[i].size > types[j].size
-	})
-
-	for _, t := range types {
-		icon := typeIcon(t.name)
-		fmt.Printf("  %s %-14s %7s (%d files)\n", icon, t.name, formatBytes(t.size), t.files)
-	}
-
-	// Images breakdown
-	fmt.Printf("\n%sImages%s\n", Fmt.Bold, Fmt.Reset)
-
-	imageExts := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true}
-	var imgSize int64
-	var imgCount int
-	var discordImgSize int64
-	var discordImgCount int
-	var eventImgSize int64
-	var eventImgCount int
-
-	filepath.Walk(dataDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
+	if len(typeMap) > 0 {
+		fmt.Printf("\n%s📁 By Type%s\n", Fmt.Bold, Fmt.Reset)
+		type typeEntry struct {
+			name  string
+			size  int64
+			files int
 		}
-		ext := strings.ToLower(filepath.Ext(info.Name()))
-		if !imageExts[ext] {
-			return nil
+		var types []typeEntry
+		for name, ds := range typeMap {
+			types = append(types, typeEntry{name, ds.bytes, ds.files})
 		}
-		imgSize += info.Size()
-		imgCount++
-
-		rel, _ := filepath.Rel(dataDir, p)
-		if strings.Contains(rel, filepath.Join("messages", "discord", "images")) {
-			discordImgSize += info.Size()
-			discordImgCount++
-		} else if strings.Contains(rel, filepath.Join("events", "images")) {
-			eventImgSize += info.Size()
-			eventImgCount++
+		sort.Slice(types, func(i, j int) bool {
+			return types[i].size > types[j].size
+		})
+		for _, t := range types {
+			icon := typeIcon(t.name)
+			fmt.Printf("  %s %-14s %7s (%d files)\n", icon, t.name, formatBytes(t.size), t.files)
 		}
-		return nil
-	})
-
-	if imgCount > 0 {
-		fmt.Printf("  📸 Total          %7s (%d files)\n", formatBytes(imgSize), imgCount)
-		if discordImgCount > 0 {
-			fmt.Printf("     Discord        %7s (%d files)\n", formatBytes(discordImgSize), discordImgCount)
-		}
-		if eventImgCount > 0 {
-			fmt.Printf("     Event covers   %7s (%d files)\n", formatBytes(eventImgSize), eventImgCount)
-		}
-	} else {
-		fmt.Printf("  %sNo images yet. Run %schb images sync%s to download.%s\n", Fmt.Dim, Fmt.Bold, Fmt.Dim, Fmt.Reset)
 	}
 
 	fmt.Println()
@@ -266,7 +321,44 @@ func typeIcon(name string) string {
 		return "💬"
 	case "latest":
 		return "📌"
+	case "generated":
+		return "⚙️"
 	default:
 		return "📁"
 	}
+}
+
+func PrintStatsHelp() {
+	f := Fmt
+	fmt.Printf(`
+%sUSAGE%s
+  %schb stats%s [year[/month]] [options]
+
+%sDESCRIPTION%s
+  Show storage, transaction, and data type statistics.
+  Without arguments, shows all-time stats.
+  With a year or year/month, filters to that period.
+
+%sOPTIONS%s
+  %s<year>%s              Show stats for a specific year (e.g. 2025)
+  %s<year/month>%s        Show stats for a specific month (e.g. 2026/03)
+  %s--help, -h%s          Show this help
+
+%sEXAMPLES%s
+  %schb stats%s                All-time overview
+  %schb stats 2025%s           2025 only
+  %schb stats 2026/03%s        March 2026 only
+`,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+	)
 }
