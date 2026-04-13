@@ -1,42 +1,55 @@
-# .github/workflows/release.yml
 name: Release
+
 on:
-push:
-  tags: ['v*']
+  push:
+    tags:
+      - "v*"
+
 permissions:
-contents: write
+  contents: write
+
 jobs:
-release:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-go@v5
-      with:
-	go-version: '1.22'
-    - name: Build binaries
-      run: |
-	VERSION=${GITHUB_REF_NAME}
-	LDFLAGS="-s -w -X github.com/CommonsHub/chb/cmd.CommitSHA=$(git rev-parse
-HEAD) -X 'github.com/CommonsHub/chb/cmd.CommitDate=$(git log -1 --format=%ci | cut
--d' ' -f1,2)' -X 'github.com/CommonsHub/chb/cmd.CommitMsg=$(git log -1
---format=%s)'"
-	mkdir -p dist
-	for GOOS in linux darwin; do
-	  for GOARCH in amd64 arm64; do
-	    GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "$LDFLAGS" -o dist/chb .
-	    tar -czf dist/chb_${GOOS}_${GOARCH}.tar.gz -C dist chb
-	    rm dist/chb
-	  done
-	done
-	cd dist && sha256sum *.tar.gz > checksums.txt
-    - name: Upload to release
-      env:
-	GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-	TAG=${GITHUB_REF_NAME}
-	if gh release view "$TAG" >/dev/null 2>&1; then
-	  gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt --clobber
-	else
-	  gh release create "$TAG" dist/*.tar.gz dist/checksums.txt --title
-"$TAG" --generate-notes
-	fi
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release assets
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          mkdir -p dist
+
+          for GOARCH in amd64 arm64; do
+            ASSET_BASENAME="chb_${VERSION}_linux_${GOARCH}"
+            GOOS=linux GOARCH="${GOARCH}" go build -trimpath -ldflags="-s -w" -o "dist/${ASSET_BASENAME}" .
+            tar -czf "dist/${ASSET_BASENAME}.tar.gz" -C dist "${ASSET_BASENAME}"
+          done
+
+          (
+            cd dist
+            sha256sum chb_* > checksums.txt
+          )
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            gh release create "${TAG}" dist/* --title "${TAG}" --generate-notes
+          fi

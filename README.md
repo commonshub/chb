@@ -4,11 +4,31 @@ Command-line tool for managing [Commons Hub Brussels](https://commonshub.brussel
 
 ## Install
 
+The recommended install path is to download a prebuilt binary from GitHub Releases. You do not need Go installed.
+
+See [docs/install.md](docs/install.md) for full instructions.
+
+Fastest install on Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CommonsHub/chb/main/install.sh | bash
+```
+
+Quick example for Linux `amd64`:
+
+```bash
+VERSION=v2.2.0
+curl -L -o /tmp/chb.tar.gz "https://github.com/CommonsHub/chb/releases/download/${VERSION}/chb_${VERSION#v}_linux_amd64.tar.gz"
+tar -xzf /tmp/chb.tar.gz -C /tmp
+install /tmp/chb_${VERSION#v}_linux_amd64 /usr/local/bin/chb
+chb --version
+```
+
+If you want a source-based developer install instead:
+
 ```bash
 go install github.com/CommonsHub/chb@latest
 ```
-
-This installs the `chb` binary directly into your `$GOPATH/bin`.
 
 Or clone and build directly:
 
@@ -39,6 +59,7 @@ COMMANDS
   sync                Sync everything
   generate            Generate derived data files
   report <period>     Generate monthly/yearly report
+  doctor              Audit DATA_DIR integrity
 
 OPTIONS
   --help, -h          Show help
