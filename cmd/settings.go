@@ -107,6 +107,7 @@ type Settings struct {
 	Finance            FinanceSettings            `json:"finance"`
 	Membership         MembershipSettings         `json:"membership"`
 	ContributionToken  *ContributionTokenSettings `json:"contributionToken"`
+	Accounting         *AccountingSettings        `json:"accounting,omitempty"`
 }
 
 // MembershipSettings holds membership provider configuration
@@ -117,9 +118,9 @@ type MembershipSettings struct {
 	Odoo OdooSettings `json:"odoo"`
 }
 
-// OdooSettings holds Odoo connection and product configuration
 // OdooSettings holds Odoo product configuration.
-// URL and DB come from env vars (ODOO_URL); DB is derived from the URL hostname.
+// URL and credentials come from env vars in ~/.chb/config.env.
+// Database is derived from the ODOO_URL hostname.
 type OdooSettings struct {
 	Products []OdooProduct `json:"products"`
 }
@@ -192,7 +193,45 @@ func LoadSettings() (*Settings, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+
+	// Override accounts from accounts.json if it exists
+	if _, err := os.Stat(accountsConfigPath()); err == nil {
+		configs := LoadAccountConfigs()
+		if len(configs) > 0 {
+			s.Finance.Accounts = ToFinanceAccounts(configs)
+		}
+	}
+
 	return &s, nil
+}
+
+// SaveAccountingSettings updates only the "accounting" key in settings.json,
+// preserving all other fields.
+func SaveAccountingSettings(acct *AccountingSettings) error {
+	dir := settingsDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Load raw JSON to preserve unknown fields
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	acctJSON, err := json.Marshal(acct)
+	if err != nil {
+		return err
+	}
+	raw["accounting"] = acctJSON
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0644)
 }
 
 func LoadRooms() ([]RoomInfo, error) {

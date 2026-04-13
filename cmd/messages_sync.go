@@ -63,20 +63,20 @@ type MessagesCacheFile struct {
 	ChannelID string           `json:"channelId"`
 }
 
-func MessagesSync(args []string) error {
+func MessagesSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
 		printMessagesSyncHelp()
-		return nil
+		return 0, nil
 	}
 
 	settings, err := LoadSettings()
 	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
+		return 0, fmt.Errorf("failed to load settings: %w", err)
 	}
 
 	token := os.Getenv("DISCORD_BOT_TOKEN")
 	if token == "" {
-		return fmt.Errorf("DISCORD_BOT_TOKEN environment variable required")
+		return 0, fmt.Errorf("DISCORD_BOT_TOKEN environment variable required")
 	}
 
 	force := HasFlag(args, "--force")
@@ -96,7 +96,7 @@ func MessagesSync(args []string) error {
 	// Get all channel IDs from settings
 	channels := GetDiscordChannelIDs(settings)
 	if len(channels) == 0 {
-		return fmt.Errorf("no Discord channels configured in settings.json")
+		return 0, fmt.Errorf("no Discord channels configured in settings.json")
 	}
 
 	totalMessages := 0
@@ -200,12 +200,28 @@ func MessagesSync(args []string) error {
 			fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
 		}
 
+		// Write ALL fetched messages to latest/ (the full batch, not split by month).
+		// This ensures latest/ has every message the API returned for this channel.
+		if len(messages) > 0 {
+			dataDir := DataDir()
+			relPath := filepath.Join("messages", "discord", channelID, "messages.json")
+			cache := MessagesCacheFile{
+				Messages:  messages,
+				CachedAt:  time.Now().UTC().Format(time.RFC3339),
+				ChannelID: channelID,
+			}
+			data, _ := json.MarshalIndent(cache, "", "  ")
+			latestPath := filepath.Join(dataDir, "latest", relPath)
+			os.MkdirAll(filepath.Dir(latestPath), 0755)
+			os.WriteFile(latestPath, data, 0644)
+		}
+
 		// Rate limit between channels
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	fmt.Printf("\n%s✓ Done!%s %d messages synced\n\n", Fmt.Green, Fmt.Reset, totalMessages)
-	return nil
+	return totalMessages, nil
 }
 
 // fetchLatestMessages fetches one page (100 messages) from a Discord channel.

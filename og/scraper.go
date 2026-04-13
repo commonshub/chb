@@ -8,50 +8,85 @@ import (
 	"golang.org/x/net/html"
 )
 
-// FetchOGImage fetches the og:image from a URL
-func FetchOGImage(pageURL string) string {
-	resp, err := http.Get(pageURL)
+// Meta holds Open Graph metadata extracted from a page.
+type Meta struct {
+	Title       string
+	Description string
+	Image       string
+}
+
+// Fetch fetches OG metadata (title, description, image) from a URL.
+func Fetch(pageURL string) Meta {
+	req, err := http.NewRequest("GET", pageURL, nil)
 	if err != nil {
-		return ""
+		return Meta{}
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; chb/1.0)")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Meta{}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return ""
+		return Meta{}
 	}
 
-	// Limit read to 1MB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return ""
+		return Meta{}
 	}
 
-	return extractOGImage(string(body))
+	return ExtractMeta(string(body))
 }
 
-func extractOGImage(htmlContent string) string {
+// FetchOGImage fetches the og:image from a URL (kept for backward compatibility).
+func FetchOGImage(pageURL string) string {
+	return Fetch(pageURL).Image
+}
+
+// ExtractMeta parses HTML and returns OG metadata.
+func ExtractMeta(htmlContent string) Meta {
+	var m Meta
 	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
 	for {
 		tt := tokenizer.Next()
 		switch tt {
 		case html.ErrorToken:
-			return ""
+			return m
 		case html.SelfClosingTagToken, html.StartTagToken:
 			t := tokenizer.Token()
 			if t.Data != "meta" {
 				continue
 			}
-			var property, content string
+			var property, name, content string
 			for _, a := range t.Attr {
 				switch a.Key {
 				case "property":
 					property = a.Val
+				case "name":
+					name = a.Val
 				case "content":
 					content = a.Val
 				}
 			}
-			if property == "og:image" && content != "" {
-				return content
+			if content == "" {
+				continue
+			}
+			switch {
+			case property == "og:image":
+				if m.Image == "" {
+					m.Image = content
+				}
+			case property == "og:title":
+				if m.Title == "" {
+					m.Title = content
+				}
+			case property == "og:description" || name == "og:description":
+				if m.Description == "" {
+					m.Description = content
+				}
 			}
 		}
 	}

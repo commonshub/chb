@@ -1,11 +1,13 @@
 package cmd
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // SyncAll runs all sync commands sequentially.
 // Each sync function fetches all data in one API call (or paginated),
-// then distributes to year/month folders. --all removes month filters
-// so all fetched data gets saved.
+// then distributes to year/month folders.
 func SyncAll(args []string, version string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		PrintSyncAllHelp()
@@ -18,24 +20,44 @@ func SyncAll(args []string, version string) error {
 		fmt.Printf("\n%s🔄 Syncing everything...%s\n", Fmt.Bold, Fmt.Reset)
 	}
 
-	fmt.Printf("\n%s━━━ Events ━━━%s\n", Fmt.Bold, Fmt.Reset)
-	if err := EventsSync(args, version); err != nil {
-		fmt.Printf("%s⚠ Events: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	var newBookings, newEvents, newTx, newMessages, newImages int
+
+	fmt.Printf("\n%s━━━ Calendars ━━━%s\n", Fmt.Bold, Fmt.Reset)
+	b, e, err := CalendarsSync(args)
+	if err != nil {
+		fmt.Printf("%s⚠ Calendars: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
 	}
+	newBookings = b
+	newEvents = e
 
 	fmt.Printf("\n%s━━━ Transactions ━━━%s\n", Fmt.Bold, Fmt.Reset)
-	if err := TransactionsSync(args); err != nil {
+	n, err := TransactionsSync(args)
+	if err != nil {
 		fmt.Printf("%s⚠ Transactions: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
 	}
-
-	fmt.Printf("\n%s━━━ Bookings ━━━%s\n", Fmt.Bold, Fmt.Reset)
-	if err := BookingsSync(args); err != nil {
-		fmt.Printf("%s⚠ Bookings: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
-	}
+	newTx = n
 
 	fmt.Printf("\n%s━━━ Messages ━━━%s\n", Fmt.Bold, Fmt.Reset)
-	if err := MessagesSync(args); err != nil {
+	n, err = MessagesSync(args)
+	if err != nil {
 		fmt.Printf("%s⚠ Messages: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	}
+	newMessages = n
+
+	// Odoo analytic sync (optional, only if configured)
+	if os.Getenv("ODOO_URL") != "" {
+		fmt.Printf("\n%s━━━ Odoo ━━━%s\n", Fmt.Bold, Fmt.Reset)
+		if _, err := OdooAnalyticSync(args); err != nil {
+			fmt.Printf("%s⚠ Odoo: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
+
+	// Members sync (optional, only if Stripe or Odoo configured)
+	if os.Getenv("STRIPE_SECRET_KEY") != "" || os.Getenv("ODOO_URL") != "" {
+		fmt.Printf("\n%s━━━ Members ━━━%s\n", Fmt.Bold, Fmt.Reset)
+		if err := MembersSync(args); err != nil {
+			fmt.Printf("%s⚠ Members: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		}
 	}
 
 	fmt.Printf("\n%s━━━ Generate ━━━%s\n", Fmt.Bold, Fmt.Reset)
@@ -44,10 +66,36 @@ func SyncAll(args []string, version string) error {
 	}
 
 	fmt.Printf("\n%s━━━ Images ━━━%s\n", Fmt.Bold, Fmt.Reset)
-	if err := ImagesSync(args); err != nil {
+	n, err = ImagesSync(args)
+	if err != nil {
 		fmt.Printf("%s⚠ Images: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
 	}
+	newImages = n
 
-	fmt.Printf("\n%s✓ All syncs complete!%s\n\n", Fmt.Green, Fmt.Reset)
+	// Print summary
+	hasAny := newBookings > 0 || newTx > 0 || newMessages > 0 || newImages > 0
+	if hasAny {
+		fmt.Printf("\n%s✓ Sync complete%s\n", Fmt.Green, Fmt.Reset)
+		if newBookings > 0 {
+			if newEvents > 0 {
+				fmt.Printf("  📅 %d new bookings, including %d events\n", newBookings, newEvents)
+			} else {
+				fmt.Printf("  📅 %d new bookings\n", newBookings)
+			}
+		}
+		if newTx > 0 {
+			fmt.Printf("  💰 %d new transactions\n", newTx)
+		}
+		if newMessages > 0 {
+			fmt.Printf("  💬 %d new messages\n", newMessages)
+		}
+		if newImages > 0 {
+			fmt.Printf("  📸 %d new images\n", newImages)
+		}
+	} else {
+		fmt.Printf("\n%s✓ Everything up to date%s\n", Fmt.Green, Fmt.Reset)
+	}
+	fmt.Println()
+
 	return nil
 }

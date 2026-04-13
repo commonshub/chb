@@ -20,9 +20,9 @@ var envKeys = []envKey{
 	{"STRIPE_SECRET_KEY", "Stripe (member/transaction sync)", "https://dashboard.stripe.com/apikeys"},
 	{"MONERIUM_CLIENT_ID", "Monerium OAuth client ID", "https://monerium.dev/docs/getting-started"},
 	{"MONERIUM_CLIENT_SECRET", "Monerium OAuth client secret", "https://monerium.dev/docs/getting-started"},
-	{"ODOO_URL", "Odoo instance URL (member sync)", "e.g. https://mycompany.odoo.com"},
-	{"ODOO_LOGIN", "Odoo login email (member sync)", "The email you use to log into Odoo"},
-	{"ODOO_PASSWORD", "Odoo password or API key (member sync)", "Settings → API Keys (or your password)"},
+	{"ODOO_URL", "Odoo instance URL", "e.g. https://mycompany.odoo.com"},
+	{"ODOO_LOGIN", "Odoo login email", "The email you use to log into Odoo"},
+	{"ODOO_PASSWORD", "Odoo password or API key", "Settings > API Keys (recommended)"},
 }
 
 // Setup runs the interactive key configuration wizard
@@ -44,6 +44,16 @@ func Setup() error {
 			fmt.Printf("  %d. %s  %-22s %s%s%s\n", i+1, status, k.Name, Fmt.Dim, k.Desc, Fmt.Reset)
 		}
 
+		// Nostr identity status
+		nostrStatus := fmt.Sprintf("%s☐%s", Fmt.Dim, Fmt.Reset)
+		nostrDesc := "Not configured"
+		if keys := LoadNostrKeys(); keys != nil {
+			nostrStatus = fmt.Sprintf("%s✓%s", Fmt.Green, Fmt.Reset)
+			nostrDesc = fmt.Sprintf("%s (%d relays)", keys.Npub[:20]+"...", len(keys.Relays))
+		}
+		fmt.Printf("\n  n. %s  %-22s %s%s%s\n", nostrStatus, "Nostr Identity", Fmt.Dim, nostrDesc, Fmt.Reset)
+		fmt.Printf("  o. %s  %-22s %s%s%s\n", fmt.Sprintf("%s·%s", Fmt.Dim, Fmt.Reset), "Odoo Category Mapping", Fmt.Dim, "Map Odoo analytic accounts to categories", Fmt.Reset)
+
 		fmt.Println()
 		fmt.Printf("Select key to configure (1-%d), or q to quit: ", len(envKeys))
 		input, _ := reader.ReadString('\n')
@@ -52,6 +62,14 @@ func Setup() error {
 		if input == "q" || input == "Q" || input == "" {
 			fmt.Println()
 			return nil
+		}
+		if input == "n" || input == "N" {
+			SetupNostr()
+			continue
+		}
+		if input == "o" || input == "O" {
+			SetupOdoo()
+			continue
 		}
 
 		idx := 0

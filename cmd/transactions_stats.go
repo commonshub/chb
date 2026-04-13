@@ -123,8 +123,8 @@ func TransactionsStats(args []string) {
 				ms.Count++
 				totalCount++
 
-				// Skip internal transfers from In/Out totals
-				if tx.Type == "INTERNAL" {
+				// Skip internal transfers and token transfers from In/Out totals
+				if tx.Type == "INTERNAL" || tx.Type == "TRANSFER" {
 					continue
 				}
 
@@ -192,13 +192,13 @@ func TransactionsStats(args []string) {
 	net := totalIn - totalOut
 
 	fmt.Printf("\n%s💰 Transactions: %d total%s\n", f.Bold, totalCount, f.Reset)
-	fmt.Printf("   %s↑ In:%s  %s\n", f.Green, f.Reset, fmtEUR(totalIn))
-	fmt.Printf("   %s↓ Out:%s %s\n", f.Red, f.Reset, fmtEUR(totalOut))
+	fmt.Printf("   %s↓ In:%s  %s\n", f.Green, f.Reset, fmtEUR(totalIn))
+	fmt.Printf("   %s↑ Out:%s %s\n", f.Red, f.Reset, fmtEUR(totalOut))
 	fmt.Printf("   %sNet:%s  %s\n\n", f.Bold, f.Reset, fmtEURSigned(net))
 
 	for _, ms := range months {
 		mNet := ms.In - ms.Out
-		fmt.Printf("  %s%-10s%s  %4d tx  %s↑%s%-12s  %s↓%s%-12s  %snet %s%s\n",
+		fmt.Printf("  %s%-10s%s  %4d tx  %s↓%s%-12s  %s↑%s%-12s  %snet %s%s\n",
 			f.Bold, ms.Month, f.Reset,
 			ms.Count,
 			f.Green, f.Reset, fmtEUR(ms.In),
@@ -232,10 +232,10 @@ func TransactionsStats(args []string) {
 		for _, s := range eurSources {
 			parts := []string{}
 			if s.ss.In > 0 {
-				parts = append(parts, fmt.Sprintf("%s↑%s%-12s", f.Green, f.Reset, fmtEUR(s.ss.In)))
+				parts = append(parts, fmt.Sprintf("%s↓%s%-12s", f.Green, f.Reset, fmtEUR(s.ss.In)))
 			}
 			if s.ss.Out > 0 {
-				parts = append(parts, fmt.Sprintf("%s↓%s%-12s", f.Red, f.Reset, fmtEUR(s.ss.Out)))
+				parts = append(parts, fmt.Sprintf("%s↑%s%-12s", f.Red, f.Reset, fmtEUR(s.ss.Out)))
 			}
 			fmt.Printf("    %-10s  %4d tx  %s\n",
 				s.name,
@@ -249,10 +249,10 @@ func TransactionsStats(args []string) {
 			sym := s.ss.Currency
 			parts := []string{}
 			if s.ss.In > 0 {
-				parts = append(parts, fmt.Sprintf("%s↑%s%-16s", f.Green, f.Reset, fmtToken(s.ss.In, sym)))
+				parts = append(parts, fmt.Sprintf("%s↓%s%-16s", f.Green, f.Reset, fmtToken(s.ss.In, sym)))
 			}
 			if s.ss.Out > 0 {
-				parts = append(parts, fmt.Sprintf("%s↓%s%-16s", f.Red, f.Reset, fmtToken(s.ss.Out, sym)))
+				parts = append(parts, fmt.Sprintf("%s↑%s%-16s", f.Red, f.Reset, fmtToken(s.ss.Out, sym)))
 			}
 			// Strip ":SYMBOL" suffix from key for display
 			displayName := s.name

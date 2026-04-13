@@ -277,6 +277,139 @@ func parseTxMetadata(txHash string, ev NostrEvent) *TxMetadata {
 	return m
 }
 
+// ── Annotation structures and fetch ──────────────────────────────────────────
+
+// TxAnnotation holds accounting annotations for a transaction from Nostr.
+type TxAnnotation struct {
+	URI          string        `json:"uri"`
+	Category     string        `json:"category,omitempty"`
+	Collective   string        `json:"collective,omitempty"`
+	Event        string        `json:"event,omitempty"`
+	Description  string        `json:"description,omitempty"`
+	Spread       []SpreadEntry `json:"spread,omitempty"`
+	NostrEventID string        `json:"nostrEventId"`
+	Author       string        `json:"author"`
+	CreatedAt    int64         `json:"createdAt"`
+}
+
+// SpreadEntry represents a monthly amount allocation.
+type SpreadEntry struct {
+	Month  string `json:"month"`
+	Amount string `json:"amount"`
+}
+
+// NostrAnnotationCache is saved per source per month.
+type NostrAnnotationCache struct {
+	FetchedAt   string                    `json:"fetchedAt"`
+	Annotations map[string]*TxAnnotation  `json:"annotations"` // keyed by URI
+}
+
+// FetchNostrAnnotations fetches kind 1111 annotations for a set of URIs.
+// Works with any URI scheme (ethereum:..., stripe:txn:..., etc.)
+func FetchNostrAnnotations(uris []string) (map[string]*TxAnnotation, error) {
+	if len(uris) == 0 {
+		return map[string]*TxAnnotation{}, nil
+	}
+
+	// Use custom relay list if user has configured one
+	relays := nostrRelays
+	if keys := LoadNostrKeys(); keys != nil && len(keys.Relays) > 0 {
+		relays = keys.Relays
+	}
+
+	// Batch URIs
+	var batches [][]string
+	for i := 0; i < len(uris); i += nostrBatchSize {
+		end := i + nostrBatchSize
+		if end > len(uris) {
+			end = len(uris)
+		}
+		batches = append(batches, uris[i:end])
+	}
+
+	// Collect events from all relays in parallel
+	eventsMu := sync.Mutex{}
+	allEvents := map[string]NostrEvent{}
+
+	var wg sync.WaitGroup
+	for _, relay := range relays {
+		wg.Add(1)
+		go func(relayURL string) {
+			defer wg.Done()
+			events, err := fetchFromRelay(relayURL, batches)
+			if err != nil {
+				return
+			}
+			eventsMu.Lock()
+			defer eventsMu.Unlock()
+			for id, ev := range events {
+				if existing, ok := allEvents[id]; !ok || ev.CreatedAt > existing.CreatedAt {
+					allEvents[id] = ev
+				}
+			}
+		}(relay)
+	}
+	wg.Wait()
+
+	// Parse annotations
+	annotations := map[string]*TxAnnotation{}
+	for _, ev := range allEvents {
+		for _, tag := range ev.Tags {
+			if len(tag) < 2 || (tag[0] != "i" && tag[0] != "I") {
+				continue
+			}
+			uri := tag[1]
+			existing, ok := annotations[uri]
+			if !ok || ev.CreatedAt > existing.CreatedAt {
+				annotations[uri] = parseAnnotation(uri, ev)
+			}
+		}
+	}
+
+	return annotations, nil
+}
+
+// parseAnnotation extracts accounting tags from a Nostr event.
+func parseAnnotation(uri string, ev NostrEvent) *TxAnnotation {
+	a := &TxAnnotation{
+		URI:          uri,
+		Description:  ev.Content,
+		NostrEventID: ev.ID,
+		Author:       ev.PubKey,
+		CreatedAt:    ev.CreatedAt,
+	}
+
+	for _, tag := range ev.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		switch tag[0] {
+		case "category":
+			a.Category = tag[1]
+		case "collective":
+			a.Collective = tag[1]
+		case "event":
+			a.Event = tag[1]
+		case "spread":
+			if len(tag) >= 3 {
+				a.Spread = append(a.Spread, SpreadEntry{Month: tag[1], Amount: tag[2]})
+			}
+		}
+	}
+
+	return a
+}
+
+// BuildStripeURI creates a NIP-73 URI for a Stripe balance transaction.
+func BuildStripeURI(txnID string) string {
+	return fmt.Sprintf("stripe:txn:%s", txnID)
+}
+
+// BuildBlockchainURI creates a NIP-73 URI for a blockchain transaction.
+func BuildBlockchainURI(chainID int, txHash string) string {
+	return fmt.Sprintf("ethereum:%d:tx:%s", chainID, strings.ToLower(txHash))
+}
+
 // parseAddressMetadata builds an AddressMetadata from a Nostr event.
 func parseAddressMetadata(addr string, ev NostrEvent) *AddressMetadata {
 	m := &AddressMetadata{

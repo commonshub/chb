@@ -13,10 +13,10 @@ import (
 
 // ImagesSync downloads images from Discord messages and Luma event covers
 // to the local data directory.
-func ImagesSync(args []string) error {
+func ImagesSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
 		printImagesSyncHelp()
-		return nil
+		return 0, nil
 	}
 
 	force := HasFlag(args, "--force")
@@ -37,7 +37,7 @@ func ImagesSync(args []string) error {
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
 		fmt.Println("⚠️  No data found. Run sync first.")
-		return nil
+		return 0, nil
 	}
 
 	totalDiscord := 0
@@ -91,7 +91,7 @@ func ImagesSync(args []string) error {
 	}
 	fmt.Println()
 
-	return nil
+	return totalDiscord + totalLuma, nil
 }
 
 // syncDiscordImages reads images.json for a month and downloads Discord attachments.

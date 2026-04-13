@@ -26,6 +26,10 @@ type StripeTransaction struct {
 	Source             json.RawMessage        `json:"source,omitempty"`
 	ReportingCategory string                 `json:"reporting_category"`
 	Metadata          map[string]interface{} `json:"metadata,omitempty"`
+	// Enriched fields extracted from expanded source during fetch
+	CustomerName  string `json:"customerName,omitempty"`
+	CustomerEmail string `json:"customerEmail,omitempty"`
+	ChargeID      string `json:"chargeId,omitempty"`
 }
 
 // StripeListResponse is the response from /v1/balance_transactions
@@ -34,12 +38,24 @@ type StripeListResponse struct {
 	HasMore bool                `json:"has_more"`
 }
 
-// StripeCacheFile is the structure saved to disk
+// StripeCacheFile is the structure saved to disk (public, no PII)
 type StripeCacheFile struct {
 	Transactions []StripeTransaction `json:"transactions"`
 	CachedAt     string              `json:"cachedAt"`
 	AccountID    string              `json:"accountId,omitempty"`
 	Currency     string              `json:"currency"`
+}
+
+// StripeCustomerData holds PII extracted from Stripe charges.
+// Saved separately in finance/stripe/private/customers.json.
+type StripeCustomerData struct {
+	FetchedAt string                       `json:"fetchedAt"`
+	Customers map[string]*StripeCustomerPII `json:"customers"` // keyed by balance transaction ID (txn_...)
+}
+
+type StripeCustomerPII struct {
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email,omitempty"`
 }
 
 // EtherscanResponse represents the Etherscan V2 API response
@@ -71,21 +87,28 @@ type TransactionsCacheFile struct {
 	Token        string          `json:"token"`
 }
 
-func TransactionsSync(args []string) error {
+func TransactionsSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
 		printTransactionsSyncHelp()
-		return nil
+		return 0, nil
 	}
 
 	settings, err := LoadSettings()
 	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
+		return 0, fmt.Errorf("failed to load settings: %w", err)
 	}
 
 	force := HasFlag(args, "--force")
 	noNostr := HasFlag(args, "--no-nostr")
 	monthFilter := GetOption(args, "--month")
 	sourceFilter := strings.ToLower(GetOption(args, "--source"))
+
+	// --limit N: only fetch the N most recent transactions (applies to Stripe)
+	limitStr := GetOption(args, "--limit")
+	var fetchLimit int
+	if limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &fetchLimit)
+	}
 
 	// Positional year/month arg (e.g. "2025" or "2025/03")
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
@@ -112,11 +135,14 @@ func TransactionsSync(args []string) error {
 		startMonth = monthFilter
 		endMonth = monthFilter
 	} else {
-		// Default: current month back to the first month missing any source
+		// Default: use last sync month, or full history if never synced
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
-		startMonth = findFirstIncompleteMonth(settings, sourceFilter)
-		if startMonth == "" || startMonth > endMonth {
-			startMonth = endMonth
+		lastSync := LastSyncMonth("transactions")
+		if lastSync == "" {
+			// Never synced before — do a full sync
+			startMonth = "2024-01"
+		} else {
+			startMonth = lastSync
 		}
 	}
 
@@ -185,6 +211,30 @@ func TransactionsSync(args []string) error {
 				fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
 				for _, acc := range etherscanAccounts {
 		fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
+
+		// Check if we can skip the full fetch by peeking at the latest tx
+		if !force {
+			filename := fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol)
+			peekHash, peekErr := peekEtherscanLatest(acc, apiKey)
+			if peekErr == nil {
+				cachedLatest := latestCachedEtherscanTxHashGlobal(DataDir(), acc.Chain, filename)
+				if cachedLatest == "" {
+					cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol)
+				}
+				if peekHash == cachedLatest {
+					// Peek matches, but only skip if we're not missing data for months in range.
+					// Etherscan accounts may have data in months we haven't cached yet.
+					relPathFn := func(year, month string) string {
+						return filepath.Join("finance", acc.Chain, filename)
+					}
+					if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
+						fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+						time.Sleep(400 * time.Millisecond)
+						continue
+					}
+				}
+			}
+		}
 
 		transfers, err := fetchTokenTransfers(acc, apiKey)
 		if err != nil {
@@ -292,6 +342,11 @@ func TransactionsSync(args []string) error {
 			}
 		}
 
+		// Save the latest tx hash so we can skip next time if nothing changed
+		if len(transfers) > 0 {
+			writeLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol, transfers[0].Hash)
+		}
+
 		// Rate limit between accounts
 		time.Sleep(400 * time.Millisecond)
 				}
@@ -321,7 +376,25 @@ func TransactionsSync(args []string) error {
 				}
 				fmt.Println()
 
-				stripeTxs, err := fetchStripeTransactions(stripeKey, startMonth, endMonth)
+				// Check if we can skip the full fetch
+				if !force {
+					relPathFn := func(year, month string) string {
+						return filepath.Join("finance", "stripe", "transactions.json")
+					}
+					if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
+						cachedPath := currentMonthCacheFile(DataDir(), relPathFn)
+						cachedLatest := latestCachedStripeTxID(cachedPath)
+						if cachedLatest != "" {
+							peekID, peekErr := peekStripeLatest(stripeKey, startMonth, endMonth)
+							if peekErr == nil && peekID == cachedLatest {
+								fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+								continue
+							}
+						}
+					}
+				}
+
+				stripeTxs, err := fetchStripeTransactions(stripeKey, startMonth, endMonth, fetchLimit)
 				if err != nil {
 					fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
 					continue
@@ -355,8 +428,29 @@ func TransactionsSync(args []string) error {
 						}
 					}
 
+					// Split PII from public data
+					customers := &StripeCustomerData{
+						FetchedAt: time.Now().UTC().Format(time.RFC3339),
+						Customers: map[string]*StripeCustomerPII{},
+					}
+					publicTxs := make([]StripeTransaction, len(monthTxs))
+					for i, tx := range monthTxs {
+						// Save PII separately
+						if tx.CustomerName != "" || tx.CustomerEmail != "" {
+							customers.Customers[tx.ID] = &StripeCustomerPII{
+								Name:  tx.CustomerName,
+								Email: tx.CustomerEmail,
+							}
+						}
+						// Strip PII and expanded source from public copy
+						publicTxs[i] = tx
+						publicTxs[i].CustomerName = ""
+						publicTxs[i].CustomerEmail = ""
+						publicTxs[i].Source = stripSourceToID(tx.Source)
+					}
+
 					cache := StripeCacheFile{
-						Transactions: monthTxs,
+						Transactions: publicTxs,
 						CachedAt:     time.Now().UTC().Format(time.RFC3339),
 						AccountID:    acc.AccountID,
 						Currency:     acc.Currency,
@@ -368,6 +462,13 @@ func TransactionsSync(args []string) error {
 						continue
 					}
 
+					// Save PII to private directory
+					if len(customers.Customers) > 0 {
+						piiData, _ := json.MarshalIndent(customers, "", "  ")
+						piiRelPath := filepath.Join("finance", "stripe", "private", "customers.json")
+						writeMonthFile(dataDir, year, month, piiRelPath, piiData)
+					}
+
 					saved++
 					totalProcessed += len(monthTxs)
 				}
@@ -375,17 +476,151 @@ func TransactionsSync(args []string) error {
 				if saved > 0 {
 					fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
 				}
+
+				// Fetch Nostr annotations for Stripe transactions
+				if !noNostr && len(stripeTxs) > 0 {
+					fmt.Printf("    %sFetching Nostr annotations...%s", Fmt.Dim, Fmt.Reset)
+					var uris []string
+					for _, tx := range stripeTxs {
+						uris = append(uris, BuildStripeURI(tx.ID))
+					}
+					annotations, err := FetchNostrAnnotations(uris)
+					if err != nil {
+						fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
+					} else {
+						fmt.Printf(" %s✓ %d annotations%s\n", Fmt.Green, len(annotations), Fmt.Reset)
+						// Save per month
+						for ym, monthTxs := range byMonth {
+							if ym < startMonth || ym > endMonth {
+								continue
+							}
+							monthAnnotations := map[string]*TxAnnotation{}
+							for _, tx := range monthTxs {
+								uri := BuildStripeURI(tx.ID)
+								if ann, ok := annotations[uri]; ok {
+									monthAnnotations[uri] = ann
+								}
+							}
+							if len(monthAnnotations) > 0 {
+								parts := strings.Split(ym, "-")
+								if len(parts) == 2 {
+									cache := NostrAnnotationCache{
+										FetchedAt:   time.Now().UTC().Format(time.RFC3339),
+										Annotations: monthAnnotations,
+									}
+									cacheData, _ := json.MarshalIndent(cache, "", "  ")
+									writeMonthFile(DataDir(), parts[0], parts[1],
+										filepath.Join("finance", "stripe", "nostr-annotations.json"), cacheData)
+								}
+							}
+						}
+					}
+				}
+				// Fetch Stripe charge details (customer name, app, metadata)
+				fmt.Printf("    %sFetching charge details...%s", Fmt.Dim, Fmt.Reset)
+				var chargeIDs []string
+				chargeByTxn := map[string]string{} // txn_id → ch_id for month grouping
+				for _, tx := range stripeTxs {
+					chID := extractChargeID(tx.Source)
+					if chID != "" {
+						chargeIDs = append(chargeIDs, chID)
+						chargeByTxn[tx.ID] = chID
+					} else {
+						// For refunds, resolve to original charge
+						srcID := extractSourceID(tx.Source)
+						if strings.HasPrefix(srcID, "re_") {
+							origCharge := fetchRefundChargeID(stripeKey, srcID)
+							if origCharge != "" {
+								chargeIDs = append(chargeIDs, origCharge)
+								chargeByTxn[tx.ID] = origCharge
+							}
+							time.Sleep(100 * time.Millisecond)
+						}
+					}
+				}
+				// Build refund→charge mapping
+				refundToCharge := map[string]string{}
+				for txnID, chID := range chargeByTxn {
+					// Find the source ID for this txn to check if it's a refund
+					for _, tx := range stripeTxs {
+						if tx.ID == txnID {
+							srcID := extractSourceID(tx.Source)
+							if strings.HasPrefix(srcID, "re_") {
+								refundToCharge[srcID] = chID
+							}
+							break
+						}
+					}
+				}
+
+				charges, err := fetchStripeCharges(stripeKey, chargeIDs)
+				if err != nil {
+					fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
+				} else {
+					fmt.Printf(" %s✓ %d charges enriched%s\n", Fmt.Green, len(charges), Fmt.Reset)
+
+					// Discover application names from fetched charges
+					appNames := map[string]int{} // track ca_ IDs for discovery
+					for _, ch := range charges {
+						if ch.Application != "" {
+							appNames[ch.Application]++
+						}
+					}
+					if len(appNames) > 0 {
+						fmt.Printf("    %sApplications:%s", Fmt.Dim, Fmt.Reset)
+						for app, count := range appNames {
+							name := app
+							if n, ok := knownStripeApps[app]; ok {
+								name = n
+							}
+							fmt.Printf(" %s(%d)", name, count)
+						}
+						fmt.Println()
+					}
+
+					// Save per month
+					for ym, monthTxs := range byMonth {
+						if ym < startMonth || ym > endMonth {
+							continue
+						}
+						monthCharges := map[string]*StripeCharge{}
+						for _, tx := range monthTxs {
+							chID := chargeByTxn[tx.ID]
+							if ch, ok := charges[chID]; ok {
+								monthCharges[chID] = ch
+							}
+						}
+						if len(monthCharges) > 0 {
+							parts := strings.Split(ym, "-")
+							if len(parts) == 2 {
+								SaveStripeChargeEnrichment(DataDir(), parts[0], parts[1], monthCharges, refundToCharge)
+							}
+						}
+					}
+				}
 			}
 		}
 		}
 	}
 
 	// --- Monerium sync ---
-	if sourceFilter == "" || sourceFilter == "monerium" {
+	// Also auto-include EURe etherscan accounts (Monerium mints/redeems happen on-chain)
+	if sourceFilter == "" || sourceFilter == "monerium" || sourceFilter == "gnosis" {
 		moneriumAccounts := make([]FinanceAccount, 0)
 		for _, acc := range settings.Finance.Accounts {
 			if acc.Provider == "monerium" {
 				moneriumAccounts = append(moneriumAccounts, acc)
+			}
+			// Auto-include EURe blockchain accounts for Monerium enrichment
+			if acc.Provider == "etherscan" && acc.Address != "" && acc.Token != nil &&
+				strings.EqualFold(acc.Token.Symbol, "EURe") {
+				moneriumAccounts = append(moneriumAccounts, FinanceAccount{
+					Name:     acc.Name + " (Monerium)",
+					Slug:     acc.Slug,
+					Provider: "monerium",
+					Address:  acc.Address,
+					Currency: "EURe",
+				})
 			}
 		}
 
@@ -417,6 +652,24 @@ func TransactionsSync(args []string) error {
 
 						fmt.Printf("    %sFetched %d orders%s\n", Fmt.Dim, len(orders), Fmt.Reset)
 
+						// Check if latest order matches cache — skip if no new data
+						slug := acc.Slug
+						if slug == "" {
+							slug = acc.Address[:8]
+						}
+						if !force && len(orders) > 0 {
+							relPathFn := func(year, month string) string {
+								return filepath.Join("finance", "monerium", "private", slug+".json")
+							}
+							if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
+								cachedPath := currentMonthCacheFile(DataDir(), relPathFn)
+								if orders[0].ID == latestCachedMoneriumOrderID(cachedPath) {
+									fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+									continue
+								}
+							}
+						}
+
 						// Group by month
 						byMonth := groupMoneriumByMonth(orders)
 						saved := 0
@@ -433,10 +686,6 @@ func TransactionsSync(args []string) error {
 							year, month := parts[0], parts[1]
 
 							dataDir := DataDir()
-							slug := acc.Slug
-							if slug == "" {
-								slug = acc.Address[:8]
-							}
 							relPath := filepath.Join("finance", "monerium", "private", slug+".json")
 							filePath := filepath.Join(dataDir, year, month, relPath)
 
@@ -472,7 +721,8 @@ func TransactionsSync(args []string) error {
 	}
 
 	fmt.Printf("\n%s✓ Done!%s %d transactions processed\n\n", Fmt.Green, Fmt.Reset, totalProcessed)
-	return nil
+	UpdateSyncSource("transactions", LastSyncMonth("transactions") == "")
+	return totalProcessed, nil
 }
 
 func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, error) {
@@ -630,7 +880,7 @@ func parseTokenValue(rawValue string, decimals int) float64 {
 	return f
 }
 
-func fetchStripeTransactions(apiKey, startMonth, endMonth string) ([]StripeTransaction, error) {
+func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]StripeTransaction, error) {
 	tz := BrusselsTZ()
 	var allTxs []StripeTransaction
 
@@ -654,10 +904,15 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string) ([]StripeTrans
 	createdGte := rangeStart.Unix()
 	createdLt := rangeEnd.Unix()
 
+	pageSize := 100
+	if limit > 0 && limit < pageSize {
+		pageSize = limit
+	}
+
 	var startingAfter string
 	for {
-		url := fmt.Sprintf("https://api.stripe.com/v1/balance_transactions?limit=100&created[gte]=%d&created[lt]=%d",
-			createdGte, createdLt)
+		url := fmt.Sprintf("https://api.stripe.com/v1/balance_transactions?limit=%d&created[gte]=%d&created[lt]=%d&expand[]=data.source&expand[]=data.source.customer",
+			pageSize, createdGte, createdLt)
 		if startingAfter != "" {
 			url += "&starting_after=" + startingAfter
 		}
@@ -689,7 +944,17 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string) ([]StripeTrans
 			return nil, fmt.Errorf("failed to decode stripe response: %w", err)
 		}
 
+		// Extract enriched fields from expanded source
+		for i := range listResp.Data {
+			enrichStripeTransaction(&listResp.Data[i])
+		}
+
 		allTxs = append(allTxs, listResp.Data...)
+
+		if limit > 0 && len(allTxs) >= limit {
+			allTxs = allTxs[:limit]
+			break
+		}
 
 		if !listResp.HasMore || len(listResp.Data) == 0 {
 			break
@@ -701,6 +966,76 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string) ([]StripeTrans
 	}
 
 	return allTxs, nil
+}
+
+// stripSourceToID reduces an expanded source object back to just the ID string for public storage.
+func stripSourceToID(source json.RawMessage) json.RawMessage {
+	if source == nil {
+		return nil
+	}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(source, &obj) == nil && obj.ID != "" {
+		quoted, _ := json.Marshal(obj.ID)
+		return quoted
+	}
+	return source // already a string or unparseable, keep as-is
+}
+
+// enrichStripeTransaction extracts customer name, email, and charge ID from the expanded source.
+func enrichStripeTransaction(tx *StripeTransaction) {
+	if tx.Source == nil {
+		return
+	}
+
+	var source struct {
+		Object         string `json:"object"`
+		ID             string `json:"id"`
+		Description    string `json:"description"`
+		BillingDetails struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"billing_details"`
+		Customer interface{} `json:"customer"`
+		Metadata map[string]interface{} `json:"metadata"`
+	}
+	if json.Unmarshal(tx.Source, &source) != nil {
+		return
+	}
+
+	if source.Object == "charge" || source.Object == "payment_intent" {
+		tx.ChargeID = source.ID
+
+		// Customer name: prefer customer object, fall back to billing_details
+		if custObj, ok := source.Customer.(map[string]interface{}); ok {
+			if name, ok := custObj["name"].(string); ok && name != "" {
+				tx.CustomerName = name
+			}
+			if email, ok := custObj["email"].(string); ok && email != "" {
+				tx.CustomerEmail = email
+			}
+		}
+		if tx.CustomerName == "" {
+			tx.CustomerName = source.BillingDetails.Name
+		}
+		if tx.CustomerEmail == "" {
+			tx.CustomerEmail = source.BillingDetails.Email
+		}
+
+		// Use charge description if balance tx description is empty
+		if tx.Description == "" && source.Description != "" {
+			tx.Description = source.Description
+		}
+
+		// Merge charge metadata into tx metadata
+		if len(source.Metadata) > 0 && tx.Metadata == nil {
+			tx.Metadata = map[string]interface{}{}
+		}
+		for k, v := range source.Metadata {
+			tx.Metadata[k] = v
+		}
+	}
 }
 
 func groupStripeByMonth(txs []StripeTransaction) map[string][]StripeTransaction {
@@ -859,6 +1194,219 @@ func groupMoneriumByMonth(orders []MoneriumOrder) map[string][]MoneriumOrder {
 	}
 
 	return byMonth
+}
+
+// latestCachedStripeTxID reads a Stripe cache file and returns the ID of the first (most recent) transaction.
+func latestCachedStripeTxID(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	var cache StripeCacheFile
+	if json.Unmarshal(data, &cache) != nil || len(cache.Transactions) == 0 {
+		return ""
+	}
+	return cache.Transactions[0].ID
+}
+
+// peekStripeLatest fetches the single most recent balance transaction from Stripe for the given month range.
+func peekStripeLatest(apiKey, startMonth, endMonth string) (string, error) {
+	tz := BrusselsTZ()
+	startParts := strings.Split(startMonth, "-")
+	endParts := strings.Split(endMonth, "-")
+	if len(startParts) != 2 || len(endParts) != 2 {
+		return "", fmt.Errorf("invalid month range")
+	}
+	startYear, _ := strconv.Atoi(startParts[0])
+	startMon, _ := strconv.Atoi(startParts[1])
+	endYear, _ := strconv.Atoi(endParts[0])
+	endMon, _ := strconv.Atoi(endParts[1])
+	rangeStart := time.Date(startYear, time.Month(startMon), 1, 0, 0, 0, 0, tz)
+	rangeEnd := time.Date(endYear, time.Month(endMon)+1, 1, 0, 0, 0, 0, tz)
+
+	url := fmt.Sprintf("https://api.stripe.com/v1/balance_transactions?limit=1&created[gte]=%d&created[lt]=%d",
+		rangeStart.Unix(), rangeEnd.Unix())
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("stripe API returned %d", resp.StatusCode)
+	}
+	var listResp StripeListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		return "", err
+	}
+	if len(listResp.Data) == 0 {
+		return "", nil
+	}
+	return listResp.Data[0].ID, nil
+}
+
+// latestCachedEtherscanTxHashGlobal finds the most recent cached etherscan tx hash across all months.
+// Since etherscan returns transfers sorted desc, the first tx in the most recent month's cache
+// is the latest transaction overall.
+func latestCachedEtherscanTxHashGlobal(dataDir, chain, filename string) string {
+	yearDirs, err := os.ReadDir(dataDir)
+	if err != nil {
+		return ""
+	}
+	// Walk year/month dirs in reverse order to find most recent cache file
+	var latestYM string
+	var latestPath string
+	for _, yd := range yearDirs {
+		if !yd.IsDir() || len(yd.Name()) != 4 {
+			continue
+		}
+		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, yd.Name()))
+		for _, md := range monthDirs {
+			if !md.IsDir() || len(md.Name()) != 2 {
+				continue
+			}
+			ym := yd.Name() + "-" + md.Name()
+			fp := filepath.Join(dataDir, yd.Name(), md.Name(), "finance", chain, filename)
+			if fileExists(fp) && ym > latestYM {
+				latestYM = ym
+				latestPath = fp
+			}
+		}
+	}
+	if latestPath == "" {
+		return ""
+	}
+	return latestCachedEtherscanTxHash(latestPath)
+}
+
+// latestCachedEtherscanTxHash reads an etherscan cache file and returns the hash of the first (most recent) transaction.
+func latestCachedEtherscanTxHash(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	var cache TransactionsCacheFile
+	if json.Unmarshal(data, &cache) != nil || len(cache.Transactions) == 0 {
+		return ""
+	}
+	return cache.Transactions[0].Hash
+}
+
+// peekEtherscanLatest fetches the single most recent token transfer from etherscan.
+func peekEtherscanLatest(acc FinanceAccount, apiKey string) (string, error) {
+	baseURL := fmt.Sprintf("https://api.etherscan.io/v2/api?chainid=%d", acc.ChainID)
+	var url string
+	if acc.Address == "" || strings.EqualFold(acc.Address, acc.Token.Address) {
+		url = fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&startblock=0&endblock=99999999&page=1&offset=1&sort=desc&apikey=%s",
+			baseURL, acc.Token.Address, apiKey)
+	} else {
+		url = fmt.Sprintf("%s&module=account&action=tokentx&contractaddress=%s&address=%s&startblock=0&endblock=99999999&page=1&offset=1&sort=desc&apikey=%s",
+			baseURL, acc.Token.Address, acc.Address, apiKey)
+	}
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Status  string          `json:"status"`
+		Message string          `json:"message"`
+		Result  json.RawMessage `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	var transfers []TokenTransfer
+	if err := json.Unmarshal(result.Result, &transfers); err != nil || len(transfers) == 0 {
+		return "", nil
+	}
+	return transfers[0].Hash, nil
+}
+
+// latestCachedMoneriumOrderID reads a Monerium cache file and returns the ID of the first order.
+func latestCachedMoneriumOrderID(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	var cache MoneriumCacheFile
+	if json.Unmarshal(data, &cache) != nil || len(cache.Orders) == 0 {
+		return ""
+	}
+	return cache.Orders[0].ID
+}
+
+// allMonthsCached checks if every month in the range [startMonth, endMonth] has a cached file.
+// relPathFn returns the relative path within the month directory for the cache file.
+// Returns true only if all months have the file. The current month is NOT exempt.
+func allMonthsCached(dataDir, startMonth, endMonth string, relPathFn func(year, month string) string) bool {
+	months := expandMonthRange(startMonth, endMonth)
+	for _, ym := range months {
+		parts := strings.Split(ym, "-")
+		if len(parts) != 2 {
+			return false
+		}
+		relPath := relPathFn(parts[0], parts[1])
+		filePath := filepath.Join(dataDir, parts[0], parts[1], relPath)
+		if !fileExists(filePath) {
+			return false
+		}
+	}
+	return true
+}
+
+// expandMonthRange returns all YYYY-MM strings from start to end inclusive.
+func expandMonthRange(startMonth, endMonth string) []string {
+	startParts := strings.Split(startMonth, "-")
+	endParts := strings.Split(endMonth, "-")
+	if len(startParts) != 2 || len(endParts) != 2 {
+		return nil
+	}
+	sy, _ := strconv.Atoi(startParts[0])
+	sm, _ := strconv.Atoi(startParts[1])
+	ey, _ := strconv.Atoi(endParts[0])
+	em, _ := strconv.Atoi(endParts[1])
+
+	var months []string
+	for y, m := sy, sm; y < ey || (y == ey && m <= em); {
+		months = append(months, fmt.Sprintf("%d-%02d", y, m))
+		m++
+		if m > 12 {
+			m = 1
+			y++
+		}
+	}
+	return months
+}
+
+// currentMonthCacheFile returns the path to the cache file for the current month.
+func currentMonthCacheFile(dataDir string, relPathFn func(year, month string) string) string {
+	now := time.Now().In(BrusselsTZ())
+	year := fmt.Sprintf("%d", now.Year())
+	month := fmt.Sprintf("%02d", now.Month())
+	return filepath.Join(dataDir, year, month, relPathFn(year, month))
+}
+
+// readLastPeekHash reads the stored latest tx hash from a previous sync.
+func readLastPeekHash(dataDir, chain, slug string) string {
+	fp := filepath.Join(dataDir, "latest", "finance", chain, ".peek-"+slug)
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// writeLastPeekHash stores the latest tx hash so we can compare on next sync.
+func writeLastPeekHash(dataDir, chain, slug, hash string) {
+	dir := filepath.Join(dataDir, "latest", "finance", chain)
+	os.MkdirAll(dir, 0755)
+	fp := filepath.Join(dir, ".peek-"+slug)
+	os.WriteFile(fp, []byte(hash+"\n"), 0644)
 }
 
 func printTransactionsSyncHelp() {

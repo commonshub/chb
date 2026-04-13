@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -65,10 +64,13 @@ type monthResult struct {
 	newEvents  []newEventInfo
 }
 
-func EventsSync(args []string, version string) error {
+// CalendarsSync fetches room calendars once and produces both bookings (all events)
+// and events (bookings with a public URL, enriched with og:image).
+// Returns (newBookings, newEvents, error).
+func CalendarsSync(args []string) (int, int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
 		PrintEventsSyncHelp()
-		return nil
+		return 0, 0, nil
 	}
 
 	force := HasFlag(args, "--force")
@@ -81,17 +83,15 @@ func EventsSync(args []string, version string) error {
 
 	rooms, err := LoadRooms()
 	if err != nil {
-		return fmt.Errorf("failed to load rooms: %w", err)
+		return 0, 0, fmt.Errorf("failed to load rooms: %w", err)
 	}
-
-	// Show env info
-	fmt.Printf("\n%sDATA_DIR: %s%s\n", Fmt.Dim, dataDir, Fmt.Reset)
 
 	now := time.Now()
 
 	// Determine time range
 	var sinceMonth, untilMonth string
-	resolvedSince, isSince := ResolveSinceMonth(args, "events")
+	resolvedSince, isSince := ResolveSinceMonth(args, "calendars")
+	isFullSync := false
 
 	if posFound {
 		if posMonth != "" {
@@ -103,9 +103,22 @@ func EventsSync(args []string, version string) error {
 		}
 	} else if isSince {
 		sinceMonth = resolvedSince
+		isFullSync = true
 	} else if sinceStr != "" {
 		if d, ok := ParseSinceDate(sinceStr); ok {
 			sinceMonth = fmt.Sprintf("%d-%02d", d.Year(), d.Month())
+		}
+	}
+
+	// Default: use last sync month, or full history if never synced
+	if sinceMonth == "" {
+		lastSync := LastSyncMonth("calendars")
+		if lastSync == "" {
+			// Never synced before — do a full sync
+			sinceMonth = "2024-01"
+			isFullSync = true
+		} else {
+			sinceMonth = lastSync
 		}
 	}
 
@@ -113,23 +126,24 @@ func EventsSync(args []string, version string) error {
 		future := time.Date(now.Year(), now.Month()+3, 1, 0, 0, 0, 0, time.UTC)
 		untilMonth = fmt.Sprintf("%d-%02d", future.Year(), future.Month())
 	}
-	if sinceMonth == "" {
-		prev := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC)
-		sinceMonth = fmt.Sprintf("%d-%02d", prev.Year(), prev.Month())
-	}
 
-	// Step 1: Fetch ICS from all room calendars
+	fmt.Printf("\n%sDATA_DIR: %s%s\n", Fmt.Dim, dataDir, Fmt.Reset)
+	fmt.Printf("%sMonth range: %s → %s%s\n", Fmt.Dim, sinceMonth, untilMonth, Fmt.Reset)
+
+	// Fetch ICS from all room calendars (once)
 	fmt.Printf("\n📅 Fetching room calendars...\n")
 
-	// Collect all events with URLs from room calendars
-	var allRoomEvents []roomEvent
-	roomsWithCalendar := 0
+	type roomFetch struct {
+		room   RoomInfo
+		events []ical.Event
+	}
+	var fetched []roomFetch
+	totalBookings := 0
 
 	for _, room := range rooms {
 		if room.GoogleCalendarID == nil {
 			continue
 		}
-		roomsWithCalendar++
 
 		calURL := getGoogleCalendarURL(*room.GoogleCalendarID)
 		fmt.Printf("  Fetching %s...\n", room.Slug)
@@ -146,43 +160,92 @@ func EventsSync(args []string, version string) error {
 			continue
 		}
 
-		eventCount := 0
-		for _, ev := range events {
-			// Only include events that have a URL (website) defined
-			eventURL := ev.URL
-			if eventURL == "" {
-				// Check if location is a URL
-				if ev.Location != "" && (strings.HasPrefix(ev.Location, "http://") || strings.HasPrefix(ev.Location, "https://")) {
-					eventURL = ev.Location
-				}
-			}
-			if eventURL == "" {
-				// Try to extract URL from description
-				if ev.Description != "" {
-					re := regexp.MustCompile(`https?://[^\s\n<>"']+`)
-					if m := re.FindString(ev.Description); m != "" {
-						eventURL = strings.TrimRight(m, ".,;:!?")
-					}
-				}
-			}
-			if eventURL == "" {
-				continue // Skip events without a URL
-			}
-			eventCount++
-			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: room.Slug, roomName: room.Name})
-		}
-		fmt.Printf("  %s✓%s %s: %d events with URLs\n", Fmt.Green, Fmt.Reset, room.Slug, eventCount)
+		fetched = append(fetched, roomFetch{room: room, events: events})
+		fmt.Printf("  %s✓%s %s: %d events\n", Fmt.Green, Fmt.Reset, room.Slug, len(events))
 	}
 
-	if roomsWithCalendar == 0 {
+	if len(fetched) == 0 {
 		fmt.Printf("  %sNo rooms with Google Calendar IDs found.%s\n", Fmt.Yellow, Fmt.Reset)
-		return nil
+		return 0, 0, nil
 	}
 
-	// Group events by month and save ICS files
+	// --- Bookings: write {room}.ics per room per month ---
+	newBookingCount := 0
+	for _, rf := range fetched {
+		byMonth := ical.GroupByMonth(rf.events)
+		for ym, monthEvents := range byMonth {
+			if ym < sinceMonth || ym > untilMonth {
+				continue
+			}
+			parts := strings.SplitN(ym, "-", 2)
+			year, month := parts[0], parts[1]
+
+			relPath := filepath.Join("calendars", "ics", rf.room.Slug+".ics")
+			filePath := filepath.Join(dataDir, year, month, relPath)
+
+			if !force {
+				if _, err := os.Stat(filePath); err == nil {
+					// File exists — count bookings but don't rewrite
+					totalBookings += len(monthEvents)
+					continue
+				}
+			}
+
+			content := ical.WrapICS(monthEvents, fmt.Sprintf("-//Commons Hub Brussels//%s//EN", rf.room.Name))
+			writeMonthFile(dataDir, year, month, relPath, []byte(content))
+			newBookingCount += len(monthEvents)
+			totalBookings += len(monthEvents)
+		}
+	}
+
+	// --- Fetch event calendars (Luma, Google) from settings ---
+	settings, _ := LoadSettings()
+	type calSource struct {
+		slug string
+		url  string
+	}
+	var calSources []calSource
+	if settings.Calendars.Luma != "" {
+		calSources = append(calSources, calSource{"luma", settings.Calendars.Luma})
+	}
+	if settings.Calendars.Google != "" {
+		calSources = append(calSources, calSource{"google", settings.Calendars.Google})
+	}
+
+	for _, cs := range calSources {
+		fmt.Printf("  Fetching %s calendar...\n", cs.slug)
+		icsData, err := fetchURL(cs.url)
+		if err != nil {
+			fmt.Printf("  %sWarning: failed to fetch %s calendar: %v%s\n", Fmt.Yellow, cs.slug, err, Fmt.Reset)
+			continue
+		}
+		events, err := ical.ParseICS(icsData)
+		if err != nil {
+			fmt.Printf("  %sWarning: failed to parse %s calendar: %v%s\n", Fmt.Yellow, cs.slug, err, Fmt.Reset)
+			continue
+		}
+		fmt.Printf("  %s✓%s %s calendar: %d events\n", Fmt.Green, Fmt.Reset, cs.slug, len(events))
+		fetched = append(fetched, roomFetch{
+			room:   RoomInfo{Slug: cs.slug, Name: cs.slug},
+			events: events,
+		})
+	}
+
+	// --- Events: filter bookings with URLs, enrich with og:image ---
+	var allRoomEvents []roomEvent
+	for _, rf := range fetched {
+		for _, ev := range rf.events {
+			eventURL := extractEventURL(ev)
+			if eventURL == "" {
+				continue
+			}
+			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: rf.room.Slug, roomName: rf.room.Name})
+		}
+	}
+
+	// Group events by month
 	affectedMonths := map[string]bool{}
 	eventsByMonth := map[string][]roomEvent{}
-
 	for _, re := range allRoomEvents {
 		ym := re.event.YearMonth()
 		if ym < sinceMonth || ym > untilMonth {
@@ -198,7 +261,7 @@ func EventsSync(args []string, version string) error {
 	}
 	sort.Strings(sortedMonths)
 
-	// Save ICS files per month (public.ics = all events with URLs across rooms)
+	// Save public.ics per month (events with URLs only)
 	for _, ym := range sortedMonths {
 		parts := strings.SplitN(ym, "-", 2)
 		year, month := parts[0], parts[1]
@@ -207,13 +270,13 @@ func EventsSync(args []string, version string) error {
 		for _, re := range eventsByMonth[ym] {
 			icsEvents = append(icsEvents, re.event)
 		}
-
 		content := ical.WrapICS(icsEvents, "-//Commons Hub Brussels//Room Calendars//EN")
 		writeMonthFile(dataDir, year, month, filepath.Join("calendars", "ics", "public.ics"), []byte(content))
 	}
 
-	// Process each month
+	// Process each month (og:image scraping, events.json generation)
 	var results []monthResult
+	newEventCount := 0
 	for _, ym := range sortedMonths {
 		parts := strings.SplitN(ym, "-", 2)
 		year, month := parts[0], parts[1]
@@ -225,10 +288,11 @@ func EventsSync(args []string, version string) error {
 		}
 		if r != nil {
 			results = append(results, *r)
+			newEventCount += len(r.newEvents)
 		}
 	}
 
-	// Generate yearly aggregates for affected years
+	// Generate yearly aggregates
 	years := map[string]bool{}
 	for _, ym := range sortedMonths {
 		parts := strings.SplitN(ym, "-", 2)
@@ -242,23 +306,9 @@ func EventsSync(args []string, version string) error {
 	// Generate markdown files
 	generateMarkdownFiles(dataDir)
 
-	// Print new events
-	monthsWithNew := []monthResult{}
+	// Print new events detail
 	for _, r := range results {
 		if len(r.newEvents) > 0 {
-			monthsWithNew = append(monthsWithNew, r)
-		}
-	}
-
-	if len(monthsWithNew) > 0 {
-		fmt.Printf("\n📊 Processing months...\n")
-		for _, r := range monthsWithNew {
-			count := len(r.newEvents)
-			plural := "s"
-			if count == 1 {
-				plural = ""
-			}
-			fmt.Printf("  %s %s✓%s %d new event%s\n", r.yearMonth, Fmt.Green, Fmt.Reset, count, plural)
 			for _, evt := range r.newEvents {
 				t, _ := time.Parse(time.RFC3339, evt.startAt)
 				if t.IsZero() {
@@ -284,68 +334,45 @@ func EventsSync(args []string, version string) error {
 		}
 	}
 
-	// Domain breakdown
-	domainCounts := map[string]int{}
-	for _, e := range futureEvents {
-		domain := "no url"
-		if e.URL != "" {
-			if u, err := url.Parse(e.URL); err == nil {
-				domain = strings.TrimPrefix(u.Hostname(), "www.")
-			}
+	bookings, _ := loadAllBookings()
+	var upcomingBookings []BookingEntry
+	for _, b := range bookings {
+		if b.Start.After(now) {
+			upcomingBookings = append(upcomingBookings, b)
 		}
-		domainCounts[domain]++
 	}
 
-	// By room breakdown
-	roomCounts := map[string]int{}
-	for _, e := range futureEvents {
-		src := e.CalendarSource
-		if src == "" {
-			src = "unknown"
+	fmt.Printf("\n%s✓ Done!%s %d bookings (%d upcoming), %d events (%d upcoming)\n",
+		Fmt.Green, Fmt.Reset,
+		totalBookings, len(upcomingBookings),
+		len(allEvents), len(futureEvents))
+
+	// Update sync state
+	UpdateSyncSource("calendars", isFullSync)
+
+	return newBookingCount, newEventCount, nil
+}
+
+// extractEventURL returns the public URL for an ICS event, or empty string if none.
+func extractEventURL(ev ical.Event) string {
+	eventURL := ev.URL
+	if eventURL == "" && ev.Location != "" &&
+		(strings.HasPrefix(ev.Location, "http://") || strings.HasPrefix(ev.Location, "https://")) {
+		eventURL = ev.Location
+	}
+	if eventURL == "" && ev.Description != "" {
+		re := regexp.MustCompile(`https?://[^\s\n<>"']+`)
+		if m := re.FindString(ev.Description); m != "" {
+			eventURL = strings.TrimRight(m, ".,;:!?")
 		}
-		roomCounts[src]++
 	}
+	return eventURL
+}
 
-	// Count events.md entries
-	eventsMdPath := filepath.Join(dataDir, "latest", "events.md")
-	eventsMdCount := 0
-	if data, err := os.ReadFile(eventsMdPath); err == nil {
-		re := regexp.MustCompile(`(?m)^### `)
-		eventsMdCount = len(re.FindAll(data, -1))
-	}
-
-	fmt.Printf("\n%s✓ Done!%s %d total events, %d upcoming\n", Fmt.Green, Fmt.Reset, len(allEvents), len(futureEvents))
-
-	// Room breakdown
-	var roomParts []string
-	for room, count := range roomCounts {
-		roomParts = append(roomParts, fmt.Sprintf("%s: %d", room, count))
-	}
-	sort.Strings(roomParts)
-	if len(roomParts) > 0 {
-		fmt.Printf("  %s%s%s\n", Fmt.Dim, strings.Join(roomParts, ", "), Fmt.Reset)
-	}
-
-	// Domain breakdown sorted by count desc
-	type domainCount struct {
-		domain string
-		count  int
-	}
-	var sorted []domainCount
-	for d, c := range domainCounts {
-		sorted = append(sorted, domainCount{d, c})
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
-	var domainParts []string
-	for _, dc := range sorted {
-		domainParts = append(domainParts, fmt.Sprintf("%s: %d", dc.domain, dc.count))
-	}
-	fmt.Printf("  %s%s%s\n", Fmt.Dim, strings.Join(domainParts, ", "), Fmt.Reset)
-
-	absMdPath, _ := filepath.Abs(eventsMdPath)
-	fmt.Printf("  %d events written to %s\n\n", eventsMdCount, absMdPath)
-
-	return nil
+// EventsSync is an alias for CalendarsSync for backwards compatibility.
+func EventsSync(args []string, version string) error {
+	_, _, err := CalendarsSync(args)
+	return err
 }
 
 func fetchURL(rawURL string) (string, error) {
@@ -377,6 +404,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	// Load existing event IDs to detect new ones
 	existingIDs := map[string]bool{}
 	existingMetadata := map[string]EventMetadata{}
+	existingEvents := map[string]FullEvent{}
 	existingPath := filepath.Join(monthPath, "generated", "events.json")
 	if data, err := os.ReadFile(existingPath); err == nil {
 		var ef FullEventsFile
@@ -384,6 +412,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			for _, e := range ef.Events {
 				existingIDs[e.ID] = true
 				existingMetadata[e.ID] = e.Metadata
+				existingEvents[e.ID] = e
 			}
 		}
 	}
@@ -401,21 +430,12 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		icsEv := re.event
 		eventID := icsEv.UID
 		name := icsEv.Summary
-		eventURL := icsEv.URL
+		eventURL := extractEventURL(icsEv)
 		location := icsEv.Location
 
-		// Check if location is a URL
+		// If location is a URL, use default address instead
 		if location != "" && (strings.HasPrefix(location, "http://") || strings.HasPrefix(location, "https://")) {
-			eventURL = location
 			location = "Commons Hub Brussels, Rue de la Madeleine 51, 1000 Bruxelles, Belgium"
-		}
-
-		// Try to extract URL from description if none set
-		if eventURL == "" && icsEv.Description != "" {
-			urlRe := regexp.MustCompile(`https?://[^\s\n<>"']+`)
-			if m := urlRe.FindString(icsEv.Description); m != "" {
-				eventURL = strings.TrimRight(m, ".,;:!?")
-			}
 		}
 
 		// Skip events without a URL (these are regular bookings, not public events)
@@ -430,10 +450,28 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		}
 
 		// Scrape og:image for cover
-		var coverImage string
-		ogImg := og.FetchOGImage(eventURL)
-		if ogImg != "" {
-			coverImage = ogImg
+		var coverImage, coverImageLocal string
+		// Preserve existing cover image if already synced
+		if existing, ok := existingEvents[eventID]; ok {
+			coverImage = existing.CoverImage
+			coverImageLocal = existing.CoverImageLocal
+		}
+		if coverImage == "" {
+			ogImg := og.FetchOGImage(eventURL)
+			if ogImg != "" {
+				coverImage = ogImg
+			}
+		}
+		// Download cover image locally if we have a URL but no local copy
+		if coverImage != "" && coverImageLocal == "" {
+			ext := extFromURL(coverImage, ".jpg")
+			localRelPath := filepath.Join("images", "covers", eventID+ext)
+			localAbsPath := filepath.Join(dataDir, year, month, localRelPath)
+			os.MkdirAll(filepath.Dir(localAbsPath), 0755)
+			if err := downloadFile(coverImage, localAbsPath); err == nil {
+				coverImageLocal = filepath.Join(year, month, localRelPath)
+				fmt.Printf("    ↳ downloaded cover for %s\n", name)
+			}
 		}
 
 		if processedIDs[eventID] {
@@ -455,14 +493,15 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		}
 
 		fullEvents = append(fullEvents, FullEvent{
-			ID:             eventID,
-			Name:           name,
-			Description:    icsEv.Description,
-			StartAt:        startAt,
-			EndAt:          endAt,
-			Location:       location,
-			URL:            eventURL,
-			CoverImage:     coverImage,
+			ID:              eventID,
+			Name:            name,
+			Description:     icsEv.Description,
+			StartAt:         startAt,
+			EndAt:           endAt,
+			Location:        location,
+			URL:             eventURL,
+			CoverImage:      coverImage,
+			CoverImageLocal: coverImageLocal,
 			Source:          "calendar",
 			CalendarSource: re.roomSlug,
 			Metadata:       metadata,
@@ -727,7 +766,7 @@ This file is automatically generated. Last updated: %s
 Want to host an event at Commons Hub Brussels? [Contact us](%s/contact) or [book a room](%s/rooms).
 `, time.Now().UTC().Format(time.RFC3339), icsLine, eventsMarkdown, baseURL, baseURL)
 
-	latestDir := filepath.Join(dataDir, "latest")
+	latestDir := filepath.Join(dataDir, "latest", "generated")
 	os.MkdirAll(latestDir, 0755)
 	os.WriteFile(filepath.Join(latestDir, "events.md"), []byte(content), 0644)
 }
@@ -801,7 +840,7 @@ Rooms can be booked by visiting the individual room pages above and filling out 
 For questions about bookings, contact us at hello@commonshub.brussels or visit [commonshub.brussels/contact](%s/contact).
 `, time.Now().UTC().Format(time.RFC3339), roomsMarkdown, baseURL)
 
-	latestDir := filepath.Join(dataDir, "latest")
+	latestDir := filepath.Join(dataDir, "latest", "generated")
 	os.MkdirAll(latestDir, 0755)
 	os.WriteFile(filepath.Join(latestDir, "rooms.md"), []byte(content), 0644)
 }

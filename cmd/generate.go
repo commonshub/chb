@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -102,6 +105,8 @@ type ContributorSummary struct {
 	TotalTokensIn         float64 `json:"totalTokensIn"`
 	TotalTokensOut        float64 `json:"totalTokensOut"`
 	TotalMessages         int     `json:"totalMessages"`
+	TotalImages           int     `json:"totalImages"`
+	TotalDiscordMembers   int     `json:"totalDiscordMembers,omitempty"`
 }
 
 // TopContributor is the format in the global contributors.json
@@ -175,6 +180,16 @@ type YearlyUsersSummary struct {
 }
 
 // TransactionEntry for aggregated transactions.json
+// centsToEuros converts an integer cent amount to euros with exact 2-decimal precision.
+func centsToEuros(cents int64) float64 {
+	return math.Round(float64(cents)) / 100
+}
+
+// roundCents rounds a float to exactly 2 decimal places (cent precision).
+func roundCents(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
 type TransactionEntry struct {
 	ID               string                 `json:"id"`
 	TxHash           string                 `json:"txHash"`
@@ -193,6 +208,9 @@ type TransactionEntry struct {
 	Counterparty     string                 `json:"counterparty"`
 	Timestamp        int64                  `json:"timestamp"`
 	StripeChargeID   string                 `json:"stripeChargeId,omitempty"`
+	Category         string                 `json:"category,omitempty"`
+	Collective       string                 `json:"collective,omitempty"`
+	Event            string                 `json:"event,omitempty"`
 	Metadata         map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -201,6 +219,60 @@ type TransactionsFile struct {
 	Month        string             `json:"month"`
 	GeneratedAt  string             `json:"generatedAt"`
 	Transactions []TransactionEntry `json:"transactions"`
+}
+
+// TransactionPII holds private enrichment for a single transaction.
+type TransactionPII struct {
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+// TransactionsPIIFile is saved to generated/private/enrichment.json.
+type TransactionsPIIFile struct {
+	GeneratedAt string                     `json:"generatedAt"`
+	Enrichments map[string]*TransactionPII `json:"enrichments"` // keyed by transaction ID
+}
+
+// LoadTransactionsWithPII reads the public transactions file and merges PII from the private enrichment.
+func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
+	txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
+	data, err := os.ReadFile(txPath)
+	if err != nil {
+		return nil
+	}
+	var txFile TransactionsFile
+	if json.Unmarshal(data, &txFile) != nil {
+		return nil
+	}
+
+	// Load PII enrichment
+	piiPath := filepath.Join(dataDir, year, month, "generated", "private", "enrichment.json")
+	piiData, err := os.ReadFile(piiPath)
+	if err != nil {
+		return &txFile // no PII file, return public data as-is
+	}
+	var piiFile TransactionsPIIFile
+	if json.Unmarshal(piiData, &piiFile) != nil {
+		return &txFile
+	}
+
+	// Merge PII back into transactions
+	for i := range txFile.Transactions {
+		tx := &txFile.Transactions[i]
+		if pii, ok := piiFile.Enrichments[tx.ID]; ok {
+			if pii.Name != "" {
+				tx.Counterparty = pii.Name
+			}
+			if pii.Email != "" {
+				if tx.Metadata == nil {
+					tx.Metadata = map[string]interface{}{}
+				}
+				tx.Metadata["email"] = pii.Email
+			}
+		}
+	}
+
+	return &txFile
 }
 
 // CounterpartyEntry for counterparties.json
@@ -436,11 +508,14 @@ func Generate(args []string) error {
 		}
 	}
 
-	// Generate latest images
+	// Generate latest images (from latest/messages/discord/)
 	latestDir := filepath.Join(dataDir, "latest")
 	if _, err := os.Stat(latestDir); err == nil {
-		n := generateLatestImagesGo(dataDir)
-		totalImages += n
+		n := generateMonthImagesGo(dataDir, "latest", "")
+		if n > 0 {
+			fmt.Printf("  ✓ latest: %d image(s)\n", n)
+			totalImages += n
+		}
 	}
 	fmt.Printf("  %s%d total images%s\n\n", Fmt.Dim, totalImages, Fmt.Reset)
 
@@ -509,7 +584,17 @@ func Generate(args []string) error {
 	}
 	fmt.Println()
 
-	// 8. Generate counterparties
+	// 8. Generate members from cached provider snapshots
+	fmt.Printf("👥 Generating members...\n")
+	generateMembersGo(dataDir, years)
+	fmt.Println()
+
+	// 9. Generate latest events
+	fmt.Printf("📅 Generating latest events...\n")
+	generateLatestEventsGo(dataDir, years)
+	fmt.Println()
+
+	// 10. Generate counterparties
 	fmt.Printf("🏢 Generating counterparties...\n")
 	for _, year := range years {
 		months := getAvailableMonths(dataDir, year)
@@ -647,74 +732,6 @@ func generateMonthImagesGo(dataDir, year, month string) int {
 	return len(images)
 }
 
-func generateLatestImagesGo(dataDir string) int {
-	latestDiscord := filepath.Join(dataDir, "latest", "messages", "discord")
-	entries, err := os.ReadDir(latestDiscord)
-	if err != nil {
-		return 0
-	}
-
-	var allImages []ImageEntry
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		channelID := e.Name()
-		msgPath := filepath.Join(latestDiscord, channelID, "messages.json")
-		data, err := os.ReadFile(msgPath)
-		if err != nil {
-			continue
-		}
-		var f cachedMessageFile
-		if json.Unmarshal(data, &f) != nil {
-			continue
-		}
-		for _, raw := range f.Messages {
-			m := parseMessage(raw)
-			for _, att := range m.Attachments {
-				isImage := strings.HasPrefix(att.ContentType, "image/")
-				if !isImage {
-					urlClean := strings.Split(att.URL, "?")[0]
-					ext := strings.ToLower(filepath.Ext(urlClean))
-					isImage = ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
-				}
-				if !isImage {
-					continue
-				}
-				proxyURL := fmt.Sprintf("/api/discord-image-proxy?channelId=%s&messageId=%s&attachmentId=%s&timestamp=%s",
-					channelID, m.ID, att.ID, strings.ReplaceAll(m.Timestamp[:10], "-", ""))
-
-				allImages = append(allImages, ImageEntry{
-					URL:            proxyURL,
-					ProxyURL:       proxyURL,
-					ID:             att.ID,
-					Author:         ImageAuthor{ID: m.AuthorID, Username: m.AuthorUser, DisplayName: m.AuthorName, Avatar: m.AuthorAvat},
-					TotalReactions: 0,
-					Message:        m.Content,
-					Timestamp:      m.Timestamp,
-					ChannelID:      channelID,
-					MessageID:      m.ID,
-				})
-			}
-		}
-	}
-
-	if len(allImages) == 0 {
-		return 0
-	}
-
-	sort.Slice(allImages, func(i, j int) bool {
-		return allImages[i].Timestamp > allImages[j].Timestamp
-	})
-
-	outputPath := filepath.Join(dataDir, "latest", "generated", "images.json")
-	os.MkdirAll(filepath.Dir(outputPath), 0755)
-	out := ImagesFile{Source: "latest", Count: len(allImages), Images: allImages}
-	writeJSONFile(outputPath, out)
-
-	fmt.Printf("  ✓ latest: %d image(s)\n", len(allImages))
-	return len(allImages)
-}
 
 // ── Activity grid ───────────────────────────────────────────────────────────
 
@@ -893,28 +910,59 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 
 	zeroAddr := "0x0000000000000000000000000000000000000000"
 
+	// Build wallet address → Discord user ID mapping from nostr-metadata
+	addrToDiscord := buildAddressToDiscordMap(dataDir, year, month)
+
+	// Also build Discord ID → wallet address (reverse mapping)
+	discordToAddr := map[string]string{}
+	for addr, discordID := range addrToDiscord {
+		discordToAddr[discordID] = addr
+	}
+
+	// Build per-address token totals
+	type addrTokens struct {
+		in, out float64
+	}
+	addrTotals := map[string]*addrTokens{}
+	divisor := math.Pow10(decimals)
+	for _, tx := range chtTxs {
+		val := 0.0
+		if v, err := strconv.ParseFloat(tx.Value, 64); err == nil {
+			val = v / divisor
+		}
+		if tx.From != zeroAddr {
+			if _, ok := addrTotals[strings.ToLower(tx.From)]; !ok {
+				addrTotals[strings.ToLower(tx.From)] = &addrTokens{}
+			}
+			addrTotals[strings.ToLower(tx.From)].out += val
+		}
+		if tx.To != zeroAddr {
+			if _, ok := addrTotals[strings.ToLower(tx.To)]; !ok {
+				addrTotals[strings.ToLower(tx.To)] = &addrTokens{}
+			}
+			addrTotals[strings.ToLower(tx.To)].in += val
+		}
+	}
+
 	// Build contributors
 	var contributors []ContributorEntry
 	for _, u := range users {
 		var tokensIn, tokensOut float64
+		var address *string
 
-		// We don't have wallet address mapping in Go (would need Discord→wallet API calls)
-		// So tokens stay at 0 unless we match addresses differently
-		// For now, just count messages/mentions
+		if walletAddr, ok := discordToAddr[u.id]; ok {
+			address = &walletAddr
+			if totals, ok := addrTotals[strings.ToLower(walletAddr)]; ok {
+				tokensIn = math.Round(totals.in*100) / 100
+				tokensOut = math.Round(totals.out*100) / 100
+			}
+		}
 
 		var avatarURL *string
 		if u.avatar != "" {
 			s := fmt.Sprintf("https://cdn.discordapp.com/avatars/%s/%s.png", u.id, u.avatar)
 			avatarURL = &s
 		}
-
-		// Calculate tokens from CHT transactions if we can match addresses
-		// (this is a simplified version - the TS version uses CitizenWallet API)
-		_ = tokensIn
-		_ = tokensOut
-		_ = chtTxs
-		_ = zeroAddr
-		_ = decimals
 
 		contributors = append(contributors, ContributorEntry{
 			ID: u.id,
@@ -927,7 +975,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 			},
 			Tokens:  ContributorTokens{In: tokensIn, Out: tokensOut},
 			Discord: ContributorDiscord{Messages: u.messages, Mentions: u.mentions},
-			Address: nil,
+			Address: address,
 		})
 	}
 
@@ -936,13 +984,28 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 		return contributors[i].Discord.Messages > contributors[j].Discord.Messages
 	})
 
+	// Count images for this month
+	totalImages := 0
+	imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
+	if data, err := os.ReadFile(imagesPath); err == nil {
+		var imgFile ImagesFile
+		if json.Unmarshal(data, &imgFile) == nil {
+			totalImages = imgFile.Count
+		}
+	}
+
+	// Get Discord member count
+	discordMembers := fetchDiscordMemberCount(settings)
+
 	summary := ContributorSummary{
-		TotalContributors: len(contributors),
+		TotalContributors:   len(contributors),
+		TotalImages:         totalImages,
+		TotalDiscordMembers: discordMembers,
 	}
 	for _, c := range contributors {
 		summary.TotalMessages += c.Discord.Messages
-		summary.TotalTokensIn += c.Tokens.In
-		summary.TotalTokensOut += c.Tokens.Out
+		summary.TotalTokensIn += math.Round(c.Tokens.In*100) / 100
+		summary.TotalTokensOut += math.Round(c.Tokens.Out*100) / 100
 		if c.Address != nil {
 			summary.ContributorsWithAddr++
 		}
@@ -950,6 +1013,8 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 			summary.ContributorsWithToken++
 		}
 	}
+	summary.TotalTokensIn = math.Round(summary.TotalTokensIn*100) / 100
+	summary.TotalTokensOut = math.Round(summary.TotalTokensOut*100) / 100
 
 	out := MonthlyContributorsFile{
 		Year:         year,
@@ -1425,15 +1490,19 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			// Try StripeCacheFile format
 			var stripeCacheFile struct {
 				Transactions []struct {
-					ID                string  `json:"id"`
-					Amount            int64   `json:"amount"`
-					Net               int64   `json:"net"`
-					Fee               int64   `json:"fee"`
-					Currency          string  `json:"currency"`
-					Description       string  `json:"description"`
-					Created           int64   `json:"created"`
-					ReportingCategory string  `json:"reporting_category"`
-					Type              string  `json:"type"`
+					ID                string                 `json:"id"`
+					Amount            int64                  `json:"amount"`
+					Net               int64                  `json:"net"`
+					Fee               int64                  `json:"fee"`
+					Currency          string                 `json:"currency"`
+					Description       string                 `json:"description"`
+					Created           int64                  `json:"created"`
+					ReportingCategory string                 `json:"reporting_category"`
+					Type              string                 `json:"type"`
+					Source            json.RawMessage        `json:"source"`
+					CustomerName      string                 `json:"customerName"`
+					CustomerEmail     string                 `json:"customerEmail"`
+					Metadata          map[string]interface{} `json:"metadata"`
 				} `json:"transactions"`
 				AccountID string `json:"accountId"`
 				Currency  string `json:"currency"`
@@ -1448,19 +1517,109 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				accountSlug = stripeCacheFile.AccountID
 			}
 
+			// Load private customer data (PII: names, emails)
+			stripeCustomers := loadStripeCustomerData(dataDir, year, month)
+
+			// Load private charge enrichment (app info, payment methods)
+			stripeCharges, refundToCharge := LoadStripeChargeEnrichment(dataDir, year, month)
+
 			for _, tx := range stripeCacheFile.Transactions {
-				amount := float64(tx.Amount) / 100
-				fee := float64(tx.Fee) / 100
-				net := float64(tx.Net) / 100
+				amount := centsToEuros(tx.Amount)
+				fee := centsToEuros(tx.Fee)
+				net := centsToEuros(tx.Net)
 				txType := "CREDIT"
 				if tx.Amount < 0 {
 					txType = "DEBIT"
 					amount = -amount
 				}
+				// Payouts are handled by the payout-based Odoo sync, skip in generate
+				if tx.ReportingCategory == "payout" {
+					continue
+				}
+				// Stripe billing fees (usage fees, taxes) are real debits from the balance
+				if tx.ReportingCategory == "fee" {
+					txType = "DEBIT"
+				}
 
 				currency := strings.ToUpper(tx.Currency)
 				if currency == "" {
 					currency = "EUR"
+				}
+
+				// Determine counterparty: prefer private customer data, then inline, then charge enrichment
+				counterparty := tx.CustomerName
+				metadata := map[string]interface{}{
+					"category":    tx.ReportingCategory,
+					"description": tx.Description,
+				}
+				if tx.CustomerEmail != "" {
+					metadata["email"] = tx.CustomerEmail
+				}
+				// Load from private customers file (PII stored separately)
+				if stripeCustomers != nil {
+					if cust, ok := stripeCustomers[tx.ID]; ok {
+						if cust.Name != "" && counterparty == "" {
+							counterparty = cust.Name
+						}
+						if cust.Email != "" && metadata["email"] == nil {
+							metadata["email"] = cust.Email
+						}
+					}
+				}
+				// Merge inline metadata from expanded source
+				for k, v := range tx.Metadata {
+					if s, ok := v.(string); ok && s != "" {
+						metadata["stripe_"+k] = s
+					}
+				}
+
+				// Fall back to charge enrichment for older data without inline fields
+				if counterparty == "" || metadata["email"] == nil {
+					chID := extractChargeID(tx.Source)
+					if chID == "" && refundToCharge != nil {
+						srcID := extractSourceID(tx.Source)
+						if strings.HasPrefix(srcID, "re_") {
+							chID = refundToCharge[srcID]
+						}
+					}
+					if stripeCharges != nil && chID != "" {
+						if ch, ok := stripeCharges[chID]; ok {
+							if counterparty == "" {
+								if name := ch.BestName(); name != "" {
+									counterparty = name
+								}
+							}
+							if metadata["email"] == nil {
+								if email := ch.BestEmail(); email != "" {
+									metadata["email"] = email
+								}
+							}
+							if ch.ApplicationName != "" {
+								metadata["application"] = ch.ApplicationName
+							} else if ch.Application != "" {
+								metadata["application"] = ch.Application
+							}
+							if ch.PaymentMethod != "" {
+								metadata["paymentMethod"] = ch.PaymentMethod
+							}
+							if ch.PaymentLink != "" {
+								metadata["paymentLink"] = ch.PaymentLink
+							}
+							for k, v := range ch.Metadata {
+								if _, exists := metadata["stripe_"+k]; !exists {
+									metadata["stripe_"+k] = v
+								}
+							}
+							for k, v := range ch.CustomFields {
+								metadata["custom_"+k] = v
+							}
+						}
+					}
+				}
+
+				// Final fallback: use balance tx description
+				if counterparty == "" {
+					counterparty = tx.Description
 				}
 
 				transactions = append(transactions, TransactionEntry{
@@ -1472,18 +1631,15 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					AccountName:      accountName,
 					Currency:         currency,
 					Value:            fmt.Sprintf("%.2f", net),
-					Amount:           net,
-					GrossAmount:      math.Abs(amount),
-					NormalizedAmount: net,
-					Fee:              fee,
+					Amount:           roundCents(net),
+					GrossAmount:      roundCents(math.Abs(amount)),
+					NormalizedAmount: roundCents(net),
+					Fee:              roundCents(fee),
 					Type:             txType,
-					Counterparty:     tx.Description,
+					Counterparty:     counterparty,
 					Timestamp:        tx.Created,
 					StripeChargeID:   tx.ID,
-					Metadata: map[string]interface{}{
-						"category":    tx.ReportingCategory,
-						"description": tx.Description,
-					},
+					Metadata:         metadata,
 				})
 			}
 		}
@@ -1533,6 +1689,14 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 
 			accountAddr := txFile.Account
 			tokenSymbol := txFile.Token
+
+			// Derive account slug from filename: {slug}.{token}.json
+			accountSlug := chain
+			fname := e.Name()
+			if idx := strings.Index(fname, "."); idx > 0 {
+				accountSlug = fname[:idx]
+			}
+
 			if tokenSymbol == "" {
 				tokenSymbol = chain
 			}
@@ -1549,17 +1713,36 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				result := new(big.Float).Quo(val, divisor)
 				amount, _ := result.Float64()
 
+				zeroAddr := "0x0000000000000000000000000000000000000000"
 				txType := "CREDIT"
 				counterparty := tx.From
-				if strings.EqualFold(tx.From, accountAddr) {
-					txType = "DEBIT"
-					counterparty = tx.To
+				if accountAddr != "" {
+					// Wallet-specific tracking: outgoing = DEBIT
+					if strings.EqualFold(tx.From, accountAddr) {
+						txType = "DEBIT"
+						counterparty = tx.To
+					}
+				} else {
+					// Token-wide tracking (e.g. CHT): classify by mint/burn/transfer
+					if strings.EqualFold(tx.From, zeroAddr) {
+						txType = "CREDIT" // mint
+					} else if strings.EqualFold(tx.To, zeroAddr) {
+						txType = "DEBIT" // burn
+					} else {
+						txType = "TRANSFER" // regular transfer between addresses
+					}
+					counterparty = tx.From
 				}
 
 				// Detect internal transfers: both from and to are tracked accounts
 				_, fromTracked := trackedAddresses[strings.ToLower(tx.From)]
 				_, toTracked := trackedAddresses[strings.ToLower(tx.To)]
 				isInternal := fromTracked && toTracked
+
+				// EURb accounts (fridge, coffee) are like Stripe: withdrawals are internal
+				if txType == "DEBIT" && strings.EqualFold(tokenSymbol, "EURb") {
+					isInternal = true
+				}
 
 				if isInternal {
 					// Only keep one side of internal transfers (skip if we already saw this tx)
@@ -1581,7 +1764,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					Provider:         "etherscan",
 					Chain:            &chainStr,
 					Account:          accountAddr,
-					AccountSlug:      chain,
+					AccountSlug:      accountSlug,
 					AccountName:      fmt.Sprintf("⛓️ %s %s", strings.Title(chain), tokenSymbol),
 					Currency:         tokenSymbol,
 					Value:            fmt.Sprintf("%.6f", amount),
@@ -1626,120 +1809,88 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		processChainDir(chain)
 	}
 
-	// Process Monerium orders (SEPA in/out)
-	moneriumDir := filepath.Join(financeDir, "monerium", "private")
-	if entries, err := os.ReadDir(moneriumDir); err == nil {
+	// Enrich blockchain transactions with Monerium counterparty data
+	// Monerium orders have txHashes that match on-chain EURe transactions
+	moneriumEnrichDir := filepath.Join(financeDir, "monerium", "private")
+	if entries, err := os.ReadDir(moneriumEnrichDir); err == nil {
+		// Build map: txHash → Monerium order counterparty + memo
+		type moneriumInfo struct {
+			Counterparty string
+			Memo         string
+		}
+		moneriumByHash := map[string]*moneriumInfo{}
+
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 				continue
 			}
-			data, err := os.ReadFile(filepath.Join(moneriumDir, e.Name()))
+			data, err := os.ReadFile(filepath.Join(moneriumEnrichDir, e.Name()))
 			if err != nil {
 				continue
 			}
-
 			var cacheFile struct {
 				Orders []struct {
-					ID       string `json:"id"`
-					Kind     string `json:"kind"` // "redeem" = out, "issue" = in
-					Address  string `json:"address"`
-					Chain    string `json:"chain"`
-					Currency string `json:"currency"`
-					Amount   string `json:"amount"`
-					State    string `json:"state"`
-					Memo     string `json:"memo"`
+					Kind        string `json:"kind"`
+					Memo        string `json:"memo"`
+					State       string `json:"state"`
 					Counterpart struct {
 						Details struct {
 							Name        string `json:"name"`
 							CompanyName string `json:"companyName"`
+							FirstName   string `json:"firstName"`
+							LastName    string `json:"lastName"`
 						} `json:"details"`
 					} `json:"counterpart"`
 					Meta struct {
-						PlacedAt    string   `json:"placedAt"`
-						ProcessedAt string   `json:"processedAt"`
-						TxHashes    []string `json:"txHashes"`
+						TxHashes []string `json:"txHashes"`
 					} `json:"meta"`
 				} `json:"orders"`
-				Address string `json:"address"`
 			}
-			if json.Unmarshal(data, &cacheFile) != nil || len(cacheFile.Orders) == 0 {
+			if json.Unmarshal(data, &cacheFile) != nil {
 				continue
 			}
-
-			slug := strings.TrimSuffix(e.Name(), ".json")
-
 			for _, order := range cacheFile.Orders {
-				if order.State != "processed" && order.State != "pending" {
+				name := order.Counterpart.Details.CompanyName
+				if name == "" {
+					name = order.Counterpart.Details.Name
+				}
+				if name == "" && order.Counterpart.Details.FirstName != "" {
+					name = order.Counterpart.Details.FirstName + " " + order.Counterpart.Details.LastName
+				}
+				if name == "" {
 					continue
 				}
-
-				amount := 0.0
-				fmt.Sscanf(order.Amount, "%f", &amount)
-
-				txType := "CREDIT"
-				if order.Kind == "redeem" {
-					txType = "DEBIT"
+				for _, hash := range order.Meta.TxHashes {
+					moneriumByHash[strings.ToLower(hash)] = &moneriumInfo{
+						Counterparty: name,
+						Memo:         order.Memo,
+					}
 				}
+			}
+		}
 
-				// Use company/name as counterparty (public, no IBAN)
-				counterparty := order.Counterpart.Details.CompanyName
-				if counterparty == "" {
-					counterparty = order.Counterpart.Details.Name
-				}
-				if counterparty == "" {
-					counterparty = "SEPA " + order.Kind
-				}
-
-				ts := int64(0)
-				dateStr := order.Meta.ProcessedAt
-				if dateStr == "" {
-					dateStr = order.Meta.PlacedAt
-				}
-				if t, err := time.Parse(time.RFC3339, dateStr); err == nil {
-					ts = t.Unix()
-				} else if t, err := time.Parse(time.RFC3339Nano, dateStr); err == nil {
-					ts = t.Unix()
-				}
-
-				txHash := order.ID
-				if len(order.Meta.TxHashes) > 0 {
-					txHash = order.Meta.TxHashes[0]
-				}
-
-				// Skip if this on-chain tx was already counted from the blockchain sync
-				if txHash != order.ID && seenTxHash[strings.ToLower(txHash)] {
+		// Enrich blockchain transactions
+		if len(moneriumByHash) > 0 {
+			for i := range transactions {
+				tx := &transactions[i]
+				if tx.Provider != "etherscan" || tx.TxHash == "" {
 					continue
 				}
-				seenTxHash[strings.ToLower(txHash)] = true
-
-				currency := strings.ToUpper(order.Currency)
-				if currency == "" {
-					currency = "EUR"
+				if info, ok := moneriumByHash[strings.ToLower(tx.TxHash)]; ok {
+					// Only enrich if counterparty is a raw address (not already named)
+					if strings.HasPrefix(tx.Counterparty, "0x") {
+						tx.Counterparty = info.Counterparty
+					}
+					if info.Memo != "" {
+						if tx.Metadata == nil {
+							tx.Metadata = map[string]interface{}{}
+						}
+						tx.Metadata["memo"] = info.Memo
+						if tx.Metadata["description"] == nil || tx.Metadata["description"] == "" {
+							tx.Metadata["description"] = info.Memo
+						}
+					}
 				}
-
-				chain := "monerium"
-				transactions = append(transactions, TransactionEntry{
-					ID:               fmt.Sprintf("monerium:%s", order.ID),
-					TxHash:           txHash,
-					Provider:         "monerium",
-					Chain:            &chain,
-					Account:          cacheFile.Address,
-					AccountSlug:      slug,
-					AccountName:      "🏦 Monerium",
-					Currency:         currency,
-					Value:            order.Amount,
-					Amount:           amount,
-					GrossAmount:      amount,
-					NormalizedAmount: amount,
-					Fee:              0,
-					Type:             txType,
-					Counterparty:     counterparty,
-					Timestamp:        ts,
-					Metadata: map[string]interface{}{
-						"memo":  order.Memo,
-						"state": order.State,
-					},
-				})
 			}
 		}
 	}
@@ -1748,20 +1899,226 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		return 0
 	}
 
+	// Load Nostr annotations (highest priority for categorization)
+	nostrAnnotations := map[string]*TxAnnotation{}
+	// Stripe annotations
+	stripeAnnotPath := filepath.Join(dataDir, year, month, "finance", "stripe", "nostr-annotations.json")
+	if data, err := os.ReadFile(stripeAnnotPath); err == nil {
+		var cache NostrAnnotationCache
+		if json.Unmarshal(data, &cache) == nil {
+			for k, v := range cache.Annotations {
+				nostrAnnotations[k] = v
+			}
+		}
+	}
+	// Blockchain annotations (from existing nostr-metadata.json tags)
+	// These are already applied during transaction building above via TxMetadata.Tags
+
+	// Load Odoo enrichment (second priority)
+	odooCategories := map[string]string{} // stripeRef -> category
+	odooPath := filepath.Join(dataDir, year, month, "finance", "odoo", "analytic-enrichment.json")
+	if data, err := os.ReadFile(odooPath); err == nil {
+		var odooEnrich struct {
+			Mappings []struct {
+				StripeReference string `json:"stripeReference"`
+				Category        string `json:"category"`
+			} `json:"mappings"`
+		}
+		if json.Unmarshal(data, &odooEnrich) == nil {
+			for _, m := range odooEnrich.Mappings {
+				odooCategories[m.StripeReference] = m.Category
+			}
+		}
+	}
+
+	// Load CSV enrichment (imported spreadsheet)
+	csvEnrichment := LoadStripeCSVEnrichment()
+
+	// Apply enrichment priority chain: Nostr > CSV > Odoo > Local rules
+	if settings != nil {
+		categorizer := NewCategorizer(settings)
+		for i := range transactions {
+			tx := &transactions[i]
+
+			// Build URI for Nostr lookup
+			var uri string
+			if tx.Provider == "stripe" && tx.StripeChargeID != "" {
+				uri = BuildStripeURI(tx.StripeChargeID)
+			} else if tx.Provider == "etherscan" && tx.TxHash != "" {
+				// Check if blockchain tx already has category from Nostr tags (set during enrichment above)
+				if cat, ok := tx.Metadata["category"]; ok {
+					if catStr, ok := cat.(string); ok && catStr != "" && tx.Category == "" {
+						tx.Category = catStr
+					}
+				}
+				if col, ok := tx.Metadata["collective"]; ok {
+					if colStr, ok := col.(string); ok && colStr != "" && tx.Collective == "" {
+						tx.Collective = colStr
+					}
+				}
+			}
+
+			// 1. Nostr annotations (highest priority)
+			if uri != "" {
+				if ann, ok := nostrAnnotations[uri]; ok {
+					if ann.Category != "" {
+						tx.Category = ann.Category
+					}
+					if ann.Collective != "" {
+						tx.Collective = ann.Collective
+					}
+					if ann.Event != "" {
+						tx.Event = ann.Event
+					}
+				}
+			}
+
+			// 1b. Auto-assign collective from Stripe metadata
+			if tx.Collective == "" {
+				// From payment link metadata: stripe_collective = "openletter"
+				if col, ok := tx.Metadata["stripe_collective"]; ok {
+					if colStr, ok := col.(string); ok && colStr != "" {
+						tx.Collective = colStr
+					}
+				}
+			}
+			if tx.Collective == "" {
+				// From Open Collective: stripe_to = "https://opencollective.com/openletter"
+				if to, ok := tx.Metadata["stripe_to"]; ok {
+					if toStr, ok := to.(string); ok && strings.Contains(toStr, "opencollective.com/") {
+						parts := strings.Split(toStr, "opencollective.com/")
+						if len(parts) == 2 {
+							slug := strings.TrimRight(parts[1], "/")
+							if slug != "" {
+								tx.Collective = slug
+							}
+						}
+					}
+				}
+			}
+
+			// 1c. Auto-assign event from Stripe/Nostr metadata
+			if tx.Event == "" {
+				// Luma: stripe_event_api_id is the same UID as in events.json
+				if evtID, ok := tx.Metadata["stripe_event_api_id"]; ok {
+					if evtStr, ok := evtID.(string); ok && evtStr != "" {
+						tx.Event = evtStr
+					}
+				}
+			}
+
+			// 2. CSV enrichment (from imported spreadsheet)
+			if csvEnrichment != nil && tx.Provider == "stripe" {
+				if entry, ok := csvEnrichment.Entries[tx.TxHash]; ok {
+					if entry.Category != "" && tx.Category == "" {
+						tx.Category = entry.Category
+					}
+					if entry.Collective != "" && tx.Collective == "" {
+						tx.Collective = entry.Collective
+					}
+					if entry.Product != "" {
+						if tx.Metadata == nil {
+							tx.Metadata = map[string]interface{}{}
+						}
+						tx.Metadata["product"] = entry.Product
+					}
+				}
+			}
+
+			// 3. Odoo enrichment (third priority, only if not set by above)
+			if tx.Category == "" && tx.StripeChargeID != "" {
+				if cat, ok := odooCategories[tx.StripeChargeID]; ok {
+					tx.Category = cat
+				}
+			}
+
+			// 4. Local rules (lowest priority, only if not set by higher sources)
+			if tx.Category == "" {
+				tx.Category = categorizer.Categorize(*tx)
+			}
+			if tx.Collective == "" {
+				tx.Collective = categorizer.CollectiveFor(*tx)
+			}
+		}
+	}
+
 	// Sort by timestamp
 	sort.Slice(transactions, func(i, j int) bool {
 		return transactions[i].Timestamp < transactions[j].Timestamp
 	})
 
+	// Split PII from public transactions
+	piiFile := TransactionsPIIFile{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Enrichments: map[string]*TransactionPII{},
+	}
+
+	publicTxs := make([]TransactionEntry, len(transactions))
+	for i, tx := range transactions {
+		publicTxs[i] = tx
+
+		// Extract PII: customer name (for Stripe) and email
+		var piiName, piiEmail string
+		if email, ok := tx.Metadata["email"].(string); ok && email != "" {
+			piiEmail = email
+		}
+
+		// For Stripe/Monerium, counterparty may be a person's name (PII)
+		// Blockchain 0x addresses are public, not PII
+		if tx.Provider == "stripe" || tx.Provider == "monerium" {
+			if tx.Counterparty != "" && !strings.HasPrefix(tx.Counterparty, "0x") {
+				piiName = tx.Counterparty
+				// Replace with description or generic label in public version
+				if desc, ok := tx.Metadata["description"].(string); ok && desc != "" {
+					publicTxs[i].Counterparty = desc
+				} else if cat, ok := tx.Metadata["category"].(string); ok && cat != "" {
+					publicTxs[i].Counterparty = tx.Provider + " " + cat
+				} else {
+					publicTxs[i].Counterparty = tx.Provider + " " + strings.ToLower(tx.Type)
+				}
+			}
+		}
+
+		// Strip email from public metadata
+		if piiEmail != "" {
+			publicMeta := make(map[string]interface{}, len(tx.Metadata))
+			for k, v := range tx.Metadata {
+				publicMeta[k] = v
+			}
+			delete(publicMeta, "email")
+			publicTxs[i].Metadata = publicMeta
+		}
+
+		if piiName != "" || piiEmail != "" {
+			piiFile.Enrichments[tx.ID] = &TransactionPII{
+				Name:  piiName,
+				Email: piiEmail,
+			}
+		}
+	}
+
 	out := TransactionsFile{
 		Year:         year,
 		Month:        month,
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
-		Transactions: transactions,
+		Transactions: publicTxs,
 	}
 
 	txData, _ := json.MarshalIndent(out, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "transactions.json"), txData)
+
+	// Save PII enrichment to private directory
+	if len(piiFile.Enrichments) > 0 {
+		piiData, _ := json.MarshalIndent(piiFile, "", "  ")
+		piiRelPath := filepath.Join("generated", "private", "enrichment.json")
+		dir := filepath.Join(dataDir, year, month, filepath.Dir(piiRelPath))
+		os.MkdirAll(dir, 0755)
+		os.WriteFile(filepath.Join(dataDir, year, month, piiRelPath), piiData, 0600)
+		// Also write to latest
+		latestDir := filepath.Join(dataDir, "latest", filepath.Dir(piiRelPath))
+		os.MkdirAll(latestDir, 0755)
+		os.WriteFile(filepath.Join(dataDir, "latest", piiRelPath), piiData, 0600)
+	}
 
 	return len(transactions)
 }
@@ -1816,6 +2173,99 @@ func generateCounterpartiesGo(dataDir, year, month string) {
 
 	cpData, _ := json.MarshalIndent(out, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "counterparties.json"), cpData)
+}
+
+// ── Latest events generation ────────────────────────────────────────────────
+
+// LatestEvent is a simplified event for the website
+type LatestEvent struct {
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description,omitempty"`
+	StartAt         string          `json:"startAt"`
+	EndAt           string          `json:"endAt,omitempty"`
+	URL             string          `json:"url,omitempty"`
+	CoverImage      string          `json:"coverImage,omitempty"`
+	CoverImageLocal string          `json:"coverImageLocal,omitempty"`
+	Tags            json.RawMessage `json:"tags,omitempty"`
+	Location        string          `json:"location,omitempty"`
+}
+
+type LatestEventsFile struct {
+	GeneratedAt string        `json:"generatedAt"`
+	Count       int           `json:"count"`
+	Events      []LatestEvent `json:"events"`
+}
+
+func generateLatestEventsGo(dataDir string, years []string) {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+
+	var allEvents []FullEvent
+
+	for _, year := range years {
+		yearPath := filepath.Join(dataDir, year)
+		monthDirs, err := os.ReadDir(yearPath)
+		if err != nil {
+			continue
+		}
+		for _, d := range monthDirs {
+			if !d.IsDir() || len(d.Name()) != 2 {
+				continue
+			}
+			eventsPath := filepath.Join(yearPath, d.Name(), "generated", "events.json")
+			data, err := os.ReadFile(eventsPath)
+			if err != nil {
+				continue
+			}
+			var ef FullEventsFile
+			if json.Unmarshal(data, &ef) == nil {
+				allEvents = append(allEvents, ef.Events...)
+			}
+		}
+	}
+
+	// Filter to upcoming public events (have a URL and startAt >= today)
+	var upcoming []LatestEvent
+	for _, ev := range allEvents {
+		startDate := ev.StartAt
+		if len(startDate) >= 10 {
+			startDate = startDate[:10]
+		}
+		if startDate < today {
+			continue
+		}
+		if ev.URL == "" {
+			continue
+		}
+		upcoming = append(upcoming, LatestEvent{
+			ID:              ev.ID,
+			Name:            ev.Name,
+			Description:     ev.Description,
+			StartAt:         ev.StartAt,
+			EndAt:           ev.EndAt,
+			URL:             ev.URL,
+			CoverImage:      ev.CoverImage,
+			CoverImageLocal: ev.CoverImageLocal,
+			Tags:            ev.Tags,
+			Location:        ev.Location,
+		})
+	}
+
+	// Sort by start date ascending
+	sort.Slice(upcoming, func(i, j int) bool {
+		return upcoming[i].StartAt < upcoming[j].StartAt
+	})
+
+	outputPath := filepath.Join(dataDir, "latest", "generated", "events.json")
+	os.MkdirAll(filepath.Dir(outputPath), 0755)
+	out := LatestEventsFile{
+		GeneratedAt: now.UTC().Format(time.RFC3339),
+		Count:       len(upcoming),
+		Events:      upcoming,
+	}
+	writeJSONFile(outputPath, out)
+	fmt.Printf("  ✓ latest/events.json: %d upcoming event(s)\n", len(upcoming))
 }
 
 // ── Generated README ────────────────────────────────────────────────────────
@@ -1910,4 +2360,203 @@ to produce derived data files needed by the website:
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 	)
+}
+
+// ── Members generation ─────────────────────────────────────────────────────
+
+// generateMembersGo builds members.json for each month and latest/ from cached
+// provider snapshots (written by `chb members sync`).
+func generateMembersGo(dataDir string, years []string) {
+	totalMonths := 0
+	var latestMembers []Member
+	var latestSummary MembersSummary
+	var latestYM string
+
+	for _, year := range years {
+		months := getAvailableMonths(dataDir, year)
+		for _, month := range months {
+			snapshots := loadCachedProviderSnapshots(dataDir, year, month)
+			if len(snapshots) == 0 {
+				continue
+			}
+
+			members := mergeProviderSnapshots(snapshots)
+			summary := calculateMembersSummary(members)
+
+			out := MembersOutputFile{
+				Year:        year,
+				Month:       month,
+				ProductID:   "mixed",
+				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				Summary:     summary,
+				Members:     members,
+			}
+
+			data, _ := json.MarshalIndent(out, "", "  ")
+			writeMonthFile(dataDir, year, month, filepath.Join("generated", "members.json"), data)
+			totalMonths++
+
+			ym := year + "-" + month
+			if ym > latestYM {
+				latestYM = ym
+				latestMembers = members
+				latestSummary = summary
+			}
+
+			fmt.Printf("  ✓ %s-%s: %d members (active: %d, MRR: €%.2f)\n",
+				year, month, len(members), summary.ActiveMembers, summary.MRR.Value)
+		}
+	}
+
+	// Write latest
+	if latestMembers != nil {
+		parts := strings.SplitN(latestYM, "-", 2)
+		out := MembersOutputFile{
+			Year:        parts[0],
+			Month:       parts[1],
+			ProductID:   "mixed",
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+			Summary:     latestSummary,
+			Members:     latestMembers,
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		latestPath := filepath.Join(dataDir, "latest", "generated", "members.json")
+		os.MkdirAll(filepath.Dir(latestPath), 0755)
+		os.WriteFile(latestPath, data, 0644)
+	}
+
+	if totalMonths == 0 {
+		fmt.Printf("  %sNo provider snapshots found. Run `chb members sync` first.%s\n", Fmt.Dim, Fmt.Reset)
+	}
+}
+
+// loadCachedProviderSnapshots loads Stripe and Odoo provider snapshots from disk
+// for a given year/month.
+func loadCachedProviderSnapshots(dataDir, year, month string) []providerSnapshot {
+	var snapshots []providerSnapshot
+	monthPath := filepath.Join(dataDir, year, month)
+
+	providers := []string{"stripe", "odoo"}
+	for _, p := range providers {
+		snapPath := filepath.Join(monthPath, "finance", p, "subscriptions.json")
+		data, err := os.ReadFile(snapPath)
+		if err != nil {
+			continue
+		}
+		var snap providerSnapshot
+		if json.Unmarshal(data, &snap) == nil && len(snap.Subscriptions) > 0 {
+			snapshots = append(snapshots, snap)
+		}
+	}
+
+	return snapshots
+}
+
+// ── Address mapping ────────────────────────────────────────────────────────
+
+var discordAvatarRe = regexp.MustCompile(`avatars/(\d+)/`)
+
+// buildAddressToDiscordMap builds a wallet address → Discord user ID mapping
+// from nostr-metadata files (which contain Discord avatar URLs).
+func buildAddressToDiscordMap(dataDir, year, month string) map[string]string {
+	result := map[string]string{}
+
+	// Search for nostr-metadata.json in all chain directories
+	financeDir := filepath.Join(dataDir, year, month, "finance")
+	chains, _ := os.ReadDir(financeDir)
+	for _, chain := range chains {
+		if !chain.IsDir() {
+			continue
+		}
+		metaPath := filepath.Join(financeDir, chain.Name(), "nostr-metadata.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			Addresses map[string]struct {
+				Address string `json:"address"`
+				Picture string `json:"picture"`
+			} `json:"addresses"`
+		}
+		if json.Unmarshal(data, &meta) != nil {
+			continue
+		}
+		for addr, info := range meta.Addresses {
+			if m := discordAvatarRe.FindStringSubmatch(info.Picture); len(m) == 2 {
+				result[strings.ToLower(addr)] = m[1]
+			}
+		}
+	}
+
+	// Also check latest/ if year/month is "latest"
+	if year != "latest" {
+		latestFinance := filepath.Join(dataDir, "latest", "finance")
+		chains, _ := os.ReadDir(latestFinance)
+		for _, chain := range chains {
+			if !chain.IsDir() {
+				continue
+			}
+			metaPath := filepath.Join(latestFinance, chain.Name(), "nostr-metadata.json")
+			data, err := os.ReadFile(metaPath)
+			if err != nil {
+				continue
+			}
+			var meta struct {
+				Addresses map[string]struct {
+					Address string `json:"address"`
+					Picture string `json:"picture"`
+				} `json:"addresses"`
+			}
+			if json.Unmarshal(data, &meta) != nil {
+				continue
+			}
+			for addr, info := range meta.Addresses {
+				if _, exists := result[strings.ToLower(addr)]; exists {
+					continue
+				}
+				if m := discordAvatarRe.FindStringSubmatch(info.Picture); len(m) == 2 {
+					result[strings.ToLower(addr)] = m[1]
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// ── Discord member count ───────────────────────────────────────────────────
+
+// fetchDiscordMemberCount returns the approximate member count for the guild.
+func fetchDiscordMemberCount(settings *Settings) int {
+	if settings == nil || settings.Discord.GuildID == "" {
+		return 0
+	}
+	token := os.Getenv("DISCORD_BOT_TOKEN")
+	if token == "" {
+		return 0
+	}
+
+	url := fmt.Sprintf("https://discord.com/api/v10/guilds/%s?with_counts=true", settings.Discord.GuildID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Authorization", "Bot "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return 0
+	}
+
+	var guild struct {
+		ApproximateMemberCount int `json:"approximate_member_count"`
+	}
+	json.NewDecoder(resp.Body).Decode(&guild)
+	return guild.ApproximateMemberCount
 }

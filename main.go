@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/CommonsHub/chb/cmd"
 )
@@ -28,9 +29,21 @@ func main() {
 	case "--version", "-v", "version":
 		cmd.PrintVersion()
 	case "setup":
-		if err := cmd.Setup(); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+		if len(args) > 1 && args[1] == "nostr" {
+			if err := cmd.SetupNostr(); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		} else if len(args) > 1 && args[1] == "odoo" {
+			if err := cmd.SetupOdoo(); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		} else {
+			if err := cmd.Setup(); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
 		}
 	case "update":
 		yes := cmd.HasFlag(args[1:], "--yes", "-y")
@@ -63,17 +76,45 @@ func main() {
 			cmd.BookingsList(args[1:])
 		}
 	case "transactions":
-		if len(args) > 1 && args[1] == "sync" {
-			if err := cmd.TransactionsSync(args[2:]); err != nil {
+		// Parse subcommand and currency from args in any order
+		// e.g. "transactions sync", "transactions EUR categorize", "transactions CHT"
+		txArgs := args[1:]
+		txSubcmd := ""
+		for _, a := range txArgs {
+			switch strings.ToLower(a) {
+			case "sync", "categorize", "publish", "stats":
+				txSubcmd = strings.ToLower(a)
+			}
+		}
+		// Check for "sync nostr" compound subcommand
+		hasSyncNostr := txSubcmd == "sync" && hasArg(txArgs, "nostr")
+
+		switch {
+		case hasSyncNostr:
+			if err := cmd.TransactionsSyncNostr(txArgs); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 				os.Exit(1)
 			}
-		} else {
-			cmd.TransactionsStats(args[1:])
+		case txSubcmd == "sync":
+			if _, err := cmd.TransactionsSync(txArgs); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		case txSubcmd == "categorize":
+			cmd.TransactionsCategorize(txArgs)
+		case txSubcmd == "publish":
+			if err := cmd.TransactionsPublish(txArgs); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		case txSubcmd == "stats":
+			cmd.TransactionsStats(txArgs)
+		default:
+			cmd.TransactionsBrowser(txArgs)
 		}
 	case "messages":
 		if len(args) > 1 && args[1] == "sync" {
-			if err := cmd.MessagesSync(args[2:]); err != nil {
+			if _, err := cmd.MessagesSync(args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 				os.Exit(1)
 			}
@@ -85,7 +126,7 @@ func main() {
 		}
 	case "images":
 		if len(args) > 1 && (args[1] == "sync" || args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
-			if err := cmd.ImagesSync(args[1:]); err != nil {
+			if _, err := cmd.ImagesSync(args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 				os.Exit(1)
 			}
@@ -107,6 +148,29 @@ func main() {
 		} else {
 			cmd.MembersStats(args[1:])
 		}
+	case "odoo":
+		subcmd := ""
+		if len(args) > 1 {
+			subcmd = args[1]
+		}
+		switch subcmd {
+		case "sync":
+			if _, err := cmd.OdooAnalyticSync(args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		case "journals":
+			if err := cmd.OdooJournals(args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+				os.Exit(1)
+			}
+		default:
+			cmd.PrintOdooHelp()
+		}
+	case "rules":
+		cmd.RulesCommand(args[1:])
+	case "accounts":
+		cmd.AccountsCommand(args[1:])
 	case "stats":
 		cmd.Stats(args[1:])
 	case "sync":
@@ -124,4 +188,13 @@ func main() {
 		cmd.PrintHelp(VERSION)
 		os.Exit(1)
 	}
+}
+
+func hasArg(args []string, target string) bool {
+	for _, a := range args {
+		if strings.EqualFold(a, target) {
+			return true
+		}
+	}
+	return false
 }
