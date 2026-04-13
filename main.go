@@ -8,7 +8,7 @@ import (
 	"github.com/CommonsHub/chb/cmd"
 )
 
-const VERSION = "2.2.1"
+const VERSION = "2.2.2"
 
 func main() {
 	cmd.LoadEnvFromConfig()
