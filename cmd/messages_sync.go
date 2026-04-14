@@ -88,6 +88,8 @@ func MessagesSync(args []string) (int, error) {
 
 	// Check --since / --history
 	resolvedSince, isSince := ResolveSinceMonth(args, "messages")
+	recentStartMonth := DefaultRecentStartMonth(time.Now())
+	defaultRecentWindow := !isSince && !posFound && monthFilter == ""
 
 	fmt.Printf("\n%s💬 Syncing Discord messages%s\n", Fmt.Bold, Fmt.Reset)
 	fmt.Printf("%sDATA_DIR: %s%s\n", Fmt.Dim, DataDir(), Fmt.Reset)
@@ -117,8 +119,11 @@ func MessagesSync(args []string) (int, error) {
 				stopMonth = findOldestCachedMonthForChannel(channelID)
 			}
 			messages, err = fetchAllChannelMessages(channelID, token, stopMonth)
+		} else if defaultRecentWindow {
+			messages, err = fetchAllChannelMessages(channelID, token, recentStartMonth)
 		} else {
-			// Default: fetch one page (latest 100 messages), no pagination
+			// Explicit month/year filters only need the latest page unless the user
+			// requested a broader historical sync.
 			messages, err = fetchLatestMessages(channelID, token)
 		}
 
@@ -146,6 +151,9 @@ func MessagesSync(args []string) (int, error) {
 			monthMsgs := byMonth[ym]
 
 			if monthFilter != "" && ym != monthFilter {
+				continue
+			}
+			if defaultRecentWindow && ym < recentStartMonth {
 				continue
 			}
 			// --since / --history filter
@@ -216,6 +224,8 @@ func MessagesSync(args []string) (int, error) {
 	}
 
 	fmt.Printf("\n%s✓ Done!%s %d messages synced\n\n", Fmt.Green, Fmt.Reset, totalMessages)
+	UpdateSyncSource("messages", isSince)
+	UpdateSyncActivity(isSince)
 	return totalMessages, nil
 }
 
@@ -383,7 +393,7 @@ func printMessagesSyncHelp() {
   %schb messages sync%s [year[/month]] [options]
 
 %sTIME RANGE%s
-  %s(no args)%s              Fetch all messages, save all months
+  %s(no args)%s              Fetch current month + previous month
   %s<year/month>%s           Only save messages from that month (e.g. 2025/03)
   %s<year>%s                 Only save messages from that year (e.g. 2025)
   %s--since%s YYYY/MM        Only save messages from that month onward (also: YYYYMM)
@@ -413,7 +423,7 @@ func printMessagesSyncHelp() {
   %sDISCORD_BOT_TOKEN%s      Discord bot token (configure via chb setup)
 
 %sEXAMPLES%s
-  %schb messages sync%s                             Fetch all channels, all history
+  %schb messages sync%s                             Fetch all channels for the recent 2-month window
   %schb messages sync --history%s                   Fetch new messages since last sync
   %schb messages sync --channel general%s           Fetch only #general
   %schb messages sync --channel 129796 --force%s    Re-fetch a specific channel

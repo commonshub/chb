@@ -112,7 +112,7 @@ func TransactionsSyncNostr(args []string) error {
 		uris[i] = t.URI
 	}
 
-	annotations, err := FetchNostrAnnotations(uris)
+	annotations, err := FetchNostrAnnotations(uris, nil)
 	if err != nil {
 		fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
 	} else {

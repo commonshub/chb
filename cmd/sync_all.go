@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 // SyncAll runs all sync commands sequentially.
@@ -13,6 +14,8 @@ func SyncAll(args []string, version string) error {
 		PrintSyncAllHelp()
 		return nil
 	}
+
+	startedAt := time.Now()
 
 	if HasFlag(args, "--history") || GetOption(args, "--since") != "" {
 		fmt.Printf("\n%s🔄 Syncing history...%s\n", Fmt.Bold, Fmt.Reset)
@@ -74,8 +77,9 @@ func SyncAll(args []string, version string) error {
 
 	// Print summary
 	hasAny := newBookings > 0 || newTx > 0 || newMessages > 0 || newImages > 0
+	elapsed := time.Since(startedAt).Round(100 * time.Millisecond)
 	if hasAny {
-		fmt.Printf("\n%s✓ Sync complete%s\n", Fmt.Green, Fmt.Reset)
+		fmt.Printf("\n%s✓ Sync complete in %s%s\n", Fmt.Green, elapsed, Fmt.Reset)
 		if newBookings > 0 {
 			if newEvents > 0 {
 				fmt.Printf("  📅 %d new bookings, including %d events\n", newBookings, newEvents)
@@ -93,7 +97,7 @@ func SyncAll(args []string, version string) error {
 			fmt.Printf("  📸 %d new images\n", newImages)
 		}
 	} else {
-		fmt.Printf("\n%s✓ Everything up to date%s\n", Fmt.Green, Fmt.Reset)
+		fmt.Printf("\n%s✓ Everything up to date in %s%s\n", Fmt.Green, elapsed, Fmt.Reset)
 	}
 	fmt.Println()
 

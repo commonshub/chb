@@ -13,9 +13,9 @@ import (
 // StripeChargeEnrichment holds private customer/app data from Stripe charges.
 // Stored in finance/stripe/private/charges.json per month.
 type StripeChargeEnrichment struct {
-	FetchedAt    string                    `json:"fetchedAt"`
-	Charges      map[string]*StripeCharge  `json:"charges"`      // keyed by charge ID (ch_...)
-	RefundToCharge map[string]string       `json:"refundToCharge,omitempty"` // re_... → ch_...
+	FetchedAt      string                   `json:"fetchedAt"`
+	Charges        map[string]*StripeCharge `json:"charges"`                  // keyed by charge ID (ch_...)
+	RefundToCharge map[string]string        `json:"refundToCharge,omitempty"` // re_... → ch_...
 }
 
 // StripeCharge holds enrichment data from a Stripe charge object + checkout session.
@@ -42,11 +42,22 @@ var knownStripeApps = map[string]string{
 }
 
 // fetchStripeCharges fetches charge details for a list of charge IDs.
-func fetchStripeCharges(apiKey string, chargeIDs []string) (map[string]*StripeCharge, error) {
+func fetchStripeCharges(apiKey, accountID string, chargeIDs []string) (map[string]*StripeCharge, error) {
 	result := map[string]*StripeCharge{}
 	if len(chargeIDs) == 0 {
 		return result, nil
 	}
+
+	seen := map[string]bool{}
+	var unique []string
+	for _, id := range chargeIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	chargeIDs = unique
 
 	// Batch fetch charges (100 at a time with customer expansion)
 	for i := 0; i < len(chargeIDs); i += 100 {
@@ -56,8 +67,11 @@ func fetchStripeCharges(apiKey string, chargeIDs []string) (map[string]*StripeCh
 		}
 		batch := chargeIDs[i:end]
 
-		for _, chargeID := range batch {
-			charge, err := fetchSingleCharge(apiKey, chargeID)
+		for j, chargeID := range batch {
+			if j == 0 || (i+j+1)%10 == 0 || i+j+1 == len(chargeIDs) {
+				fmt.Printf(" %s%d/%d%s", Fmt.Dim, i+j+1, len(chargeIDs), Fmt.Reset)
+			}
+			charge, err := fetchSingleCharge(apiKey, accountID, chargeID)
 			if err != nil {
 				continue // skip failures silently
 			}
@@ -69,11 +83,11 @@ func fetchStripeCharges(apiKey string, chargeIDs []string) (map[string]*StripeCh
 	return result, nil
 }
 
-func fetchSingleCharge(apiKey, chargeID string) (*StripeCharge, error) {
+func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error) {
 	// Fetch charge with customer + payment_intent expanded
 	chargeURL := fmt.Sprintf("https://api.stripe.com/v1/charges/%s?expand[]=customer&expand[]=payment_intent", chargeID)
 
-	raw, err := stripeGet(apiKey, chargeURL)
+	raw, err := stripeGet(apiKey, accountID, chargeURL)
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +105,8 @@ func fetchSingleCharge(apiKey, chargeID string) (*StripeCharge, error) {
 			Name  string `json:"name"`
 			Email string `json:"email"`
 		} `json:"billing_details"`
-		ReceiptEmail string            `json:"receipt_email"`
-		Metadata     map[string]string `json:"metadata"`
+		ReceiptEmail         string            `json:"receipt_email"`
+		Metadata             map[string]string `json:"metadata"`
 		PaymentMethodDetails *struct {
 			Card *struct {
 				Brand string `json:"brand"`
@@ -160,7 +174,7 @@ func fetchSingleCharge(apiKey, chargeID string) (*StripeCharge, error) {
 	// Fetch checkout session (has metadata from payment links + custom fields)
 	if piID != "" {
 		sessionURL := fmt.Sprintf("https://api.stripe.com/v1/checkout/sessions?payment_intent=%s", piID)
-		sessionRaw, err := stripeGet(apiKey, sessionURL)
+		sessionRaw, err := stripeGet(apiKey, accountID, sessionURL)
 		if err == nil {
 			var sessionResp struct {
 				Data []struct {
@@ -220,14 +234,17 @@ func fetchSingleCharge(apiKey, chargeID string) (*StripeCharge, error) {
 }
 
 // stripeGet makes an authenticated GET request to the Stripe API with retry on 429.
-func stripeGet(apiKey, url string) (json.RawMessage, error) {
+func stripeGet(apiKey, accountID, url string) (json.RawMessage, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if accountID != "" {
+		req.Header.Set("Stripe-Account", accountID)
+	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := stripeHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +252,7 @@ func stripeGet(apiKey, url string) (json.RawMessage, error) {
 
 	if resp.StatusCode == 429 {
 		time.Sleep(2 * time.Second)
-		resp2, err := http.DefaultClient.Do(req)
+		resp2, err := stripeHTTPClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -354,8 +371,8 @@ func extractChargeID(source json.RawMessage) string {
 }
 
 // fetchRefundChargeID fetches the original charge ID for a refund.
-func fetchRefundChargeID(apiKey, refundID string) string {
-	raw, err := stripeGet(apiKey, fmt.Sprintf("https://api.stripe.com/v1/refunds/%s", refundID))
+func fetchRefundChargeID(apiKey, accountID, refundID string) string {
+	raw, err := stripeGet(apiKey, accountID, fmt.Sprintf("https://api.stripe.com/v1/refunds/%s", refundID))
 	if err != nil {
 		return ""
 	}

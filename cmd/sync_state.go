@@ -13,16 +13,23 @@ type SyncSourceState struct {
 	LastSync     string `json:"lastSync,omitempty"`
 }
 
+// SyncRunState tracks the last recent and history-oriented sync runs.
+type SyncRunState struct {
+	LastHistorySync string `json:"lastHistorySync,omitempty"`
+	LastRecentSync  string `json:"lastRecentSync,omitempty"`
+}
+
 // SyncState tracks sync timestamps per source.
 type SyncState struct {
 	Calendars    *SyncSourceState `json:"calendars,omitempty"`
 	Transactions *SyncSourceState `json:"transactions,omitempty"`
 	Messages     *SyncSourceState `json:"messages,omitempty"`
 	Images       *SyncSourceState `json:"images,omitempty"`
+	Runs         *SyncRunState    `json:"runs,omitempty"`
 }
 
 func syncStatePath() string {
-	return filepath.Join(DataDir(), "latest", ".sync-state.json")
+	return filepath.Join(DataDir(), "latest", "sync-status.json")
 }
 
 // LoadSyncState reads the sync state from disk.
@@ -38,12 +45,16 @@ func LoadSyncState() *SyncState {
 	return &state
 }
 
+func writeSyncStateFile(path string, data []byte) {
+	dir := filepath.Dir(path)
+	os.MkdirAll(dir, 0755)
+	os.WriteFile(path, data, 0644)
+}
+
 // SaveSyncState writes the sync state to disk.
 func SaveSyncState(state *SyncState) {
 	data, _ := json.MarshalIndent(state, "", "  ")
-	dir := filepath.Dir(syncStatePath())
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(syncStatePath(), data, 0644)
+	writeSyncStateFile(syncStatePath(), data)
 }
 
 // UpdateSyncSource updates the last sync time for a source and saves.
@@ -79,6 +90,21 @@ func UpdateSyncSource(source string, full bool) {
 	SaveSyncState(state)
 }
 
+// UpdateSyncActivity records the last recent or history sync run.
+func UpdateSyncActivity(history bool) {
+	state := LoadSyncState()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if state.Runs == nil {
+		state.Runs = &SyncRunState{}
+	}
+	if history {
+		state.Runs.LastHistorySync = now
+	} else {
+		state.Runs.LastRecentSync = now
+	}
+	SaveSyncState(state)
+}
+
 // LastSyncMonth returns the YYYY-MM of the last sync for the given source,
 // or empty string if never synced.
 func LastSyncMonth(source string) string {
@@ -102,4 +128,29 @@ func LastSyncMonth(source string) string {
 		return ""
 	}
 	return t.Format("2006-01")
+}
+
+// LastSyncTime returns the last sync timestamp for the given source,
+// or the zero time if never synced or malformed.
+func LastSyncTime(source string) time.Time {
+	state := LoadSyncState()
+	var ss *SyncSourceState
+	switch source {
+	case "calendars":
+		ss = state.Calendars
+	case "transactions":
+		ss = state.Transactions
+	case "messages":
+		ss = state.Messages
+	case "images":
+		ss = state.Images
+	}
+	if ss == nil || ss.LastSync == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, ss.LastSync)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }

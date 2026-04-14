@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var stripeHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
 // StripeTransaction represents a Stripe balance transaction
 type StripeTransaction struct {
 	ID                string                 `json:"id"`
@@ -23,7 +25,7 @@ type StripeTransaction struct {
 	Currency          string                 `json:"currency"`
 	Type              string                 `json:"type"`
 	Description       string                 `json:"description,omitempty"`
-	Source             json.RawMessage        `json:"source,omitempty"`
+	Source            json.RawMessage        `json:"source,omitempty"`
 	ReportingCategory string                 `json:"reporting_category"`
 	Metadata          map[string]interface{} `json:"metadata,omitempty"`
 	// Enriched fields extracted from expanded source during fetch
@@ -49,7 +51,7 @@ type StripeCacheFile struct {
 // StripeCustomerData holds PII extracted from Stripe charges.
 // Saved separately in finance/stripe/private/customers.json.
 type StripeCustomerData struct {
-	FetchedAt string                       `json:"fetchedAt"`
+	FetchedAt string                        `json:"fetchedAt"`
 	Customers map[string]*StripeCustomerPII `json:"customers"` // keyed by balance transaction ID (txn_...)
 }
 
@@ -119,6 +121,8 @@ func TransactionsSync(args []string) (int, error) {
 
 	// Check --since / --history first
 	sinceMonth, isSince := ResolveSinceMonth(args, "finance")
+	isFullSync := isSince
+	lastSyncTime := LastSyncTime("transactions")
 
 	if isSince {
 		startMonth = sinceMonth
@@ -135,15 +139,9 @@ func TransactionsSync(args []string) (int, error) {
 		startMonth = monthFilter
 		endMonth = monthFilter
 	} else {
-		// Default: use last sync month, or full history if never synced
+		// Default: keep syncs bounded to the recent window.
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
-		lastSync := LastSyncMonth("transactions")
-		if lastSync == "" {
-			// Never synced before — do a full sync
-			startMonth = "2024-01"
-		} else {
-			startMonth = lastSync
-		}
+		startMonth = DefaultRecentStartMonth(now)
 	}
 
 	fmt.Printf("\n%s⛓️  Syncing transactions%s\n", Fmt.Bold, Fmt.Reset)
@@ -210,145 +208,150 @@ func TransactionsSync(args []string) (int, error) {
 			} else {
 				fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
 				for _, acc := range etherscanAccounts {
-		fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
+					fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
 
-		// Check if we can skip the full fetch by peeking at the latest tx
-		if !force {
-			filename := fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol)
-			peekHash, peekErr := peekEtherscanLatest(acc, apiKey)
-			if peekErr == nil {
-				cachedLatest := latestCachedEtherscanTxHashGlobal(DataDir(), acc.Chain, filename)
-				if cachedLatest == "" {
-					cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol)
-				}
-				if peekHash == cachedLatest {
-					// Peek matches, but only skip if we're not missing data for months in range.
-					// Etherscan accounts may have data in months we haven't cached yet.
-					relPathFn := func(year, month string) string {
-						return filepath.Join("finance", acc.Chain, filename)
+					// Check if we can skip the full fetch by peeking at the latest tx
+					if !force {
+						filename := fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol)
+						peekHash, peekErr := peekEtherscanLatest(acc, apiKey)
+						if peekErr == nil {
+							cachedLatest := latestCachedEtherscanTxHashGlobal(DataDir(), acc.Chain, filename)
+							if cachedLatest == "" {
+								cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol)
+							}
+							if peekHash == cachedLatest {
+								// Peek matches, but only skip if we're not missing data for months in range.
+								// Etherscan accounts may have data in months we haven't cached yet.
+								relPathFn := func(year, month string) string {
+									return filepath.Join("finance", acc.Chain, filename)
+								}
+								if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
+									fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+									time.Sleep(400 * time.Millisecond)
+									continue
+								}
+							}
+						}
 					}
-					if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
-						fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
-						time.Sleep(400 * time.Millisecond)
+
+					transfers, err := fetchTokenTransfers(acc, apiKey)
+					if err != nil {
+						fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
 						continue
 					}
-				}
-			}
-		}
 
-		transfers, err := fetchTokenTransfers(acc, apiKey)
-		if err != nil {
-			fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
-			continue
-		}
+					fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
 
-		fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
+					// Group by month
+					byMonth := groupTransfersByMonth(transfers)
 
-		// Group by month
-		byMonth := groupTransfersByMonth(transfers)
+					saved := 0
+					for ym, monthTxs := range byMonth {
+						if ym < startMonth || ym > endMonth {
+							continue
+						}
 
-		saved := 0
-		for ym, monthTxs := range byMonth {
-			if ym < startMonth || ym > endMonth {
-				continue
-			}
+						parts := strings.Split(ym, "-")
+						if len(parts) != 2 {
+							continue
+						}
+						year, month := parts[0], parts[1]
 
-			parts := strings.Split(ym, "-")
-			if len(parts) != 2 {
-				continue
-			}
-			year, month := parts[0], parts[1]
+						// Save to data/YYYY/MM/finance/{chain}/{slug}.{token}.json
+						dataDir := DataDir()
+						filename := fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol)
+						relPath := filepath.Join("finance", acc.Chain, filename)
+						filePath := filepath.Join(dataDir, year, month, relPath)
 
-			// Save to data/YYYY/MM/finance/{chain}/{slug}.{token}.json
-			dataDir := DataDir()
-			filename := fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol)
-			relPath := filepath.Join("finance", acc.Chain, filename)
-			filePath := filepath.Join(dataDir, year, month, relPath)
+						// Skip if exists and not force
+						if !force && fileExists(filePath) {
+							// But always update current month
+							if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
+								continue
+							}
+						}
 
-			// Skip if exists and not force
-			if !force && fileExists(filePath) {
-				// But always update current month
-				if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
-					continue
-				}
-			}
+						cache := TransactionsCacheFile{
+							Transactions: monthTxs,
+							CachedAt:     time.Now().UTC().Format(time.RFC3339),
+							Account:      acc.Address,
+							Chain:        acc.Chain,
+							Token:        acc.Token.Symbol,
+						}
 
-			cache := TransactionsCacheFile{
-				Transactions: monthTxs,
-				CachedAt:     time.Now().UTC().Format(time.RFC3339),
-				Account:      acc.Address,
-				Chain:        acc.Chain,
-				Token:        acc.Token.Symbol,
-			}
+						data, _ := json.MarshalIndent(cache, "", "  ")
+						if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
+							fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							continue
+						}
 
-			data, _ := json.MarshalIndent(cache, "", "  ")
-			if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
-				fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
-				continue
-			}
-
-			saved++
-			totalProcessed += len(monthTxs)
-		}
-
-		if saved > 0 {
-			fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
-		}
-
-		// Fetch Nostr metadata for all transfers
-		if !noNostr && acc.ChainID != 0 && len(transfers) > 0 {
-			fmt.Printf("    %sFetching Nostr metadata...%s", Fmt.Dim, Fmt.Reset)
-			txHashes := make([]string, 0, len(transfers))
-			addressSet := map[string]struct{}{}
-			for _, tx := range transfers {
-				txHashes = append(txHashes, tx.Hash)
-				addressSet[strings.ToLower(tx.From)] = struct{}{}
-				addressSet[strings.ToLower(tx.To)] = struct{}{}
-			}
-			addresses := make([]string, 0, len(addressSet))
-			for a := range addressSet {
-				addresses = append(addresses, a)
-			}
-			txMeta, addrMeta, nostrErr := FetchNostrMetadata(acc.ChainID, txHashes, addresses)
-			if nostrErr != nil {
-				fmt.Printf(" %s✗ %v%s\n", Fmt.Red, nostrErr, Fmt.Reset)
-			} else {
-				fmt.Printf(" %s✓ %d tx, %d address annotations%s\n", Fmt.Green, len(txMeta), len(addrMeta), Fmt.Reset)
-				// Collect affected months to write per-month nostr-metadata.json
-				type monthKey struct{ year, month string }
-				byMonth := map[monthKey][]TokenTransfer{}
-				for ym, monthTxs := range groupTransfersByMonth(transfers) {
-					if ym < startMonth || ym > endMonth {
-						continue
+						saved++
+						totalProcessed += len(monthTxs)
 					}
-					parts := strings.Split(ym, "-")
-					if len(parts) != 2 {
-						continue
-					}
-					byMonth[monthKey{parts[0], parts[1]}] = monthTxs
-				}
-				dataDir := DataDir()
-				for mk := range byMonth {
-					nostrCache := NostrMetadataCache{
-						FetchedAt:    time.Now().UTC().Format(time.RFC3339),
-						ChainID:      acc.ChainID,
-						Transactions: txMeta,
-						Addresses:    addrMeta,
-					}
-					nostrData, _ := json.MarshalIndent(nostrCache, "", "  ")
-					nostrRelPath := filepath.Join("finance", acc.Chain, "nostr-metadata.json")
-					writeMonthFile(dataDir, mk.year, mk.month, nostrRelPath, nostrData)
-				}
-			}
-		}
 
-		// Save the latest tx hash so we can skip next time if nothing changed
-		if len(transfers) > 0 {
-			writeLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol, transfers[0].Hash)
-		}
+					if saved > 0 {
+						fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+					}
 
-		// Rate limit between accounts
-		time.Sleep(400 * time.Millisecond)
+					// Fetch Nostr metadata for all transfers
+					if !noNostr && acc.ChainID != 0 && len(transfers) > 0 {
+						fmt.Printf("    %sFetching Nostr metadata...%s", Fmt.Dim, Fmt.Reset)
+						var nostrSince *time.Time
+						if !force && !isSince && !posFound && monthFilter == "" && !lastSyncTime.IsZero() {
+							nostrSince = &lastSyncTime
+							fmt.Printf(" %s(since %s)%s", Fmt.Dim, lastSyncTime.In(BrusselsTZ()).Format(time.RFC3339), Fmt.Reset)
+						}
+						txHashes := make([]string, 0, len(transfers))
+						addressSet := map[string]struct{}{}
+						for _, tx := range transfers {
+							txHashes = append(txHashes, tx.Hash)
+							addressSet[strings.ToLower(tx.From)] = struct{}{}
+							addressSet[strings.ToLower(tx.To)] = struct{}{}
+						}
+						addresses := make([]string, 0, len(addressSet))
+						for a := range addressSet {
+							addresses = append(addresses, a)
+						}
+						txMeta, addrMeta, nostrErr := FetchNostrMetadata(acc.ChainID, txHashes, addresses, nostrSince)
+						if nostrErr != nil {
+							fmt.Printf(" %s✗ %v%s\n", Fmt.Red, nostrErr, Fmt.Reset)
+						} else {
+							fmt.Printf(" %s✓ %d tx, %d address annotations%s\n", Fmt.Green, len(txMeta), len(addrMeta), Fmt.Reset)
+							// Collect affected months to write per-month nostr-metadata.json
+							type monthKey struct{ year, month string }
+							byMonth := map[monthKey][]TokenTransfer{}
+							for ym, monthTxs := range groupTransfersByMonth(transfers) {
+								if ym < startMonth || ym > endMonth {
+									continue
+								}
+								parts := strings.Split(ym, "-")
+								if len(parts) != 2 {
+									continue
+								}
+								byMonth[monthKey{parts[0], parts[1]}] = monthTxs
+							}
+							dataDir := DataDir()
+							for mk := range byMonth {
+								nostrCache := NostrMetadataCache{
+									FetchedAt:    time.Now().UTC().Format(time.RFC3339),
+									ChainID:      acc.ChainID,
+									Transactions: txMeta,
+									Addresses:    addrMeta,
+								}
+								nostrData, _ := json.MarshalIndent(nostrCache, "", "  ")
+								nostrRelPath := filepath.Join("finance", acc.Chain, "nostr-metadata.json")
+								writeMonthFile(dataDir, mk.year, mk.month, nostrRelPath, nostrData)
+							}
+						}
+					}
+
+					// Save the latest tx hash so we can skip next time if nothing changed
+					if len(transfers) > 0 {
+						writeLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol, transfers[0].Hash)
+					}
+
+					// Rate limit between accounts
+					time.Sleep(400 * time.Millisecond)
 				}
 			}
 		}
@@ -364,242 +367,289 @@ func TransactionsSync(args []string) (int, error) {
 		}
 
 		if len(stripeAccounts) > 0 {
-		stripeKey := os.Getenv("STRIPE_SECRET_KEY")
-		if stripeKey == "" {
-			fmt.Printf("\n%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe sync%s\n", Fmt.Yellow, Fmt.Reset)
-		} else {
-			fmt.Printf("\n%s💳 Syncing Stripe transactions%s\n\n", Fmt.Bold, Fmt.Reset)
-			for _, acc := range stripeAccounts {
-				fmt.Printf("  %s%s%s", Fmt.Bold, acc.Name, Fmt.Reset)
-				if acc.AccountID != "" {
-					fmt.Printf(" (%s)", acc.AccountID)
-				}
-				fmt.Println()
-
-				// Check if we can skip the full fetch
-				if !force {
-					relPathFn := func(year, month string) string {
-						return filepath.Join("finance", "stripe", "transactions.json")
+			stripeKey := os.Getenv("STRIPE_SECRET_KEY")
+			if stripeKey == "" {
+				fmt.Printf("\n%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe sync%s\n", Fmt.Yellow, Fmt.Reset)
+			} else {
+				fmt.Printf("\n%s💳 Syncing Stripe transactions%s\n\n", Fmt.Bold, Fmt.Reset)
+				for _, acc := range stripeAccounts {
+					fmt.Printf("  %s%s%s", Fmt.Bold, acc.Name, Fmt.Reset)
+					if acc.AccountID != "" {
+						fmt.Printf(" (%s)", acc.AccountID)
 					}
-					if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
-						cachedPath := currentMonthCacheFile(DataDir(), relPathFn)
-						cachedLatest := latestCachedStripeTxID(cachedPath)
-						if cachedLatest != "" {
-							peekID, peekErr := peekStripeLatest(stripeKey, startMonth, endMonth)
-							if peekErr == nil && peekID == cachedLatest {
-								fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
-								continue
+					fmt.Println()
+
+					// Check if we can skip the full fetch
+					if !force {
+						relPathFn := func(year, month string) string {
+							return filepath.Join("finance", "stripe", "transactions.json")
+						}
+						if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
+							cachedPath := currentMonthCacheFile(DataDir(), relPathFn)
+							cachedLatest := latestCachedStripeTxID(cachedPath)
+							if cachedLatest != "" {
+								peekID, peekErr := peekStripeLatest(stripeKey, acc.AccountID, startMonth, endMonth)
+								if peekErr == nil && peekID == cachedLatest {
+									fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+									continue
+								}
 							}
 						}
 					}
-				}
 
-				stripeTxs, err := fetchStripeTransactions(stripeKey, startMonth, endMonth, fetchLimit)
-				if err != nil {
-					fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
-					continue
-				}
-
-				fmt.Printf("    %sFetched %d transactions%s\n", Fmt.Dim, len(stripeTxs), Fmt.Reset)
-
-				// Group by month
-				byMonth := groupStripeByMonth(stripeTxs)
-				saved := 0
-
-				for ym, monthTxs := range byMonth {
-					if ym < startMonth || ym > endMonth {
-						continue
+					var stripeCreatedAfter *time.Time
+					if !force && !isSince && !posFound && monthFilter == "" && !lastSyncTime.IsZero() {
+						stripeCreatedAfter = &lastSyncTime
+						fmt.Printf("    %sIncremental since %s%s\n", Fmt.Dim, lastSyncTime.In(BrusselsTZ()).Format(time.RFC3339), Fmt.Reset)
 					}
 
-					parts := strings.Split(ym, "-")
-					if len(parts) != 2 {
-						continue
-					}
-					year, month := parts[0], parts[1]
-
-					dataDir := DataDir()
-					relPath := filepath.Join("finance", "stripe", "transactions.json")
-					filePath := filepath.Join(dataDir, year, month, relPath)
-
-					// Skip if exists and not force (but always update current month)
-					if !force && fileExists(filePath) {
-						if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
-							continue
-						}
-					}
-
-					// Split PII from public data
-					customers := &StripeCustomerData{
-						FetchedAt: time.Now().UTC().Format(time.RFC3339),
-						Customers: map[string]*StripeCustomerPII{},
-					}
-					publicTxs := make([]StripeTransaction, len(monthTxs))
-					for i, tx := range monthTxs {
-						// Save PII separately
-						if tx.CustomerName != "" || tx.CustomerEmail != "" {
-							customers.Customers[tx.ID] = &StripeCustomerPII{
-								Name:  tx.CustomerName,
-								Email: tx.CustomerEmail,
-							}
-						}
-						// Strip PII and expanded source from public copy
-						publicTxs[i] = tx
-						publicTxs[i].CustomerName = ""
-						publicTxs[i].CustomerEmail = ""
-						publicTxs[i].Source = stripSourceToID(tx.Source)
-					}
-
-					cache := StripeCacheFile{
-						Transactions: publicTxs,
-						CachedAt:     time.Now().UTC().Format(time.RFC3339),
-						AccountID:    acc.AccountID,
-						Currency:     acc.Currency,
-					}
-
-					data, _ := json.MarshalIndent(cache, "", "  ")
-					if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
-						fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
-						continue
-					}
-
-					// Save PII to private directory
-					if len(customers.Customers) > 0 {
-						piiData, _ := json.MarshalIndent(customers, "", "  ")
-						piiRelPath := filepath.Join("finance", "stripe", "private", "customers.json")
-						writeMonthFile(dataDir, year, month, piiRelPath, piiData)
-					}
-
-					saved++
-					totalProcessed += len(monthTxs)
-				}
-
-				if saved > 0 {
-					fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
-				}
-
-				// Fetch Nostr annotations for Stripe transactions
-				if !noNostr && len(stripeTxs) > 0 {
-					fmt.Printf("    %sFetching Nostr annotations...%s", Fmt.Dim, Fmt.Reset)
-					var uris []string
-					for _, tx := range stripeTxs {
-						uris = append(uris, BuildStripeURI(tx.ID))
-					}
-					annotations, err := FetchNostrAnnotations(uris)
+					stopAtMonthBoundary := !force && !isSince && !posFound && monthFilter == "" && stripeCreatedAfter == nil
+					stripeTxs, err := fetchStripeTransactions(stripeKey, acc.AccountID, startMonth, endMonth, fetchLimit, stripeCreatedAfter, stopAtMonthBoundary, DataDir())
 					if err != nil {
-						fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
-					} else {
-						fmt.Printf(" %s✓ %d annotations%s\n", Fmt.Green, len(annotations), Fmt.Reset)
-						// Save per month
-						for ym, monthTxs := range byMonth {
-							if ym < startMonth || ym > endMonth {
-								continue
-							}
-							monthAnnotations := map[string]*TxAnnotation{}
-							for _, tx := range monthTxs {
-								uri := BuildStripeURI(tx.ID)
-								if ann, ok := annotations[uri]; ok {
-									monthAnnotations[uri] = ann
-								}
-							}
-							if len(monthAnnotations) > 0 {
-								parts := strings.Split(ym, "-")
-								if len(parts) == 2 {
-									cache := NostrAnnotationCache{
-										FetchedAt:   time.Now().UTC().Format(time.RFC3339),
-										Annotations: monthAnnotations,
-									}
-									cacheData, _ := json.MarshalIndent(cache, "", "  ")
-									writeMonthFile(DataDir(), parts[0], parts[1],
-										filepath.Join("finance", "stripe", "nostr-annotations.json"), cacheData)
-								}
-							}
-						}
-					}
-				}
-				// Fetch Stripe charge details (customer name, app, metadata)
-				fmt.Printf("    %sFetching charge details...%s", Fmt.Dim, Fmt.Reset)
-				var chargeIDs []string
-				chargeByTxn := map[string]string{} // txn_id → ch_id for month grouping
-				for _, tx := range stripeTxs {
-					chID := extractChargeID(tx.Source)
-					if chID != "" {
-						chargeIDs = append(chargeIDs, chID)
-						chargeByTxn[tx.ID] = chID
-					} else {
-						// For refunds, resolve to original charge
-						srcID := extractSourceID(tx.Source)
-						if strings.HasPrefix(srcID, "re_") {
-							origCharge := fetchRefundChargeID(stripeKey, srcID)
-							if origCharge != "" {
-								chargeIDs = append(chargeIDs, origCharge)
-								chargeByTxn[tx.ID] = origCharge
-							}
-							time.Sleep(100 * time.Millisecond)
-						}
-					}
-				}
-				// Build refund→charge mapping
-				refundToCharge := map[string]string{}
-				for txnID, chID := range chargeByTxn {
-					// Find the source ID for this txn to check if it's a refund
-					for _, tx := range stripeTxs {
-						if tx.ID == txnID {
-							srcID := extractSourceID(tx.Source)
-							if strings.HasPrefix(srcID, "re_") {
-								refundToCharge[srcID] = chID
-							}
-							break
-						}
-					}
-				}
-
-				charges, err := fetchStripeCharges(stripeKey, chargeIDs)
-				if err != nil {
-					fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
-				} else {
-					fmt.Printf(" %s✓ %d charges enriched%s\n", Fmt.Green, len(charges), Fmt.Reset)
-
-					// Discover application names from fetched charges
-					appNames := map[string]int{} // track ca_ IDs for discovery
-					for _, ch := range charges {
-						if ch.Application != "" {
-							appNames[ch.Application]++
-						}
-					}
-					if len(appNames) > 0 {
-						fmt.Printf("    %sApplications:%s", Fmt.Dim, Fmt.Reset)
-						for app, count := range appNames {
-							name := app
-							if n, ok := knownStripeApps[app]; ok {
-								name = n
-							}
-							fmt.Printf(" %s(%d)", name, count)
-						}
-						fmt.Println()
+						fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+						continue
 					}
 
-					// Save per month
+					fmt.Printf("    %sFetched %d transactions%s\n", Fmt.Dim, len(stripeTxs), Fmt.Reset)
+
+					// Group by month and determine which months actually changed.
+					byMonth := groupStripeByMonth(stripeTxs)
+					monthsToUpdate := map[string]bool{}
 					for ym, monthTxs := range byMonth {
 						if ym < startMonth || ym > endMonth {
 							continue
 						}
-						monthCharges := map[string]*StripeCharge{}
-						for _, tx := range monthTxs {
-							chID := chargeByTxn[tx.ID]
-							if ch, ok := charges[chID]; ok {
-								monthCharges[chID] = ch
+						parts := strings.Split(ym, "-")
+						if len(parts) != 2 {
+							continue
+						}
+						year, month := parts[0], parts[1]
+						dataDir := DataDir()
+						relPath := filepath.Join("finance", "stripe", "transactions.json")
+						filePath := filepath.Join(dataDir, year, month, relPath)
+
+						if force || ym == fmt.Sprintf("%d-%02d", now.Year(), now.Month()) || !fileExists(filePath) {
+							monthsToUpdate[ym] = true
+							continue
+						}
+						if localStripeTransactionCount(filePath) != len(monthTxs) {
+							monthsToUpdate[ym] = true
+						}
+					}
+
+					saved := 0
+					if len(monthsToUpdate) == 0 {
+						fmt.Printf("    %s✓ Stripe months unchanged%s\n", Fmt.Green, Fmt.Reset)
+					} else {
+						fmt.Printf("    %sUpdating %d month(s)%s\n", Fmt.Dim, len(monthsToUpdate), Fmt.Reset)
+					}
+
+					for ym, monthTxs := range byMonth {
+						if ym < startMonth || ym > endMonth || !monthsToUpdate[ym] {
+							continue
+						}
+
+						parts := strings.Split(ym, "-")
+						if len(parts) != 2 {
+							continue
+						}
+						year, month := parts[0], parts[1]
+
+						dataDir := DataDir()
+						relPath := filepath.Join("finance", "stripe", "transactions.json")
+
+						cache := StripeCacheFile{
+							Transactions: monthTxs,
+							CachedAt:     time.Now().UTC().Format(time.RFC3339),
+							AccountID:    acc.AccountID,
+							Currency:     acc.Currency,
+						}
+
+						data, _ := json.MarshalIndent(cache, "", "  ")
+						if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
+							fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							continue
+						}
+
+						saved++
+						totalProcessed += len(monthTxs)
+					}
+
+					if saved > 0 {
+						fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+					}
+
+					// Fetch Nostr annotations for Stripe transactions
+					if !noNostr && len(stripeTxs) > 0 && len(monthsToUpdate) > 0 {
+						fmt.Printf("    %sFetching Nostr annotations...%s", Fmt.Dim, Fmt.Reset)
+						if stripeCreatedAfter != nil {
+							fmt.Printf(" %s(since %s)%s", Fmt.Dim, stripeCreatedAfter.In(BrusselsTZ()).Format(time.RFC3339), Fmt.Reset)
+						}
+						var uris []string
+						for _, tx := range stripeTxs {
+							txMonth := time.Unix(tx.Created, 0).In(BrusselsTZ()).Format("2006-01")
+							if monthsToUpdate[txMonth] {
+								uris = append(uris, BuildStripeURI(tx.ID))
 							}
 						}
-						if len(monthCharges) > 0 {
-							parts := strings.Split(ym, "-")
-							if len(parts) == 2 {
-								SaveStripeChargeEnrichment(DataDir(), parts[0], parts[1], monthCharges, refundToCharge)
+						annotations, err := FetchNostrAnnotations(uris, stripeCreatedAfter)
+						if err != nil {
+							fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
+						} else {
+							fmt.Printf(" %s✓ %d annotations%s\n", Fmt.Green, len(annotations), Fmt.Reset)
+							// Save per month
+							for ym, monthTxs := range byMonth {
+								if ym < startMonth || ym > endMonth || !monthsToUpdate[ym] {
+									continue
+								}
+								monthAnnotations := map[string]*TxAnnotation{}
+								for _, tx := range monthTxs {
+									uri := BuildStripeURI(tx.ID)
+									if ann, ok := annotations[uri]; ok {
+										monthAnnotations[uri] = ann
+									}
+								}
+								if len(monthAnnotations) > 0 {
+									parts := strings.Split(ym, "-")
+									if len(parts) == 2 {
+										cache := NostrAnnotationCache{
+											FetchedAt:   time.Now().UTC().Format(time.RFC3339),
+											Annotations: monthAnnotations,
+										}
+										cacheData, _ := json.MarshalIndent(cache, "", "  ")
+										writeMonthFile(DataDir(), parts[0], parts[1],
+											filepath.Join("finance", "stripe", "nostr-annotations.json"), cacheData)
+									}
+								}
+							}
+						}
+					}
+					// Fetch Stripe charge details (customer name, app, metadata) only for months being updated.
+					if len(monthsToUpdate) == 0 {
+						continue
+					}
+					fmt.Printf("    %sFetching charge details...%s", Fmt.Dim, Fmt.Reset)
+					var chargeIDs []string
+					chargeByTxn := map[string]string{} // txn_id → ch_id for month grouping
+					refundLookups := 0
+					for _, tx := range stripeTxs {
+						txMonth := time.Unix(tx.Created, 0).In(BrusselsTZ()).Format("2006-01")
+						if !monthsToUpdate[txMonth] {
+							continue
+						}
+						chID := extractChargeID(tx.Source)
+						if chID != "" {
+							chargeIDs = append(chargeIDs, chID)
+							chargeByTxn[tx.ID] = chID
+						} else {
+							// For refunds, resolve to original charge
+							srcID := extractSourceID(tx.Source)
+							if strings.HasPrefix(srcID, "re_") {
+								refundLookups++
+								if refundLookups == 1 || refundLookups%10 == 0 {
+									fmt.Printf(" %srefunds:%d%s", Fmt.Dim, refundLookups, Fmt.Reset)
+								}
+								origCharge := fetchRefundChargeID(stripeKey, acc.AccountID, srcID)
+								if origCharge != "" {
+									chargeIDs = append(chargeIDs, origCharge)
+									chargeByTxn[tx.ID] = origCharge
+								}
+								time.Sleep(100 * time.Millisecond)
+							}
+						}
+					}
+					// Build refund→charge mapping
+					refundToCharge := map[string]string{}
+					for txnID, chID := range chargeByTxn {
+						// Find the source ID for this txn to check if it's a refund
+						for _, tx := range stripeTxs {
+							if tx.ID == txnID {
+								srcID := extractSourceID(tx.Source)
+								if strings.HasPrefix(srcID, "re_") {
+									refundToCharge[srcID] = chID
+								}
+								break
+							}
+						}
+					}
+
+					fmt.Printf(" %s(%d charge ids)%s", Fmt.Dim, len(chargeIDs), Fmt.Reset)
+					charges, err := fetchStripeCharges(stripeKey, acc.AccountID, chargeIDs)
+					if err != nil {
+						fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
+					} else {
+						fmt.Printf(" %s✓ %d charges enriched%s\n", Fmt.Green, len(charges), Fmt.Reset)
+
+						// Discover application names from fetched charges
+						appNames := map[string]int{} // track ca_ IDs for discovery
+						for _, ch := range charges {
+							if ch.Application != "" {
+								appNames[ch.Application]++
+							}
+						}
+						if len(appNames) > 0 {
+							fmt.Printf("    %sApplications:%s", Fmt.Dim, Fmt.Reset)
+							for app, count := range appNames {
+								name := app
+								if n, ok := knownStripeApps[app]; ok {
+									name = n
+								}
+								fmt.Printf(" %s(%d)", name, count)
+							}
+							fmt.Println()
+						}
+
+						// Save per month
+						for ym, monthTxs := range byMonth {
+							if ym < startMonth || ym > endMonth || !monthsToUpdate[ym] {
+								continue
+							}
+							monthCharges := map[string]*StripeCharge{}
+							for _, tx := range monthTxs {
+								chID := chargeByTxn[tx.ID]
+								if ch, ok := charges[chID]; ok {
+									monthCharges[chID] = ch
+								}
+							}
+							if len(monthCharges) > 0 {
+								parts := strings.Split(ym, "-")
+								if len(parts) == 2 {
+									SaveStripeChargeEnrichment(DataDir(), parts[0], parts[1], monthCharges, refundToCharge)
+								}
+							}
+						}
+
+						// Save per-month private customer data from enriched charges.
+						for ym, monthTxs := range byMonth {
+							if ym < startMonth || ym > endMonth || !monthsToUpdate[ym] {
+								continue
+							}
+							customers := &StripeCustomerData{
+								FetchedAt: time.Now().UTC().Format(time.RFC3339),
+								Customers: map[string]*StripeCustomerPII{},
+							}
+							for _, tx := range monthTxs {
+								chID := chargeByTxn[tx.ID]
+								if ch, ok := charges[chID]; ok {
+									name := ch.BestName()
+									email := ch.BestEmail()
+									if name != "" || email != "" {
+										customers.Customers[tx.ID] = &StripeCustomerPII{Name: name, Email: email}
+									}
+								}
+							}
+							if len(customers.Customers) > 0 {
+								parts := strings.Split(ym, "-")
+								if len(parts) == 2 {
+									piiData, _ := json.MarshalIndent(customers, "", "  ")
+									piiRelPath := filepath.Join("finance", "stripe", "private", "customers.json")
+									writeMonthFile(DataDir(), parts[0], parts[1], piiRelPath, piiData)
+								}
 							}
 						}
 					}
 				}
 			}
-		}
 		}
 	}
 
@@ -721,7 +771,8 @@ func TransactionsSync(args []string) (int, error) {
 	}
 
 	fmt.Printf("\n%s✓ Done!%s %d transactions processed\n\n", Fmt.Green, Fmt.Reset, totalProcessed)
-	UpdateSyncSource("transactions", LastSyncMonth("transactions") == "")
+	UpdateSyncSource("transactions", isFullSync)
+	UpdateSyncActivity(isFullSync)
 	return totalProcessed, nil
 }
 
@@ -880,7 +931,7 @@ func parseTokenValue(rawValue string, decimals int) float64 {
 	return f
 }
 
-func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]StripeTransaction, error) {
+func fetchStripeTransactions(apiKey, accountID, startMonth, endMonth string, limit int, createdAfter *time.Time, stopAtMonthBoundary bool, dataDir string) ([]StripeTransaction, error) {
 	tz := BrusselsTZ()
 	var allTxs []StripeTransaction
 
@@ -902,6 +953,12 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]
 	rangeEnd := time.Date(endYear, time.Month(endMon)+1, 1, 0, 0, 0, 0, tz) // first day of month after end
 
 	createdGte := rangeStart.Unix()
+	if createdAfter != nil && !createdAfter.IsZero() {
+		after := createdAfter.Unix()
+		if after > createdGte {
+			createdGte = after
+		}
+	}
 	createdLt := rangeEnd.Unix()
 
 	pageSize := 100
@@ -910,8 +967,10 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]
 	}
 
 	var startingAfter string
+	page := 0
 	for {
-		url := fmt.Sprintf("https://api.stripe.com/v1/balance_transactions?limit=%d&created[gte]=%d&created[lt]=%d&expand[]=data.source&expand[]=data.source.customer",
+		page++
+		url := fmt.Sprintf("https://api.stripe.com/v1/balance_transactions?limit=%d&created[gte]=%d&created[lt]=%d",
 			pageSize, createdGte, createdLt)
 		if startingAfter != "" {
 			url += "&starting_after=" + startingAfter
@@ -922,8 +981,11 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		if accountID != "" {
+			req.Header.Set("Stripe-Account", accountID)
+		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := stripeHTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("stripe API error: %w", err)
 		}
@@ -931,6 +993,7 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]
 
 		if resp.StatusCode == 429 {
 			// Rate limited — wait and retry
+			fmt.Printf("    %sStripe rate limited on page %d, waiting 2s...%s\n", Fmt.Dim, page, Fmt.Reset)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -944,12 +1007,23 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]
 			return nil, fmt.Errorf("failed to decode stripe response: %w", err)
 		}
 
-		// Extract enriched fields from expanded source
-		for i := range listResp.Data {
-			enrichStripeTransaction(&listResp.Data[i])
-		}
-
 		allTxs = append(allTxs, listResp.Data...)
+		fmt.Printf("    %sStripe page %d: +%d tx (total %d)%s\n", Fmt.Dim, page, len(listResp.Data), len(allTxs), Fmt.Reset)
+
+		if stopAtMonthBoundary && dataDir != "" && len(allTxs) > 0 {
+			oldestMonth := time.Unix(allTxs[len(allTxs)-1].Created, 0).In(tz).Format("2006-01")
+			countSeen := 0
+			for _, tx := range allTxs {
+				if time.Unix(tx.Created, 0).In(tz).Format("2006-01") == oldestMonth {
+					countSeen++
+				}
+			}
+			localCount := localStripeTransactionCount(filepath.Join(dataDir, strings.ReplaceAll(oldestMonth, "-", "/"), "finance", "stripe", "transactions.json"))
+			if localCount > 0 && countSeen == localCount {
+				fmt.Printf("    %sStripe stop heuristic: %s count matches local cache (%d)%s\n", Fmt.Dim, oldestMonth, localCount, Fmt.Reset)
+				break
+			}
+		}
 
 		if limit > 0 && len(allTxs) >= limit {
 			allTxs = allTxs[:limit]
@@ -966,6 +1040,18 @@ func fetchStripeTransactions(apiKey, startMonth, endMonth string, limit int) ([]
 	}
 
 	return allTxs, nil
+}
+
+func localStripeTransactionCount(filePath string) int {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0
+	}
+	var cache StripeCacheFile
+	if json.Unmarshal(data, &cache) != nil {
+		return 0
+	}
+	return len(cache.Transactions)
 }
 
 // stripSourceToID reduces an expanded source object back to just the ID string for public storage.
@@ -997,7 +1083,7 @@ func enrichStripeTransaction(tx *StripeTransaction) {
 			Name  string `json:"name"`
 			Email string `json:"email"`
 		} `json:"billing_details"`
-		Customer interface{} `json:"customer"`
+		Customer interface{}            `json:"customer"`
 		Metadata map[string]interface{} `json:"metadata"`
 	}
 	if json.Unmarshal(tx.Source, &source) != nil {
@@ -1055,13 +1141,13 @@ func groupStripeByMonth(txs []StripeTransaction) map[string][]StripeTransaction 
 
 // MoneriumOrder represents a single Monerium order (redeem = outgoing SEPA, issue = incoming mint)
 type MoneriumOrder struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"` // "redeem" or "issue"
-	Profile  string `json:"profile"`
-	Address  string `json:"address"`
-	Chain    string `json:"chain"`
-	Currency string `json:"currency"`
-	Amount   string `json:"amount"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"` // "redeem" or "issue"
+	Profile     string `json:"profile"`
+	Address     string `json:"address"`
+	Chain       string `json:"chain"`
+	Currency    string `json:"currency"`
+	Amount      string `json:"amount"`
 	Counterpart struct {
 		Identifier struct {
 			Standard string `json:"standard"`
@@ -1210,7 +1296,7 @@ func latestCachedStripeTxID(filePath string) string {
 }
 
 // peekStripeLatest fetches the single most recent balance transaction from Stripe for the given month range.
-func peekStripeLatest(apiKey, startMonth, endMonth string) (string, error) {
+func peekStripeLatest(apiKey, accountID, startMonth, endMonth string) (string, error) {
 	tz := BrusselsTZ()
 	startParts := strings.Split(startMonth, "-")
 	endParts := strings.Split(endMonth, "-")
@@ -1231,7 +1317,10 @@ func peekStripeLatest(apiKey, startMonth, endMonth string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := http.DefaultClient.Do(req)
+	if accountID != "" {
+		req.Header.Set("Stripe-Account", accountID)
+	}
+	resp, err := stripeHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

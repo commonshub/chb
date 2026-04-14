@@ -5,16 +5,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/CommonsHub/chb/ical"
 	"github.com/CommonsHub/chb/og"
 )
+
+var calendarHTTPClient = &http.Client{Timeout: 20 * time.Second}
 
 // FullEvent is the rich event structure written to events.json
 type FullEvent struct {
@@ -59,10 +63,46 @@ type newEventInfo struct {
 }
 
 type monthResult struct {
-	yearMonth  string
+	yearMonth   string
 	totalEvents int
-	newEvents  []newEventInfo
+	newEvents   []newEventInfo
 }
+
+type eventSyncRunCache struct {
+	dataDir string
+	og      *eventOGCache
+	dirty   bool
+}
+
+type eventOGCache struct {
+	Version   int                         `json:"version"`
+	UpdatedAt string                      `json:"updatedAt"`
+	Entries   map[string]eventOGCacheItem `json:"entries"`
+}
+
+type eventOGCacheItem struct {
+	ImageURL  *string `json:"imageUrl,omitempty"`
+	CheckedAt string  `json:"checkedAt"`
+}
+
+type ogFetchTask struct {
+	EventID string
+	Name    string
+	URL     string
+	Domain  string
+}
+
+type ogFetchResult struct {
+	URL   string
+	Image string
+}
+
+const eventOGCacheVersion = 1
+
+var (
+	eventOGPositiveTTL = 30 * 24 * time.Hour
+	eventOGNegativeTTL = 24 * time.Hour
+)
 
 // CalendarsSync fetches room calendars once and produces both bookings (all events)
 // and events (bookings with a public URL, enriched with og:image).
@@ -80,13 +120,15 @@ func CalendarsSync(args []string) (int, int, error) {
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
 	dataDir := DataDir()
+	runCache := newEventSyncRunCache(dataDir)
+	defer runCache.save()
 
 	rooms, err := LoadRooms()
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to load rooms: %w", err)
 	}
 
-	now := time.Now()
+	now := time.Now().In(BrusselsTZ())
 
 	// Determine time range
 	var sinceMonth, untilMonth string
@@ -110,16 +152,10 @@ func CalendarsSync(args []string) (int, int, error) {
 		}
 	}
 
-	// Default: use last sync month, or full history if never synced
+	// Default: keep the recent window plus upcoming events.
+	// Historical backfills require an explicit --history, --since, or YYYY[/MM].
 	if sinceMonth == "" {
-		lastSync := LastSyncMonth("calendars")
-		if lastSync == "" {
-			// Never synced before — do a full sync
-			sinceMonth = "2024-01"
-			isFullSync = true
-		} else {
-			sinceMonth = lastSync
-		}
+		sinceMonth = DefaultRecentStartMonth(now)
 	}
 
 	if untilMonth == "" {
@@ -261,6 +297,8 @@ func CalendarsSync(args []string) (int, int, error) {
 	}
 	sort.Strings(sortedMonths)
 
+	fmt.Printf("\n📎 Found %d public event(s) across %d month(s) to process\n", len(allRoomEvents), len(sortedMonths))
+
 	// Save public.ics per month (events with URLs only)
 	for _, ym := range sortedMonths {
 		parts := strings.SplitN(ym, "-", 2)
@@ -281,7 +319,7 @@ func CalendarsSync(args []string) (int, int, error) {
 		parts := strings.SplitN(ym, "-", 2)
 		year, month := parts[0], parts[1]
 
-		r, err := processMonthFromRooms(dataDir, year, month, eventsByMonth[ym], force)
+		r, err := processMonthFromRooms(dataDir, year, month, eventsByMonth[ym], force, runCache)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: error processing %s-%s: %v\n", year, month, err)
 			continue
@@ -349,6 +387,7 @@ func CalendarsSync(args []string) (int, int, error) {
 
 	// Update sync state
 	UpdateSyncSource("calendars", isFullSync)
+	UpdateSyncActivity(isFullSync)
 
 	return newBookingCount, newEventCount, nil
 }
@@ -376,7 +415,7 @@ func EventsSync(args []string, version string) error {
 }
 
 func fetchURL(rawURL string) (string, error) {
-	resp, err := http.Get(rawURL)
+	resp, err := calendarHTTPClient.Get(rawURL)
 	if err != nil {
 		return "", err
 	}
@@ -398,8 +437,139 @@ type roomEvent struct {
 	roomName string
 }
 
-func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, force bool) (*monthResult, error) {
+func newEventSyncRunCache(dataDir string) *eventSyncRunCache {
+	return &eventSyncRunCache{
+		dataDir: dataDir,
+		og:      loadEventOGCache(dataDir),
+	}
+}
+
+func (c *eventSyncRunCache) save() {
+	if c == nil || !c.dirty {
+		return
+	}
+	if err := saveEventOGCache(c.dataDir, c.og); err == nil {
+		c.dirty = false
+	}
+}
+
+func (c *eventSyncRunCache) getOGImage(eventURL string) string {
+	if c == nil || c.og == nil {
+		return og.FetchOGImage(eventURL)
+	}
+	now := time.Now().UTC()
+	if entry, ok := c.og.Entries[eventURL]; ok {
+		if checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt); err == nil {
+			ttl := eventOGNegativeTTL
+			if entry.ImageURL != nil && *entry.ImageURL != "" {
+				ttl = eventOGPositiveTTL
+			}
+			if now.Sub(checkedAt) < ttl {
+				if entry.ImageURL != nil {
+					return *entry.ImageURL
+				}
+				return ""
+			}
+		}
+	}
+
+	image := og.FetchOGImage(eventURL)
+	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
+	if image != "" {
+		entry.ImageURL = &image
+	}
+	c.og.Entries[eventURL] = entry
+	c.og.Version = eventOGCacheVersion
+	c.og.UpdatedAt = now.Format(time.RFC3339)
+	c.dirty = true
+	return image
+}
+
+func (c *eventSyncRunCache) getCachedOGImage(eventURL string) (string, bool) {
+	if c == nil || c.og == nil {
+		return "", false
+	}
+	now := time.Now().UTC()
+	entry, ok := c.og.Entries[eventURL]
+	if !ok {
+		return "", false
+	}
+	checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt)
+	if err != nil {
+		return "", false
+	}
+	ttl := eventOGNegativeTTL
+	if entry.ImageURL != nil && *entry.ImageURL != "" {
+		ttl = eventOGPositiveTTL
+	}
+	if now.Sub(checkedAt) >= ttl {
+		return "", false
+	}
+	if entry.ImageURL != nil {
+		return *entry.ImageURL, true
+	}
+	return "", true
+}
+
+func (c *eventSyncRunCache) storeOGImage(eventURL, image string) {
+	if c == nil || c.og == nil {
+		return
+	}
+	now := time.Now().UTC()
+	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
+	if image != "" {
+		entry.ImageURL = &image
+	}
+	c.og.Entries[eventURL] = entry
+	c.og.Version = eventOGCacheVersion
+	c.og.UpdatedAt = now.Format(time.RFC3339)
+	c.dirty = true
+}
+
+func eventOGCachePath(dataDir string) string {
+	return filepath.Join(dataDir, "generated", "cache", "event-og-images.json")
+}
+
+func loadEventOGCache(dataDir string) *eventOGCache {
+	cache := &eventOGCache{
+		Version: eventOGCacheVersion,
+		Entries: map[string]eventOGCacheItem{},
+	}
+	data, err := os.ReadFile(eventOGCachePath(dataDir))
+	if err != nil {
+		return cache
+	}
+	if json.Unmarshal(data, cache) != nil || cache.Entries == nil {
+		cache.Entries = map[string]eventOGCacheItem{}
+	}
+	return cache
+}
+
+func saveEventOGCache(dataDir string, cache *eventOGCache) error {
+	if cache == nil {
+		return nil
+	}
+	if cache.Entries == nil {
+		cache.Entries = map[string]eventOGCacheItem{}
+	}
+	cache.Version = eventOGCacheVersion
+	if cache.UpdatedAt == "" {
+		cache.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	path := eventOGCachePath(dataDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, force bool, runCache *eventSyncRunCache) (*monthResult, error) {
 	monthPath := filepath.Join(dataDir, year, month)
+	label := fmt.Sprintf("%s-%s", year, month)
 
 	// Load existing event IDs to detect new ones
 	existingIDs := map[string]bool{}
@@ -419,12 +589,44 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 
 	// Check if we can skip (same event count, not forced)
 	if !force && len(existingIDs) == len(roomEvents) && len(existingIDs) > 0 {
+		fmt.Printf("  ⏭ %s: %d event(s) unchanged, skipping metadata refresh\n", label, len(roomEvents))
 		return nil, nil
+	}
+
+	needsOGFetch := 0
+	needsCoverSync := 0
+	var ogTasks []ogFetchTask
+	for _, re := range roomEvents {
+		eventURL := extractEventURL(re.event)
+		if eventURL == "" {
+			continue
+		}
+		eventID := re.event.UID
+		existing := existingEvents[eventID]
+		if existing.CoverImage == "" {
+			needsOGFetch++
+			ogTasks = append(ogTasks, ogFetchTask{
+				EventID: eventID,
+				Name:    re.event.Summary,
+				URL:     eventURL,
+				Domain:  eventHostFromURL(eventURL),
+			})
+		}
+		if existing.CoverImage != "" && existing.CoverImageLocal == "" {
+			needsCoverSync++
+		}
+	}
+	fmt.Printf("  🔎 %s: %d public event(s), %d page fetch(es), %d cover(s) pending images sync\n", label, len(roomEvents), needsOGFetch, needsCoverSync)
+
+	ogImages := map[string]string{}
+	if len(ogTasks) > 0 {
+		ogImages = runCache.prefetchOGImages(label, ogTasks, 4)
 	}
 
 	processedIDs := map[string]bool{}
 	var newEvents []newEventInfo
 	var fullEvents []FullEvent
+	processed := 0
 
 	for _, re := range roomEvents {
 		icsEv := re.event
@@ -442,6 +644,10 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		if eventURL == "" {
 			continue
 		}
+		processed++
+		if processed == 1 || processed%10 == 0 || processed == len(roomEvents) {
+			fmt.Printf("    · %s %d/%d: %s\n", label, processed, len(roomEvents), name)
+		}
 
 		startAt := icsEv.Start.Format(time.RFC3339)
 		endAt := ""
@@ -457,20 +663,14 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			coverImageLocal = existing.CoverImageLocal
 		}
 		if coverImage == "" {
-			ogImg := og.FetchOGImage(eventURL)
+			ogImg := ogImages[eventURL]
+			if ogImg == "" {
+				ogImg = runCache.getOGImage(eventURL)
+			}
 			if ogImg != "" {
 				coverImage = ogImg
-			}
-		}
-		// Download cover image locally if we have a URL but no local copy
-		if coverImage != "" && coverImageLocal == "" {
-			ext := extFromURL(coverImage, ".jpg")
-			localRelPath := filepath.Join("images", "covers", eventID+ext)
-			localAbsPath := filepath.Join(dataDir, year, month, localRelPath)
-			os.MkdirAll(filepath.Dir(localAbsPath), 0755)
-			if err := downloadFile(coverImage, localAbsPath); err == nil {
-				coverImageLocal = filepath.Join(year, month, localRelPath)
-				fmt.Printf("    ↳ downloaded cover for %s\n", name)
+			} else {
+				fmt.Printf("      ↳ no og:image for %s\n", name)
 			}
 		}
 
@@ -503,8 +703,8 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			CoverImage:      coverImage,
 			CoverImageLocal: coverImageLocal,
 			Source:          "calendar",
-			CalendarSource: re.roomSlug,
-			Metadata:       metadata,
+			CalendarSource:  re.roomSlug,
+			Metadata:        metadata,
 		})
 	}
 
@@ -521,12 +721,100 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	}
 	data, _ := json.MarshalIndent(ef, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "events.json"), data)
+	fmt.Printf("  ✓ %s: wrote %d event(s)\n", label, len(fullEvents))
 
 	return &monthResult{
 		yearMonth:   fmt.Sprintf("%s-%s", year, month),
 		totalEvents: len(fullEvents),
 		newEvents:   newEvents,
 	}, nil
+}
+
+func (c *eventSyncRunCache) prefetchOGImages(label string, tasks []ogFetchTask, maxWorkers int) map[string]string {
+	results := map[string]string{}
+	if len(tasks) == 0 {
+		return results
+	}
+
+	grouped := map[string][]ogFetchTask{}
+	var domains []string
+	for _, task := range tasks {
+		if image, ok := c.getCachedOGImage(task.URL); ok {
+			if image != "" {
+				results[task.URL] = image
+			}
+			continue
+		}
+		domain := task.Domain
+		if domain == "" {
+			domain = "<unknown>"
+		}
+		if _, ok := grouped[domain]; !ok {
+			domains = append(domains, domain)
+		}
+		grouped[domain] = append(grouped[domain], task)
+	}
+
+	if len(grouped) == 0 {
+		return results
+	}
+
+	sort.Strings(domains)
+	workerCount := maxWorkers
+	if len(domains) < workerCount {
+		workerCount = len(domains)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	pending := 0
+	for _, domain := range domains {
+		pending += len(grouped[domain])
+	}
+	fmt.Printf("  ↳ %s og:image fetch: %d uncached URL(s) across %d domain(s), %d worker(s)\n", label, pending, len(domains), workerCount)
+
+	domainCh := make(chan []ogFetchTask)
+	resultCh := make(chan ogFetchResult, pending)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for domainTasks := range domainCh {
+				for _, task := range domainTasks {
+					resultCh <- ogFetchResult{
+						URL:   task.URL,
+						Image: og.FetchOGImage(task.URL),
+					}
+				}
+			}
+		}()
+	}
+
+	for _, domain := range domains {
+		domainCh <- grouped[domain]
+	}
+	close(domainCh)
+	wg.Wait()
+	close(resultCh)
+
+	for res := range resultCh {
+		c.storeOGImage(res.URL, res.Image)
+		if res.Image != "" {
+			results[res.URL] = res.Image
+		}
+	}
+
+	return results
+}
+
+func eventHostFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }
 
 func generateYearlyEvents(dataDir, year string) {
@@ -844,4 +1132,3 @@ For questions about bookings, contact us at hello@commonshub.brussels or visit [
 	os.MkdirAll(latestDir, 0755)
 	os.WriteFile(filepath.Join(latestDir, "rooms.md"), []byte(content), 0644)
 }
-

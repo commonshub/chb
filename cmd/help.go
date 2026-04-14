@@ -143,7 +143,7 @@ messages (Discord), members (Stripe/Odoo)
   %schb members sync%s [options]
 
 %sTIME RANGE%s
-  %s(no args)%s            Sync latest data (current month + future)
+  %s(no args)%s            Sync previous month + current month (and future events)
   %s<year/month>%s         Sync a specific month (e.g. 2025/11)
   %s<year>%s               Sync all months of a given year (e.g. 2025)
   %s--since%s YYYY/MM      Sync from a specific month to now (also: YYYYMM)
@@ -235,7 +235,7 @@ func PrintEventsSyncHelp() {
 %sOPTIONS%s
   %s<year>%s               Sync all months of the given year (e.g. 2025)
   %s<year/month>%s         Sync a specific month (e.g. 2025/11)
-  %s--since%s <YYYYMMDD>   Start syncing from this date (default: last month)
+  %s--since%s <YYYYMMDD>   Start syncing from this date (default: previous month)
   %s--force%s              Re-fetch even if cached data exists
   %s--history%s            Rebuild entire event history
   %s--help, -h%s           Show this help

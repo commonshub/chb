@@ -7,11 +7,11 @@ import (
 func TestCollectImageSyncScopesDefault(t *testing.T) {
 	dataDir := t.TempDir()
 	scopes := collectImageSyncScopes(dataDir, nil, "", "", false, "", false)
-	if len(scopes) != 2 {
-		t.Fatalf("expected 2 scopes, got %d", len(scopes))
+	if len(scopes) != 3 {
+		t.Fatalf("expected 3 scopes, got %d", len(scopes))
 	}
-	if scopes[0].Year == "latest" || scopes[1].Year != "latest" {
-		t.Fatalf("expected current month then latest, got %+v", scopes)
+	if scopes[0].Year == "latest" || scopes[1].Year == "latest" || scopes[2].Year != "latest" {
+		t.Fatalf("expected previous month, current month, then latest, got %+v", scopes)
 	}
 }
 

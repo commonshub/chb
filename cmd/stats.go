@@ -45,7 +45,18 @@ func Stats(args []string) {
 
 	// Last sync info
 	state := LoadSyncState()
-	if state.Calendars != nil && state.Calendars.LastSync != "" {
+	if state.Runs != nil {
+		if state.Runs.LastRecentSync != "" {
+			if t, err := time.Parse(time.RFC3339, state.Runs.LastRecentSync); err == nil {
+				fmt.Printf("  %sLast recent sync:%s %s\n", Fmt.Dim, Fmt.Reset, formatTimeAgo(t))
+			}
+		}
+		if state.Runs.LastHistorySync != "" {
+			if t, err := time.Parse(time.RFC3339, state.Runs.LastHistorySync); err == nil {
+				fmt.Printf("  %sLast history sync:%s %s\n", Fmt.Dim, Fmt.Reset, formatTimeAgo(t))
+			}
+		}
+	} else if state.Calendars != nil && state.Calendars.LastSync != "" {
 		if t, err := time.Parse(time.RFC3339, state.Calendars.LastSync); err == nil {
 			fmt.Printf("  %sLast sync:%s %s\n", Fmt.Dim, Fmt.Reset, formatTimeAgo(t))
 		}

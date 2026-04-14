@@ -62,13 +62,13 @@ var nostrRelays = []string{
 
 const (
 	nostrConnectTimeout = 5 * time.Second
-	nostrDataTimeout    = 10 * time.Second
+	nostrDataTimeout    = 6 * time.Second
 	nostrBatchSize      = 50
 )
 
 // FetchNostrMetadata fetches NIP-73 / txinfo metadata for transactions and addresses.
 // It queries all configured Nostr relays in parallel and deduplicates results.
-func FetchNostrMetadata(chainID int, txHashes []string, addresses []string) (map[string]*TxMetadata, map[string]*AddressMetadata, error) {
+func FetchNostrMetadata(chainID int, txHashes []string, addresses []string, since *time.Time) (map[string]*TxMetadata, map[string]*AddressMetadata, error) {
 	// Build URI list
 	var uris []string
 	for _, hash := range txHashes {
@@ -101,7 +101,7 @@ func FetchNostrMetadata(chainID int, txHashes []string, addresses []string) (map
 		wg.Add(1)
 		go func(relayURL string) {
 			defer wg.Done()
-			events, err := fetchFromRelay(relayURL, batches)
+			events, err := fetchFromRelay(relayURL, batches, since)
 			if err != nil {
 				// Relay unavailable — silently skip
 				return
@@ -162,7 +162,7 @@ func FetchNostrMetadata(chainID int, txHashes []string, addresses []string) (map
 }
 
 // fetchFromRelay connects to a single relay and fetches events for all batches.
-func fetchFromRelay(relayURL string, batches [][]string) (map[string]NostrEvent, error) {
+func fetchFromRelay(relayURL string, batches [][]string, since *time.Time) (map[string]NostrEvent, error) {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: nostrConnectTimeout,
 	}
@@ -182,6 +182,9 @@ func fetchFromRelay(relayURL string, batches [][]string) (map[string]NostrEvent,
 		filter := map[string]interface{}{
 			"kinds": []int{1111},
 			"#i":    batch,
+		}
+		if since != nil && !since.IsZero() {
+			filter["since"] = since.UTC().Unix()
 		}
 		req, _ := json.Marshal([]interface{}{"REQ", subID, filter})
 		if err := conn.WriteMessage(websocket.TextMessage, req); err != nil {
@@ -300,13 +303,13 @@ type SpreadEntry struct {
 
 // NostrAnnotationCache is saved per source per month.
 type NostrAnnotationCache struct {
-	FetchedAt   string                    `json:"fetchedAt"`
-	Annotations map[string]*TxAnnotation  `json:"annotations"` // keyed by URI
+	FetchedAt   string                   `json:"fetchedAt"`
+	Annotations map[string]*TxAnnotation `json:"annotations"` // keyed by URI
 }
 
 // FetchNostrAnnotations fetches kind 1111 annotations for a set of URIs.
 // Works with any URI scheme (ethereum:..., stripe:txn:..., etc.)
-func FetchNostrAnnotations(uris []string) (map[string]*TxAnnotation, error) {
+func FetchNostrAnnotations(uris []string, since *time.Time) (map[string]*TxAnnotation, error) {
 	if len(uris) == 0 {
 		return map[string]*TxAnnotation{}, nil
 	}
@@ -336,7 +339,7 @@ func FetchNostrAnnotations(uris []string) (map[string]*TxAnnotation, error) {
 		wg.Add(1)
 		go func(relayURL string) {
 			defer wg.Done()
-			events, err := fetchFromRelay(relayURL, batches)
+			events, err := fetchFromRelay(relayURL, batches, since)
 			if err != nil {
 				return
 			}

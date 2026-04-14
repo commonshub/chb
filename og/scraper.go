@@ -4,9 +4,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 )
+
+var ogHTTPClient = &http.Client{Timeout: 12 * time.Second}
 
 // Meta holds Open Graph metadata extracted from a page.
 type Meta struct {
@@ -23,7 +26,7 @@ func Fetch(pageURL string) Meta {
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; chb/1.0)")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ogHTTPClient.Do(req)
 	if err != nil {
 		return Meta{}
 	}

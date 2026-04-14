@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+var downloadHTTPClient = &http.Client{Timeout: 20 * time.Second}
 
 type imageSyncScope struct {
 	Year  string
@@ -17,7 +22,13 @@ type imageSyncScope struct {
 	Label string
 }
 
-// ImagesSync downloads images from Discord messages and Luma event covers
+type eventCoverSyncResult struct {
+	Downloaded int
+	Skipped    int
+	Domains    map[string]int
+}
+
+// ImagesSync downloads images from Discord messages and public event covers
 // to the local data directory.
 func ImagesSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
@@ -47,9 +58,10 @@ func ImagesSync(args []string) (int, error) {
 	}
 
 	totalDiscord := 0
-	totalLuma := 0
+	totalEventCovers := 0
 	skippedDiscord := 0
-	skippedLuma := 0
+	skippedEventCovers := 0
+	eventCoverDomains := map[string]int{}
 
 	scopes := collectImageSyncScopes(dataDir, years, posYear, posMonth, posFound, startMonth, isHistory)
 	for _, scope := range scopes {
@@ -59,24 +71,33 @@ func ImagesSync(args []string) (int, error) {
 			skippedDiscord += s
 		}
 
-		l, s := syncLumaImages(dataDir, scope.Year, scope.Month, force)
-		totalLuma += l
-		skippedLuma += s
+		res := syncLumaImages(dataDir, scope.Year, scope.Month, force)
+		totalEventCovers += res.Downloaded
+		skippedEventCovers += res.Skipped
+		for domain, count := range res.Domains {
+			eventCoverDomains[domain] += count
+		}
 	}
 
 	fmt.Printf("\n%s✅ Images sync complete%s\n", Fmt.Green, Fmt.Reset)
 	if totalDiscord > 0 || skippedDiscord > 0 {
-		fmt.Printf("  Discord: %d downloaded, %d skipped\n", totalDiscord, skippedDiscord)
+		fmt.Printf("  Discord attachments: %d downloaded, %d skipped\n", totalDiscord, skippedDiscord)
 	}
-	if totalLuma > 0 || skippedLuma > 0 {
-		fmt.Printf("  Luma:    %d downloaded, %d skipped\n", totalLuma, skippedLuma)
+	if totalEventCovers > 0 || skippedEventCovers > 0 {
+		fmt.Printf("  Event covers: %d downloaded, %d skipped", totalEventCovers, skippedEventCovers)
+		if summary := formatDomainSummary(eventCoverDomains); summary != "" {
+			fmt.Printf(" (%s)", summary)
+		}
+		fmt.Println()
 	}
-	if totalDiscord == 0 && totalLuma == 0 && skippedDiscord == 0 && skippedLuma == 0 {
+	if totalDiscord == 0 && totalEventCovers == 0 && skippedDiscord == 0 && skippedEventCovers == 0 {
 		fmt.Printf("  No images found to sync\n")
 	}
 	fmt.Println()
 
-	return totalDiscord + totalLuma, nil
+	UpdateSyncSource("images", isHistory)
+	UpdateSyncActivity(isHistory)
+	return totalDiscord + totalEventCovers, nil
 }
 
 // syncDiscordImages reads images.json for a month and downloads Discord attachments.
@@ -195,54 +216,217 @@ func fetchDiscordAttachmentURL(channelID, messageID, attachmentID, token string)
 	return "", ""
 }
 
-// syncLumaImages reads events.json for a month and downloads event cover images.
-func syncLumaImages(dataDir, year, month string, force bool) (downloaded, skipped int) {
+type eventCoverDownloadTask struct {
+	Index        int
+	EventID      string
+	CoverImage   string
+	LocalRelPath string
+	OutPath      string
+	Domain       string
+}
+
+type eventCoverDownloadResult struct {
+	Index        int
+	Downloaded   bool
+	Skipped      bool
+	LocalRelPath string
+	Err          error
+}
+
+// syncLumaImages reads events.json for a month, downloads public event cover images,
+// and writes coverImageLocal back into events.json.
+func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResult {
 	eventsPath := filepath.Join(dataDir, year, month, "generated", "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
-		return 0, 0
+		return eventCoverSyncResult{}
 	}
 
 	var eventsFile FullEventsFile
 	if json.Unmarshal(data, &eventsFile) != nil || len(eventsFile.Events) == 0 {
-		return 0, 0
+		return eventCoverSyncResult{}
 	}
 
 	imagesDir := filepath.Join(dataDir, year, month, "events", "images")
 	os.MkdirAll(imagesDir, 0755)
 
-	for _, evt := range eventsFile.Events {
+	var tasks []eventCoverDownloadTask
+	changed := false
+	result := eventCoverSyncResult{Domains: map[string]int{}}
+
+	for i, evt := range eventsFile.Events {
 		if evt.CoverImage == "" || evt.ID == "" {
 			continue
 		}
 
+		domain := hostFromURL(evt.CoverImage)
+		if domain == "" {
+			domain = "<unknown>"
+		}
+		result.Domains[domain]++
+
 		ext := extFromURL(evt.CoverImage, ".jpg")
-
+		localRelPath := filepath.ToSlash(filepath.Join(year, month, "events", "images", evt.ID+ext))
 		outPath := filepath.Join(imagesDir, evt.ID+ext)
+
+		if !force && evt.CoverImageLocal != "" {
+			existingLocalPath := filepath.Join(dataDir, filepath.FromSlash(evt.CoverImageLocal))
+			if fileExists(existingLocalPath) {
+				if evt.CoverImageLocal != localRelPath {
+					eventsFile.Events[i].CoverImageLocal = localRelPath
+					changed = true
+				}
+				result.Skipped++
+				continue
+			}
+		}
 		if !force && fileExists(outPath) {
-			skipped++
+			if evt.CoverImageLocal != localRelPath {
+				eventsFile.Events[i].CoverImageLocal = localRelPath
+				changed = true
+			}
+			result.Skipped++
 			continue
 		}
+		tasks = append(tasks, eventCoverDownloadTask{
+			Index:        i,
+			EventID:      evt.ID,
+			CoverImage:   evt.CoverImage,
+			LocalRelPath: localRelPath,
+			OutPath:      outPath,
+			Domain:       hostFromURL(evt.CoverImage),
+		})
+	}
 
-		if err := downloadFile(evt.CoverImage, outPath); err != nil {
-			fmt.Printf("  %s⚠ Failed to download cover for %s: %v%s\n", Fmt.Yellow, evt.ID, err, Fmt.Reset)
+	if len(tasks) > 0 {
+		domains := uniqueTaskDomains(tasks)
+		workerCount := 4
+		if len(domains) < workerCount {
+			workerCount = len(domains)
+		}
+		if workerCount < 1 {
+			workerCount = 1
+		}
+		fmt.Printf("  ↳ %s-%s event covers: %d queued across %d domain(s), %d worker(s)\n", year, month, len(tasks), len(domains), workerCount)
+
+		for _, res := range downloadEventCoverTasks(tasks, workerCount) {
+			if res.Err != nil {
+				fmt.Printf("  %s⚠ Failed to download cover for %s: %v%s\n", Fmt.Yellow, eventsFile.Events[res.Index].ID, res.Err, Fmt.Reset)
+				continue
+			}
+			if res.Downloaded {
+				result.Downloaded++
+				eventsFile.Events[res.Index].CoverImageLocal = res.LocalRelPath
+				changed = true
+			}
+			if res.Skipped {
+				result.Skipped++
+				if eventsFile.Events[res.Index].CoverImageLocal != res.LocalRelPath {
+					eventsFile.Events[res.Index].CoverImageLocal = res.LocalRelPath
+					changed = true
+				}
+			}
+		}
+	}
+
+	if changed {
+		updated, err := marshalIndentedNoHTMLEscape(eventsFile)
+		if err == nil {
+			os.WriteFile(eventsPath, updated, 0644)
+		}
+	}
+
+	if result.Downloaded > 0 {
+		fmt.Printf("  ✓ %s-%s event covers: %d downloaded\n", year, month, result.Downloaded)
+	}
+
+	return result
+}
+
+func downloadEventCoverTasks(tasks []eventCoverDownloadTask, workerCount int) []eventCoverDownloadResult {
+	grouped := map[string][]eventCoverDownloadTask{}
+	var domains []string
+	for _, task := range tasks {
+		domain := task.Domain
+		if domain == "" {
+			domain = "<unknown>"
+		}
+		if _, ok := grouped[domain]; !ok {
+			domains = append(domains, domain)
+		}
+		grouped[domain] = append(grouped[domain], task)
+	}
+	sort.Strings(domains)
+
+	domainCh := make(chan []eventCoverDownloadTask)
+	resultCh := make(chan eventCoverDownloadResult, len(tasks))
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for domainTasks := range domainCh {
+				for _, task := range domainTasks {
+					if err := downloadFile(task.CoverImage, task.OutPath); err != nil {
+						resultCh <- eventCoverDownloadResult{Index: task.Index, Err: err}
+					} else {
+						resultCh <- eventCoverDownloadResult{
+							Index:        task.Index,
+							Downloaded:   true,
+							LocalRelPath: task.LocalRelPath,
+						}
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	for _, domain := range domains {
+		domainCh <- grouped[domain]
+	}
+	close(domainCh)
+
+	wg.Wait()
+	close(resultCh)
+
+	var results []eventCoverDownloadResult
+	for res := range resultCh {
+		results = append(results, res)
+	}
+	return results
+}
+
+func uniqueTaskDomains(tasks []eventCoverDownloadTask) []string {
+	seen := map[string]bool{}
+	var domains []string
+	for _, task := range tasks {
+		domain := task.Domain
+		if domain == "" {
+			domain = "<unknown>"
+		}
+		if seen[domain] {
 			continue
 		}
-
-		downloaded++
-		time.Sleep(200 * time.Millisecond)
+		seen[domain] = true
+		domains = append(domains, domain)
 	}
+	sort.Strings(domains)
+	return domains
+}
 
-	if downloaded > 0 {
-		fmt.Printf("  ✓ %s-%s luma covers: %d downloaded\n", year, month, downloaded)
+func hostFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
 	}
-
-	return downloaded, skipped
+	return strings.ToLower(u.Hostname())
 }
 
 // downloadFile downloads a URL to a local file path.
 func downloadFile(url, destPath string) error {
-	resp, err := http.Get(url)
+	resp, err := downloadHTTPClient.Get(url)
 	if err != nil {
 		return err
 	}
@@ -325,9 +509,44 @@ func collectImageSyncScopes(dataDir string, years []string, posYear, posMonth st
 	}
 
 	now := time.Now().In(BrusselsTZ())
+	prev := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, BrusselsTZ()).AddDate(0, -1, 0)
+	addScope(fmt.Sprintf("%d", prev.Year()), fmt.Sprintf("%02d", prev.Month()), prev.Format("2006-01"))
 	addScope(fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", now.Month()), now.Format("2006-01"))
 	addScope("latest", "", "latest")
 	return scopes
+}
+
+func formatDomainSummary(domainCounts map[string]int) string {
+	if len(domainCounts) == 0 {
+		return ""
+	}
+
+	type domainCount struct {
+		Domain string
+		Count  int
+	}
+	var counts []domainCount
+	for domain, count := range domainCounts {
+		counts = append(counts, domainCount{Domain: domain, Count: count})
+	}
+	sort.Slice(counts, func(i, j int) bool {
+		if counts[i].Count == counts[j].Count {
+			return counts[i].Domain < counts[j].Domain
+		}
+		return counts[i].Count > counts[j].Count
+	})
+
+	parts := make([]string, 0, Min(len(counts), 4))
+	for i, dc := range counts {
+		if i >= 4 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d", dc.Domain, dc.Count))
+	}
+	if len(counts) > 4 {
+		parts = append(parts, fmt.Sprintf("+%d more", len(counts)-4))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func resolveDiscordImagePath(dataDir, year, month string, img ImageEntry) string {
@@ -341,13 +560,14 @@ func resolveDiscordImagePath(dataDir, year, month string, img ImageEntry) string
 func printImagesSyncHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb images sync%s — Download images from Discord and Luma to local data directory
+%schb images sync%s — Download images from Discord and public event covers to local data directory
 
 %sUSAGE%s
   %schb images sync%s [year[/month]] [options]
 
 %sDESCRIPTION%s
-  By default, syncs latest generated image references plus the current month.
+  By default, syncs latest generated image references plus the current month
+  and previous month.
   With %s--history%s, also processes all historical months.
 
   Downloads images from two sources:
@@ -357,8 +577,9 @@ func printImagesSyncHelp() {
     original image files from Discord via the API. Images are saved to:
       data/YYYY/MM/channels/discord/images/{attachmentId}.{ext}
 
-  %sLuma event covers%s
-    Reads events.json files and downloads event cover images. Saved to:
+  %sPublic event covers%s
+    Reads events.json files, downloads cover images from their source domains,
+    and saves them to:
       data/YYYY/MM/events/images/{eventId}.{ext}
 
   Existing files are skipped unless --force is used.
@@ -375,7 +596,7 @@ func printImagesSyncHelp() {
   %sDISCORD_BOT_TOKEN%s    Required for Discord image downloads
 
 %sEXAMPLES%s
-  %schb images sync%s                   Reconcile latest + current month images
+  %schb images sync%s                   Reconcile latest + previous/current month images
   %schb images sync --history%s         Download all historical images
   %schb images sync 2025/03%s           Download images for March 2025
   %schb images sync --force%s           Re-download all images
