@@ -81,8 +81,10 @@ type eventOGCache struct {
 }
 
 type eventOGCacheItem struct {
-	ImageURL  *string `json:"imageUrl,omitempty"`
-	CheckedAt string  `json:"checkedAt"`
+	Title       *string `json:"title,omitempty"`
+	Description *string `json:"description,omitempty"`
+	ImageURL    *string `json:"imageUrl,omitempty"`
+	CheckedAt   string  `json:"checkedAt"`
 }
 
 type ogFetchTask struct {
@@ -93,11 +95,11 @@ type ogFetchTask struct {
 }
 
 type ogFetchResult struct {
-	URL   string
-	Image string
+	URL  string
+	Meta og.Meta
 }
 
-const eventOGCacheVersion = 1
+const eventOGCacheVersion = 2
 
 var (
 	eventOGPositiveTTL = 30 * 24 * time.Hour
@@ -405,7 +407,29 @@ func extractEventURL(ev ical.Event) string {
 			eventURL = strings.TrimRight(m, ".,;:!?")
 		}
 	}
+	if !isAllowedPublicEventURL(eventURL) {
+		return ""
+	}
 	return eventURL
+}
+
+func isAllowedPublicEventURL(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "", "mail.google.com", "calendar.google.com":
+		return false
+	}
+	return true
 }
 
 // EventsSync is an alias for CalendarsSync for backwards compatibility.
@@ -453,77 +477,105 @@ func (c *eventSyncRunCache) save() {
 	}
 }
 
-func (c *eventSyncRunCache) getOGImage(eventURL string) string {
+func (c *eventSyncRunCache) getOGMeta(eventURL string) og.Meta {
 	if c == nil || c.og == nil {
-		return og.FetchOGImage(eventURL)
+		return og.Fetch(eventURL)
 	}
 	now := time.Now().UTC()
 	if entry, ok := c.og.Entries[eventURL]; ok {
 		if checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt); err == nil {
 			ttl := eventOGNegativeTTL
-			if entry.ImageURL != nil && *entry.ImageURL != "" {
+			if eventOGCacheEntryHasMeta(entry) {
 				ttl = eventOGPositiveTTL
 			}
 			if now.Sub(checkedAt) < ttl {
-				if entry.ImageURL != nil {
-					return *entry.ImageURL
-				}
-				return ""
+				return eventOGCacheEntryMeta(entry)
 			}
 		}
 	}
 
-	image := og.FetchOGImage(eventURL)
+	meta := og.Fetch(eventURL)
 	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
-	if image != "" {
-		entry.ImageURL = &image
-	}
+	setEventOGCacheEntryMeta(&entry, meta)
 	c.og.Entries[eventURL] = entry
 	c.og.Version = eventOGCacheVersion
 	c.og.UpdatedAt = now.Format(time.RFC3339)
 	c.dirty = true
-	return image
+	return meta
 }
 
-func (c *eventSyncRunCache) getCachedOGImage(eventURL string) (string, bool) {
+func (c *eventSyncRunCache) getCachedOGMeta(eventURL string) (og.Meta, bool) {
 	if c == nil || c.og == nil {
-		return "", false
+		return og.Meta{}, false
 	}
 	now := time.Now().UTC()
 	entry, ok := c.og.Entries[eventURL]
 	if !ok {
-		return "", false
+		return og.Meta{}, false
 	}
 	checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt)
 	if err != nil {
-		return "", false
+		return og.Meta{}, false
 	}
 	ttl := eventOGNegativeTTL
-	if entry.ImageURL != nil && *entry.ImageURL != "" {
+	if eventOGCacheEntryHasMeta(entry) {
 		ttl = eventOGPositiveTTL
 	}
 	if now.Sub(checkedAt) >= ttl {
-		return "", false
+		return og.Meta{}, false
 	}
-	if entry.ImageURL != nil {
-		return *entry.ImageURL, true
-	}
-	return "", true
+	return eventOGCacheEntryMeta(entry), true
 }
 
-func (c *eventSyncRunCache) storeOGImage(eventURL, image string) {
+func (c *eventSyncRunCache) storeOGMeta(eventURL string, meta og.Meta) {
 	if c == nil || c.og == nil {
 		return
 	}
 	now := time.Now().UTC()
 	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
-	if image != "" {
-		entry.ImageURL = &image
-	}
+	setEventOGCacheEntryMeta(&entry, meta)
 	c.og.Entries[eventURL] = entry
 	c.og.Version = eventOGCacheVersion
 	c.og.UpdatedAt = now.Format(time.RFC3339)
 	c.dirty = true
+}
+
+func eventOGCacheEntryHasMeta(entry eventOGCacheItem) bool {
+	return (entry.ImageURL != nil && *entry.ImageURL != "") ||
+		(entry.Title != nil && *entry.Title != "") ||
+		(entry.Description != nil && *entry.Description != "")
+}
+
+func eventOGCacheEntryMeta(entry eventOGCacheItem) og.Meta {
+	meta := og.Meta{}
+	if entry.Title != nil {
+		meta.Title = *entry.Title
+	}
+	if entry.Description != nil {
+		meta.Description = *entry.Description
+	}
+	if entry.ImageURL != nil {
+		meta.Image = *entry.ImageURL
+	}
+	return meta
+}
+
+func setEventOGCacheEntryMeta(entry *eventOGCacheItem, meta og.Meta) {
+	if entry == nil {
+		return
+	}
+	if meta.Title != "" {
+		title := meta.Title
+		entry.Title = &title
+	}
+	if meta.Description != "" {
+		desc := meta.Description
+		entry.Description = &desc
+	}
+	if meta.Image != "" {
+		image := meta.Image
+		entry.ImageURL = &image
+	}
 }
 
 func eventOGCachePath(dataDir string) string {
@@ -587,8 +639,8 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		}
 	}
 
-	// Check if we can skip (same event count, not forced)
-	if !force && len(existingIDs) == len(roomEvents) && len(existingIDs) > 0 {
+	// Check if we can skip (same event count, not forced, and existing records are already enriched)
+	if !force && len(existingIDs) == len(roomEvents) && len(existingIDs) > 0 && !existingEventsNeedRefresh(existingEvents) {
 		fmt.Printf("  ⏭ %s: %d event(s) unchanged, skipping metadata refresh\n", label, len(roomEvents))
 		return nil, nil
 	}
@@ -603,7 +655,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		}
 		eventID := re.event.UID
 		existing := existingEvents[eventID]
-		if existing.CoverImage == "" {
+		if existing.CoverImage == "" || eventNeedsOGRefresh(existing) {
 			needsOGFetch++
 			ogTasks = append(ogTasks, ogFetchTask{
 				EventID: eventID,
@@ -618,9 +670,9 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	}
 	fmt.Printf("  🔎 %s: %d public event(s), %d page fetch(es), %d cover(s) pending images sync\n", label, len(roomEvents), needsOGFetch, needsCoverSync)
 
-	ogImages := map[string]string{}
+	ogMeta := map[string]og.Meta{}
 	if len(ogTasks) > 0 {
-		ogImages = runCache.prefetchOGImages(label, ogTasks, 4)
+		ogMeta = runCache.prefetchOGMeta(label, ogTasks, 4)
 	}
 
 	processedIDs := map[string]bool{}
@@ -655,24 +707,31 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			endAt = icsEv.End.Format(time.RFC3339)
 		}
 
-		// Scrape og:image for cover
+		// Enrich from cached/full OG metadata
 		var coverImage, coverImageLocal string
+		description := icsEv.Description
 		// Preserve existing cover image if already synced
 		if existing, ok := existingEvents[eventID]; ok {
 			coverImage = existing.CoverImage
 			coverImageLocal = existing.CoverImageLocal
+			if description == "" {
+				description = existing.Description
+			}
+		}
+		meta, ok := ogMeta[eventURL]
+		if !ok {
+			meta = runCache.getOGMeta(eventURL)
+		}
+		if coverImage == "" && meta.Image != "" {
+			coverImage = meta.Image
 		}
 		if coverImage == "" {
-			ogImg := ogImages[eventURL]
-			if ogImg == "" {
-				ogImg = runCache.getOGImage(eventURL)
-			}
-			if ogImg != "" {
-				coverImage = ogImg
-			} else {
+			if meta.Image == "" {
 				fmt.Printf("      ↳ no og:image for %s\n", name)
 			}
 		}
+		description = chooseEventDescription(description, meta.Description)
+		name = chooseEventTitle(name, meta.Title)
 
 		if processedIDs[eventID] {
 			continue
@@ -695,7 +754,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		fullEvents = append(fullEvents, FullEvent{
 			ID:              eventID,
 			Name:            name,
-			Description:     icsEv.Description,
+			Description:     description,
 			StartAt:         startAt,
 			EndAt:           endAt,
 			Location:        location,
@@ -730,8 +789,48 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	}, nil
 }
 
-func (c *eventSyncRunCache) prefetchOGImages(label string, tasks []ogFetchTask, maxWorkers int) map[string]string {
-	results := map[string]string{}
+func existingEventsNeedRefresh(existingEvents map[string]FullEvent) bool {
+	for _, existing := range existingEvents {
+		if eventNeedsOGRefresh(existing) || !isAllowedPublicEventURL(existing.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+func eventNeedsOGRefresh(existing FullEvent) bool {
+	return existing.CoverImage == "" || looksLikeThinEventDescription(existing.Description)
+}
+
+func chooseEventTitle(icsTitle, ogTitle string) string {
+	if strings.TrimSpace(icsTitle) != "" {
+		return icsTitle
+	}
+	return strings.TrimSpace(ogTitle)
+}
+
+func chooseEventDescription(icsDescription, ogDescription string) string {
+	icsDescription = strings.TrimSpace(icsDescription)
+	ogDescription = strings.TrimSpace(ogDescription)
+	if ogDescription == "" {
+		return icsDescription
+	}
+	if icsDescription == "" || looksLikeThinEventDescription(icsDescription) {
+		return ogDescription
+	}
+	return icsDescription
+}
+
+func looksLikeThinEventDescription(desc string) bool {
+	desc = strings.TrimSpace(strings.ToLower(desc))
+	if desc == "" {
+		return true
+	}
+	return strings.HasPrefix(desc, "get up-to-date information at:")
+}
+
+func (c *eventSyncRunCache) prefetchOGMeta(label string, tasks []ogFetchTask, maxWorkers int) map[string]og.Meta {
+	results := map[string]og.Meta{}
 	if len(tasks) == 0 {
 		return results
 	}
@@ -739,10 +838,8 @@ func (c *eventSyncRunCache) prefetchOGImages(label string, tasks []ogFetchTask, 
 	grouped := map[string][]ogFetchTask{}
 	var domains []string
 	for _, task := range tasks {
-		if image, ok := c.getCachedOGImage(task.URL); ok {
-			if image != "" {
-				results[task.URL] = image
-			}
+		if meta, ok := c.getCachedOGMeta(task.URL); ok {
+			results[task.URL] = meta
 			continue
 		}
 		domain := task.Domain
@@ -771,7 +868,7 @@ func (c *eventSyncRunCache) prefetchOGImages(label string, tasks []ogFetchTask, 
 	for _, domain := range domains {
 		pending += len(grouped[domain])
 	}
-	fmt.Printf("  ↳ %s og:image fetch: %d uncached URL(s) across %d domain(s), %d worker(s)\n", label, pending, len(domains), workerCount)
+	fmt.Printf("  ↳ %s og fetch: %d uncached URL(s) across %d domain(s), %d worker(s)\n", label, pending, len(domains), workerCount)
 
 	domainCh := make(chan []ogFetchTask)
 	resultCh := make(chan ogFetchResult, pending)
@@ -783,10 +880,7 @@ func (c *eventSyncRunCache) prefetchOGImages(label string, tasks []ogFetchTask, 
 			defer wg.Done()
 			for domainTasks := range domainCh {
 				for _, task := range domainTasks {
-					resultCh <- ogFetchResult{
-						URL:   task.URL,
-						Image: og.FetchOGImage(task.URL),
-					}
+					resultCh <- ogFetchResult{URL: task.URL, Meta: og.Fetch(task.URL)}
 				}
 			}
 		}()
@@ -800,10 +894,8 @@ func (c *eventSyncRunCache) prefetchOGImages(label string, tasks []ogFetchTask, 
 	close(resultCh)
 
 	for res := range resultCh {
-		c.storeOGImage(res.URL, res.Image)
-		if res.Image != "" {
-			results[res.URL] = res.Image
-		}
+		c.storeOGMeta(res.URL, res.Meta)
+		results[res.URL] = res.Meta
 	}
 
 	return results

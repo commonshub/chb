@@ -291,6 +291,8 @@ func loadCachedBillMonth(dataDir, year, month string) []OdooOutgoingInvoice {
 				publicByID[bill.ID] = OdooOutgoingInvoice{
 					ID:                    bill.ID,
 					Title:                 bill.Title,
+					State:                 bill.State,
+					PaymentState:          bill.PaymentState,
 					InvoiceDate:           bill.Date,
 					Date:                  bill.Date,
 					Sent:                  bill.Sent,
@@ -385,7 +387,7 @@ func printBillsSyncHelp() {
     ~/.chb/data/YYYY/MM/finance/odoo/private/bills.json
 
   Each bill includes:
-  • public: date, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction
+  • public: date, status, payment status, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction
   • private: vendor details, payable bank account, attachments
 
 %sENVIRONMENT%s

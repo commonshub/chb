@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const odooDocumentsSchemaVersion = 3
+const odooDocumentsSchemaVersion = 4
 
 type OdooOutgoingInvoicesFile struct {
 	SchemaVersion int                         `json:"schemaVersion,omitempty"`
@@ -85,6 +85,8 @@ type OdooOutgoingInvoice struct {
 type OdooOutgoingInvoicePublic struct {
 	ID                    int                        `json:"id"`
 	Title                 string                     `json:"title,omitempty"`
+	State                 string                     `json:"state,omitempty"`
+	PaymentState          string                     `json:"paymentState,omitempty"`
 	Date                  string                     `json:"date,omitempty"`
 	Sent                  bool                       `json:"sent,omitempty"`
 	SentAt                string                     `json:"sentAt,omitempty"`
@@ -1325,6 +1327,8 @@ func buildPublicInvoices(invoices []OdooOutgoingInvoice) []OdooOutgoingInvoicePu
 		out = append(out, OdooOutgoingInvoicePublic{
 			ID:                    inv.ID,
 			Title:                 inv.Title,
+			State:                 inv.State,
+			PaymentState:          inv.PaymentState,
 			Date:                  firstNonEmpty(inv.InvoiceDate, inv.Date),
 			Sent:                  inv.Sent,
 			SentAt:                inv.SentAt,
@@ -1422,6 +1426,8 @@ func loadCachedInvoiceMonth(dataDir, year, month string) []OdooOutgoingInvoice {
 				publicByID[inv.ID] = OdooOutgoingInvoice{
 					ID:                    inv.ID,
 					Title:                 inv.Title,
+					State:                 inv.State,
+					PaymentState:          inv.PaymentState,
 					InvoiceDate:           inv.Date,
 					Date:                  inv.Date,
 					Sent:                  inv.Sent,
@@ -1786,7 +1792,7 @@ func printInvoicesSyncHelp() {
     ~/.chb/data/YYYY/MM/finance/odoo/private/invoices.json
 
   Each invoice includes:
-  • public: date, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction
+  • public: date, status, payment status, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction
   • private: partner details and attachments
 
 %sENVIRONMENT%s
