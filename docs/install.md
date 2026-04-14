@@ -20,7 +20,7 @@ Pick the asset that matches your CPU:
 Example for Linux `amd64`:
 
 ```bash
-VERSION=v2.3.1
+VERSION=v2.3.2
 ARCH=amd64
 curl -L -o /tmp/chb.tar.gz "https://github.com/CommonsHub/chb/releases/download/${VERSION}/chb_${VERSION#v}_linux_${ARCH}.tar.gz"
 tar -xzf /tmp/chb.tar.gz -C /tmp
@@ -31,13 +31,13 @@ chb --version
 Or with the installer script pinned to a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CommonsHub/chb/main/install.sh | VERSION=v2.3.1 bash
+curl -fsSL https://raw.githubusercontent.com/CommonsHub/chb/main/install.sh | VERSION=v2.3.2 bash
 ```
 
 Example for Linux `arm64`:
 
 ```bash
-VERSION=v2.3.1
+VERSION=v2.3.2
 ARCH=arm64
 curl -L -o /tmp/chb.tar.gz "https://github.com/CommonsHub/chb/releases/download/${VERSION}/chb_${VERSION#v}_linux_${ARCH}.tar.gz"
 tar -xzf /tmp/chb.tar.gz -C /tmp
@@ -50,7 +50,7 @@ chb --version
 Each release also publishes `checksums.txt`.
 
 ```bash
-VERSION=v2.3.1
+VERSION=v2.3.2
 curl -L -O "https://github.com/CommonsHub/chb/releases/download/${VERSION}/checksums.txt"
 sha256sum -c checksums.txt --ignore-missing
 ```

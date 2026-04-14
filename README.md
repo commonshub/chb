@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/CommonsHub/chb/main/install.sh | ba
 Quick example for Linux `amd64`:
 
 ```bash
-VERSION=v2.3.1
+VERSION=v2.3.2
 curl -L -o /tmp/chb.tar.gz "https://github.com/CommonsHub/chb/releases/download/${VERSION}/chb_${VERSION#v}_linux_amd64.tar.gz"
 tar -xzf /tmp/chb.tar.gz -C /tmp
 install /tmp/chb_${VERSION#v}_linux_amd64 /usr/local/bin/chb
