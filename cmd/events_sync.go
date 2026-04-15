@@ -433,7 +433,7 @@ func isAllowedPublicEventURL(raw string) bool {
 }
 
 // EventsSync is an alias for CalendarsSync for backwards compatibility.
-func EventsSync(args []string, version string) error {
+func EventsSync(args []string) error {
 	_, _, err := CalendarsSync(args)
 	return err
 }
@@ -609,14 +609,11 @@ func saveEventOGCache(dataDir string, cache *eventOGCache) error {
 		cache.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	path := eventOGCachePath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeDataFile(path, data)
 }
 
 func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, force bool, runCache *eventSyncRunCache) (*monthResult, error) {
@@ -943,7 +940,7 @@ func generateYearlyEvents(dataDir, year string) {
 		Events:      allEvents,
 	}
 	data, _ := json.MarshalIndent(ef, "", "  ")
-	os.WriteFile(filepath.Join(yearPath, "generated", "events.json"), data, 0644)
+	_ = writeDataFile(filepath.Join(yearPath, "generated", "events.json"), data)
 }
 
 func generateYearlyCSV(dataDir, year string) {
@@ -1017,7 +1014,7 @@ func generateYearlyCSV(dataDir, year string) {
 	}
 
 	csvContent := headers + "\n" + strings.Join(rows, "\n") + "\n"
-	os.WriteFile(filepath.Join(yearPath, "generated", "events.csv"), []byte(csvContent), 0644)
+	_ = writeDataFile(filepath.Join(yearPath, "generated", "events.csv"), []byte(csvContent))
 }
 
 func csvEscape(s string) string {
@@ -1147,8 +1144,8 @@ Want to host an event at Commons Hub Brussels? [Contact us](%s/contact) or [book
 `, time.Now().UTC().Format(time.RFC3339), icsLine, eventsMarkdown, baseURL, baseURL)
 
 	latestDir := filepath.Join(dataDir, "latest", "generated")
-	os.MkdirAll(latestDir, 0755)
-	os.WriteFile(filepath.Join(latestDir, "events.md"), []byte(content), 0644)
+	_ = mkdirAllManagedData(latestDir)
+	_ = writeDataFile(filepath.Join(latestDir, "events.md"), []byte(content))
 }
 
 func generateRoomsMd(dataDir string) {
@@ -1221,6 +1218,6 @@ For questions about bookings, contact us at hello@commonshub.brussels or visit [
 `, time.Now().UTC().Format(time.RFC3339), roomsMarkdown, baseURL)
 
 	latestDir := filepath.Join(dataDir, "latest", "generated")
-	os.MkdirAll(latestDir, 0755)
-	os.WriteFile(filepath.Join(latestDir, "rooms.md"), []byte(content), 0644)
+	_ = mkdirAllManagedData(latestDir)
+	_ = writeDataFile(filepath.Join(latestDir, "rooms.md"), []byte(content))
 }

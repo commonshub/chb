@@ -17,6 +17,32 @@ var (
 	CommitMsg  string
 )
 
+func ResolveVersion(injected string) string {
+	buildInfoVersion := ""
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		buildInfoVersion = bi.Main.Version
+	}
+	return resolvedVersion(injected, buildInfoVersion)
+}
+
+func resolvedVersion(injected, buildInfoVersion string) string {
+	if v := normalizeVersion(injected); v != "" {
+		return v
+	}
+	if v := normalizeVersion(buildInfoVersion); v != "" {
+		return v
+	}
+	return "dev"
+}
+
+func normalizeVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || version == "(devel)" {
+		return ""
+	}
+	return strings.TrimPrefix(version, "v")
+}
+
 func init() {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {

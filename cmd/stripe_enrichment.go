@@ -319,13 +319,9 @@ func SaveStripeChargeEnrichment(dataDir, year, month string, charges map[string]
 	}
 	data, _ := json.MarshalIndent(enrichment, "", "  ")
 	relPath := filepath.Join("finance", "stripe", "private", "charges.json")
-	dir := filepath.Join(dataDir, year, month, filepath.Dir(relPath))
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(filepath.Join(dataDir, year, month, relPath), data, 0600)
+	_ = writeDataFile(filepath.Join(dataDir, year, month, relPath), data)
 	// Also write to latest
-	latestDir := filepath.Join(dataDir, "latest", filepath.Dir(relPath))
-	os.MkdirAll(latestDir, 0755)
-	os.WriteFile(filepath.Join(dataDir, "latest", relPath), data, 0600)
+	_ = writeDataFile(filepath.Join(dataDir, "latest", relPath), data)
 }
 
 // loadStripeCustomerData reads the private customer PII for a month.

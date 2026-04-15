@@ -154,7 +154,7 @@ func syncInvoiceAttachmentMonth(dataDir, year, month string, force bool, creds *
 		}
 		updated, err := marshalIndentedNoHTMLEscape(file)
 		if err == nil {
-			if err := os.WriteFile(path, updated, 0644); err != nil {
+			if err := writeDataFile(path, updated); err != nil {
 				return res, err
 			}
 		}
@@ -191,7 +191,7 @@ func syncBillAttachmentMonth(dataDir, year, month string, force bool, creds *Odo
 		}
 		updated, err := marshalIndentedNoHTMLEscape(file)
 		if err == nil {
-			if err := os.WriteFile(path, updated, 0644); err != nil {
+			if err := writeDataFile(path, updated); err != nil {
 				return res, err
 			}
 		}
@@ -239,7 +239,7 @@ func syncDocumentAttachments(dataDir, year, month, docKind string, docs []*OdooO
 				continue
 			}
 
-			if err := os.MkdirAll(filepath.Dir(localAbsPath), 0755); err != nil {
+			if err := mkdirAllManagedData(filepath.Dir(localAbsPath)); err != nil {
 				return res, changed, err
 			}
 
@@ -268,7 +268,7 @@ func downloadOdooAttachment(destPath string, att OdooDocumentAttachment, creds *
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(destPath, data, 0644)
+	return writeDataFile(destPath, data)
 }
 
 func buildAttachmentLocalPath(year, month, docKind string, docID int, att OdooDocumentAttachment) string {

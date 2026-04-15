@@ -215,8 +215,9 @@ func MessagesSync(args []string) (int, error) {
 			}
 			data, _ := json.MarshalIndent(cache, "", "  ")
 			latestPath := filepath.Join(dataDir, "latest", relPath)
-			os.MkdirAll(filepath.Dir(latestPath), 0755)
-			os.WriteFile(latestPath, data, 0644)
+			if err := writeDataFile(latestPath, data); err != nil {
+				fmt.Printf("    %s✗ Failed to update latest cache: %v%s\n", Fmt.Red, err, Fmt.Reset)
+			}
 		}
 
 		// Rate limit between channels

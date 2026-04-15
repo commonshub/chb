@@ -8,24 +8,23 @@ import (
 	"github.com/CommonsHub/chb/cmd"
 )
 
-const VERSION = "2.3.3"
+// VERSION is injected at release build time via ldflags.
+var VERSION string
 
 func main() {
+	cmd.Version = cmd.ResolveVersion(VERSION)
 	cmd.LoadEnvFromConfig()
 
 	args := os.Args[1:]
 
 	if len(args) == 0 {
-		cmd.PrintHelp(VERSION)
+		cmd.PrintHelp(cmd.Version)
 		return
 	}
 
-	// Set version for cmd package
-	cmd.Version = VERSION
-
 	switch args[0] {
 	case "--help", "-h", "help":
-		cmd.PrintHelp(VERSION)
+		cmd.PrintHelp(cmd.Version)
 	case "--version", "-v", "version":
 		cmd.PrintVersion()
 	case "setup":
@@ -53,7 +52,7 @@ func main() {
 		}
 	case "events":
 		if len(args) > 1 && args[1] == "sync" {
-			if err := cmd.EventsSync(args[2:], VERSION); err != nil {
+			if err := cmd.EventsSync(args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 				os.Exit(1)
 			}
@@ -209,7 +208,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "sync":
-		if err := cmd.SyncAll(args[1:], VERSION); err != nil {
+		if err := cmd.SyncAll(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 			os.Exit(1)
 		}
@@ -220,7 +219,7 @@ func main() {
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "%sUnknown command: %s%s\n\n", cmd.Fmt.Red, args[0], cmd.Fmt.Reset)
-		cmd.PrintHelp(VERSION)
+		cmd.PrintHelp(cmd.Version)
 		os.Exit(1)
 	}
 }

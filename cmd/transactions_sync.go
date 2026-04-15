@@ -1492,10 +1492,8 @@ func readLastPeekHash(dataDir, chain, slug string) string {
 
 // writeLastPeekHash stores the latest tx hash so we can compare on next sync.
 func writeLastPeekHash(dataDir, chain, slug, hash string) {
-	dir := filepath.Join(dataDir, "latest", "finance", chain)
-	os.MkdirAll(dir, 0755)
-	fp := filepath.Join(dir, ".peek-"+slug)
-	os.WriteFile(fp, []byte(hash+"\n"), 0644)
+	fp := filepath.Join(dataDir, "latest", "finance", chain, ".peek-"+slug)
+	_ = writeDataFile(fp, []byte(hash+"\n"))
 }
 
 func printTransactionsSyncHelp() {

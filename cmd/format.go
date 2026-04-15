@@ -107,8 +107,7 @@ func DataDir() string {
 			dir = filepath.Join(home, ".chb", "data")
 		}
 	}
-	os.MkdirAll(dir, 0755)
-	return dir
+	return ensureManagedDataDir(dir)
 }
 
 // writeMonthFile writes data to dataDir/year/month/<relPath> AND mirrors
@@ -117,16 +116,16 @@ func DataDir() string {
 func writeMonthFile(dataDir, year, month, relPath string, data []byte) error {
 	// Primary: YYYY/MM/<relPath> (or just dataDir/latest/<relPath> when year="latest")
 	monthDst := filepath.Join(dataDir, year, month, relPath)
-	os.MkdirAll(filepath.Dir(monthDst), 0755)
-	if err := os.WriteFile(monthDst, data, 0644); err != nil {
+	if err := writeDataFile(monthDst, data); err != nil {
 		return err
 	}
 
 	// Mirror to latest/ (skip if already writing to latest/)
 	if year != "latest" {
 		latestDst := filepath.Join(dataDir, "latest", relPath)
-		os.MkdirAll(filepath.Dir(latestDst), 0755)
-		os.WriteFile(latestDst, data, 0644)
+		if err := writeDataFile(latestDst, data); err != nil {
+			return err
+		}
 	}
 
 	return nil

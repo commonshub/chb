@@ -2266,13 +2266,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	if len(piiFile.Enrichments) > 0 {
 		piiData, _ := json.MarshalIndent(piiFile, "", "  ")
 		piiRelPath := filepath.Join("generated", "private", "enrichment.json")
-		dir := filepath.Join(dataDir, year, month, filepath.Dir(piiRelPath))
-		os.MkdirAll(dir, 0755)
-		os.WriteFile(filepath.Join(dataDir, year, month, piiRelPath), piiData, 0600)
+		_ = writeDataFile(filepath.Join(dataDir, year, month, piiRelPath), piiData)
 		// Also write to latest
-		latestDir := filepath.Join(dataDir, "latest", filepath.Dir(piiRelPath))
-		os.MkdirAll(latestDir, 0755)
-		os.WriteFile(filepath.Join(dataDir, "latest", piiRelPath), piiData, 0600)
+		_ = writeDataFile(filepath.Join(dataDir, "latest", piiRelPath), piiData)
 	}
 
 	return len(transactions)
@@ -2413,7 +2409,6 @@ func generateLatestEventsGo(dataDir string, years []string) {
 	})
 
 	outputPath := filepath.Join(dataDir, "latest", "generated", "events.json")
-	os.MkdirAll(filepath.Dir(outputPath), 0755)
 	out := LatestEventsFile{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Count:       len(upcoming),
@@ -2445,8 +2440,7 @@ They are derived from raw synced data and can be regenerated at any time.
 | images.json | Images extracted from Discord messages |
 `
 	readmePath := filepath.Join(dataDir, "generated", "README.md")
-	os.MkdirAll(filepath.Dir(readmePath), 0755)
-	os.WriteFile(readmePath, []byte(readme), 0644)
+	_ = writeDataFile(readmePath, []byte(readme))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -2456,7 +2450,7 @@ func writeJSONFile(path string, v interface{}) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return writeDataFile(path, data)
 }
 
 func marshalIndentedNoHTMLEscape(v interface{}) ([]byte, error) {
@@ -2613,8 +2607,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 		}
 		data, _ := json.MarshalIndent(out, "", "  ")
 		latestPath := filepath.Join(dataDir, "latest", "generated", "members.json")
-		os.MkdirAll(filepath.Dir(latestPath), 0755)
-		os.WriteFile(latestPath, data, 0644)
+		_ = writeDataFile(latestPath, data)
 	}
 
 	if totalMonths == 0 {

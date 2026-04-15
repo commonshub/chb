@@ -9,7 +9,7 @@ import (
 // SyncAll runs all sync commands sequentially.
 // Each sync function fetches all data in one API call (or paginated),
 // then distributes to year/month folders.
-func SyncAll(args []string, version string) error {
+func SyncAll(args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		PrintSyncAllHelp()
 		return nil

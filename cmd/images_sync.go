@@ -120,7 +120,10 @@ func syncDiscordImages(dataDir, year, month, label, token string, force bool) (d
 
 		outPath := resolveDiscordImagePath(dataDir, year, month, img)
 		imagesDir := filepath.Dir(outPath)
-		os.MkdirAll(imagesDir, 0755)
+		if err := mkdirAllManagedData(imagesDir); err != nil {
+			fmt.Printf("  %s⚠ Failed to create %s: %v%s\n", Fmt.Yellow, imagesDir, err, Fmt.Reset)
+			continue
+		}
 
 		// Check if already downloaded (any extension)
 		if !force && fileExistsWithPrefix(imagesDir, img.ID) {
@@ -248,7 +251,9 @@ func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResul
 	}
 
 	imagesDir := filepath.Join(dataDir, year, month, "events", "images")
-	os.MkdirAll(imagesDir, 0755)
+	if err := mkdirAllManagedData(imagesDir); err != nil {
+		return eventCoverSyncResult{}
+	}
 
 	var tasks []eventCoverDownloadTask
 	changed := false
@@ -332,7 +337,7 @@ func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResul
 	if changed {
 		updated, err := marshalIndentedNoHTMLEscape(eventsFile)
 		if err == nil {
-			os.WriteFile(eventsPath, updated, 0644)
+			_ = writeDataFile(eventsPath, updated)
 		}
 	}
 
@@ -436,14 +441,28 @@ func downloadFile(url, destPath string) error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
+	if err := mkdirAllManagedData(filepath.Dir(destPath)); err != nil {
+		return err
+	}
+
 	out, err := os.Create(destPath)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
-	return err
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+
+	baseDir, ok := dataBaseForPath(destPath)
+	if ok {
+		return applyDataPathPolicy(baseDir, destPath, false)
+	}
+	return os.Chmod(destPath, dataFileMode)
 }
 
 // extFromURL extracts the file extension from a URL, defaulting to defaultExt.

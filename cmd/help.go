@@ -4,8 +4,14 @@ import "fmt"
 
 func PrintHelp(version string) {
 	f := Fmt
+	versionLabel := version
+	if versionLabel == "" {
+		versionLabel = "dev"
+	} else if versionLabel != "dev" {
+		versionLabel = "v" + versionLabel
+	}
 	fmt.Printf(`
-%schb%s %sv%s%s — Commons Hub Brussels CLI
+%schb%s %s%s%s — Commons Hub Brussels CLI
 
 %sUSAGE%s
   %schb%s <command> [options]
@@ -63,7 +69,7 @@ func PrintHelp(version string) {
   %sETHERSCAN_API_KEY%s   Etherscan/Gnosisscan API key
   %sDISCORD_BOT_TOKEN%s   Discord bot token
 `,
-		f.Bold, f.Reset, f.Dim, version, f.Reset,
+		f.Bold, f.Reset, f.Dim, versionLabel, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
