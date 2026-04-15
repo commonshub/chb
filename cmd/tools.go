@@ -28,6 +28,7 @@ func GetURLMetadata(args []string) error {
 	}
 
 	verbose := HasFlag(args, "--verbose", "-v")
+	debug := HasFlag(args, "--debug")
 
 	var targetURL string
 	for _, arg := range args {
@@ -38,10 +39,10 @@ func GetURLMetadata(args []string) error {
 		break
 	}
 	if strings.TrimSpace(targetURL) == "" {
-		return fmt.Errorf("usage: chb tools getUrlMetadata <url> [--verbose]")
+		return fmt.Errorf("usage: chb tools getUrlMetadata <url> [--verbose] [--debug]")
 	}
 
-	result := og.FetchDetailed(targetURL)
+	result := og.FetchDetailedWithOptions(targetURL, og.FetchOptions{Debug: debug})
 
 	fmt.Printf("URL: %s\n", result.URL)
 	if result.FinalURL != "" && result.FinalURL != result.URL {
@@ -58,6 +59,9 @@ func GetURLMetadata(args []string) error {
 	}
 	if result.HTMLTitle != "" {
 		fmt.Printf("HTML Title: %s\n", result.HTMLTitle)
+	}
+	if result.DebugLogPath != "" {
+		fmt.Printf("Debug Log: %s\n", result.DebugLogPath)
 	}
 
 	if result.Meta.Title != "" {

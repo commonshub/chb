@@ -127,6 +127,7 @@ func PrintToolsHelp() {
 %sEXAMPLES%s
   %schb tools getUrlMetadata%s https://example.com/event
   %schb tools getUrlMetadata%s https://example.com/event --verbose
+  %schb tools getUrlMetadata%s https://example.com/event --debug
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
@@ -134,6 +135,7 @@ func PrintToolsHelp() {
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 	)
@@ -145,7 +147,7 @@ func PrintGetURLMetadataHelp() {
 %schb tools getUrlMetadata%s — Fetch URL metadata for debugging
 
 %sUSAGE%s
-  %schb tools getUrlMetadata%s <url> [--verbose]
+  %schb tools getUrlMetadata%s <url> [--verbose] [--debug]
 
 %sOUTPUT%s
   Prints the fetched URL, final URL after redirects, HTTP status, content type,
@@ -153,6 +155,7 @@ func PrintGetURLMetadataHelp() {
 
 %sOPTIONS%s
   %s--verbose, -v%s       Also print all discovered HTML meta tags
+  %s--debug%s             Write debug.<domain>.log with request/response details
   %s--help, -h%s          Show this help
 	`,
 		f.Bold, f.Reset,
@@ -160,6 +163,7 @@ func PrintGetURLMetadataHelp() {
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 	)
@@ -319,6 +323,7 @@ func PrintEventsSyncHelp() {
   %s<year/month>%s         Sync a specific month (e.g. 2025/11)
   %s--since%s <YYYYMMDD>   Start syncing from this date (default: previous month)
   %s--force%s              Re-fetch even if cached data exists
+  %s--debug%s              Write debug.<domain>.log for OG fetch issues
   %s--history%s            Rebuild entire event history
   %s--help, -h%s           Show this help
 
@@ -330,6 +335,7 @@ func PrintEventsSyncHelp() {
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

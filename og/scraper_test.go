@@ -3,6 +3,8 @@ package og
 import (
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -213,6 +215,43 @@ func TestFetchDetailedNonHTMLResponse(t *testing.T) {
 	result := FetchDetailed("https://example.com/file.pdf")
 	if result.ErrorKind != "non_html_response" {
 		t.Fatalf("expected non_html_response, got %q", result.ErrorKind)
+	}
+}
+
+func TestFetchDetailedWithDebugWritesDomainLogForMissingImage(t *testing.T) {
+	restore := withMockTransport(func(req *http.Request) (*http.Response, error) {
+		return newTestResponse(req, http.StatusOK, "text/html; charset=utf-8", `<html><head>
+			<title>OpenClaworking Day</title>
+			<meta property="og:title" content="OpenClaworking Day" />
+		</head></html>`), nil
+	})
+	defer restore()
+
+	debugDir := t.TempDir()
+	result := FetchDetailedWithOptions("https://luma.com/u3kbetd4", FetchOptions{
+		Debug:    true,
+		DebugDir: debugDir,
+	})
+	if result.DebugLogPath == "" {
+		t.Fatal("expected debug log path to be set")
+	}
+	wantPath := filepath.Join(debugDir, "debug.luma.com.log")
+	if result.DebugLogPath != wantPath {
+		t.Fatalf("expected debug log path %q, got %q", wantPath, result.DebugLogPath)
+	}
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read debug log: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "GET https://luma.com/u3kbetd4") {
+		t.Fatalf("expected request line in debug log, got %q", content)
+	}
+	if !strings.Contains(content, "-- Response Body --") {
+		t.Fatalf("expected response body section in debug log, got %q", content)
+	}
+	if !strings.Contains(content, "OpenClaworking Day") {
+		t.Fatalf("expected html body content in debug log, got %q", content)
 	}
 }
 

@@ -72,6 +72,7 @@ type eventSyncRunCache struct {
 	dataDir string
 	og      *eventOGCache
 	dirty   bool
+	debug   bool
 }
 
 type eventOGCache struct {
@@ -110,7 +111,6 @@ const eventOGCacheVersion = 3
 
 var (
 	eventOGPositiveTTL = 30 * 24 * time.Hour
-	eventOGNegativeTTL = 24 * time.Hour
 )
 
 // CalendarsSync fetches room calendars once and produces both bookings (all events)
@@ -123,13 +123,14 @@ func CalendarsSync(args []string) (int, int, error) {
 	}
 
 	force := HasFlag(args, "--force")
+	debug := HasFlag(args, "--debug")
 	sinceStr := GetOption(args, "--since")
 
 	// Positional year/month arg (e.g. "2025" or "2025/11")
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
 	dataDir := DataDir()
-	runCache := newEventSyncRunCache(dataDir)
+	runCache := newEventSyncRunCache(dataDir, debug)
 	defer runCache.save()
 
 	rooms, err := LoadRooms()
@@ -468,10 +469,11 @@ type roomEvent struct {
 	roomName string
 }
 
-func newEventSyncRunCache(dataDir string) *eventSyncRunCache {
+func newEventSyncRunCache(dataDir string, debug bool) *eventSyncRunCache {
 	return &eventSyncRunCache{
 		dataDir: dataDir,
 		og:      loadEventOGCache(dataDir),
+		debug:   debug,
 	}
 }
 
@@ -490,24 +492,21 @@ func (c *eventSyncRunCache) getOGResult(eventURL string) og.FetchResult {
 	}
 	now := time.Now().UTC()
 	if entry, ok := c.og.Entries[eventURL]; ok {
-		if checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt); err == nil {
-			ttl := eventOGNegativeTTL
-			if eventOGCacheEntryHasMeta(entry) {
-				ttl = eventOGPositiveTTL
-			}
-			if now.Sub(checkedAt) < ttl {
-				return eventOGCacheEntryResult(eventURL, entry)
+		if !eventOGCacheEntryHasMeta(entry) {
+			delete(c.og.Entries, eventURL)
+			c.dirty = true
+		} else {
+			if checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt); err == nil {
+				ttl := eventOGPositiveTTL
+				if now.Sub(checkedAt) < ttl {
+					return eventOGCacheEntryResult(eventURL, entry)
+				}
 			}
 		}
 	}
 
-	result := og.FetchDetailed(eventURL)
-	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
-	setEventOGCacheEntryResult(&entry, result)
-	c.og.Entries[eventURL] = entry
-	c.og.Version = eventOGCacheVersion
-	c.og.UpdatedAt = now.Format(time.RFC3339)
-	c.dirty = true
+	result := c.fetchOGResult(eventURL)
+	c.storeOGResult(eventURL, result)
 	return result
 }
 
@@ -520,15 +519,16 @@ func (c *eventSyncRunCache) getCachedOGResult(eventURL string) (og.FetchResult, 
 	if !ok {
 		return og.FetchResult{}, false
 	}
+	if !eventOGCacheEntryHasMeta(entry) {
+		delete(c.og.Entries, eventURL)
+		c.dirty = true
+		return og.FetchResult{}, false
+	}
 	checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt)
 	if err != nil {
 		return og.FetchResult{}, false
 	}
-	ttl := eventOGNegativeTTL
-	if eventOGCacheEntryHasMeta(entry) {
-		ttl = eventOGPositiveTTL
-	}
-	if now.Sub(checkedAt) >= ttl {
+	if now.Sub(checkedAt) >= eventOGPositiveTTL {
 		return og.FetchResult{}, false
 	}
 	return eventOGCacheEntryResult(eventURL, entry), true
@@ -536,6 +536,15 @@ func (c *eventSyncRunCache) getCachedOGResult(eventURL string) (og.FetchResult, 
 
 func (c *eventSyncRunCache) storeOGResult(eventURL string, result og.FetchResult) {
 	if c == nil || c.og == nil {
+		return
+	}
+	if !shouldCacheOGResult(result) {
+		if _, ok := c.og.Entries[eventURL]; ok {
+			delete(c.og.Entries, eventURL)
+			c.og.Version = eventOGCacheVersion
+			c.og.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			c.dirty = true
+		}
 		return
 	}
 	now := time.Now().UTC()
@@ -548,9 +557,11 @@ func (c *eventSyncRunCache) storeOGResult(eventURL string, result og.FetchResult
 }
 
 func eventOGCacheEntryHasMeta(entry eventOGCacheItem) bool {
-	return (entry.ImageURL != nil && *entry.ImageURL != "") ||
-		(entry.Title != nil && *entry.Title != "") ||
-		(entry.Description != nil && *entry.Description != "")
+	return entry.ImageURL != nil && *entry.ImageURL != ""
+}
+
+func shouldCacheOGResult(result og.FetchResult) bool {
+	return strings.TrimSpace(result.ErrorKind) == "" && strings.TrimSpace(result.Meta.Image) != ""
 }
 
 func eventOGCacheEntryResult(eventURL string, entry eventOGCacheItem) og.FetchResult {
@@ -930,7 +941,7 @@ func (c *eventSyncRunCache) prefetchOGResults(label string, tasks []ogFetchTask,
 			defer wg.Done()
 			for domainTasks := range domainCh {
 				for _, task := range domainTasks {
-					resultCh <- ogFetchResult{URL: task.URL, Result: og.FetchDetailed(task.URL)}
+					resultCh <- ogFetchResult{URL: task.URL, Result: c.fetchOGResult(task.URL)}
 				}
 			}
 		}()
@@ -956,21 +967,32 @@ func describeOGImageIssue(result og.FetchResult) string {
 	if targetURL == "" {
 		targetURL = strings.TrimSpace(result.URL)
 	}
+	logSuffix := ""
+	if result.DebugLogPath != "" {
+		logSuffix = fmt.Sprintf(" (see %s)", result.DebugLogPath)
+	}
 	switch {
 	case result.ErrorKind != "":
-		return fmt.Sprintf("failed to fetch metadata from %s: %s", targetURL, result.ErrorMessage)
+		return fmt.Sprintf("failed to fetch metadata from %s: %s%s", targetURL, result.ErrorMessage, logSuffix)
 	case result.CloudflareChallenge:
-		return fmt.Sprintf("fetched %s but got a Cloudflare challenge page instead of event metadata", targetURL)
+		return fmt.Sprintf("fetched %s but got a Cloudflare challenge page instead of event metadata%s", targetURL, logSuffix)
 	case result.ContentType != "" && !strings.Contains(strings.ToLower(result.ContentType), "html"):
-		return fmt.Sprintf("fetched %s but got non-HTML content (%s)", targetURL, result.ContentType)
+		return fmt.Sprintf("fetched %s but got non-HTML content (%s)%s", targetURL, result.ContentType, logSuffix)
 	case result.Meta.Image == "":
 		if result.HTMLTitle != "" {
-			return fmt.Sprintf("fetched %s but found no og:image meta tag (HTML title: %q)", targetURL, result.HTMLTitle)
+			return fmt.Sprintf("fetched %s but found no og:image meta tag (HTML title: %q)%s", targetURL, result.HTMLTitle, logSuffix)
 		}
-		return fmt.Sprintf("fetched %s but found no og:image meta tag", targetURL)
+		return fmt.Sprintf("fetched %s but found no og:image meta tag%s", targetURL, logSuffix)
 	default:
-		return fmt.Sprintf("no og:image for %s", targetURL)
+		return fmt.Sprintf("no og:image for %s%s", targetURL, logSuffix)
 	}
+}
+
+func (c *eventSyncRunCache) fetchOGResult(eventURL string) og.FetchResult {
+	if c != nil && c.debug {
+		return og.FetchDetailedWithOptions(eventURL, og.FetchOptions{Debug: true})
+	}
+	return og.FetchDetailed(eventURL)
 }
 
 func eventHostFromURL(raw string) string {

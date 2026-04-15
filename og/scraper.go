@@ -5,13 +5,18 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/html"
 )
 
 var ogHTTPClient = &http.Client{Timeout: 12 * time.Second}
+var debugLogMu sync.Mutex
 
 // Meta holds Open Graph metadata extracted from a page.
 type Meta struct {
@@ -39,6 +44,13 @@ type FetchResult struct {
 	CloudflareChallenge bool
 	ErrorKind           string
 	ErrorMessage        string
+	DebugLogPath        string
+}
+
+// FetchOptions configures metadata fetching.
+type FetchOptions struct {
+	Debug    bool
+	DebugDir string
 }
 
 // Fetch fetches OG metadata (title, description, image) from a URL.
@@ -48,6 +60,11 @@ func Fetch(pageURL string) Meta {
 
 // FetchDetailed fetches metadata and returns structured diagnostics.
 func FetchDetailed(pageURL string) FetchResult {
+	return FetchDetailedWithOptions(pageURL, FetchOptions{})
+}
+
+// FetchDetailedWithOptions fetches metadata and returns structured diagnostics.
+func FetchDetailedWithOptions(pageURL string, opts FetchOptions) FetchResult {
 	result := FetchResult{URL: strings.TrimSpace(pageURL)}
 	if result.URL == "" {
 		result.ErrorKind = "invalid_url"
@@ -74,6 +91,7 @@ func FetchDetailed(pageURL string) FetchResult {
 	if err != nil {
 		result.ErrorKind = "request_failed"
 		result.ErrorMessage = err.Error()
+		result.DebugLogPath = maybeWriteDebugLog(opts, req, nil, "", result, false)
 		return result
 	}
 	defer resp.Body.Close()
@@ -91,6 +109,7 @@ func FetchDetailed(pageURL string) FetchResult {
 	if err != nil {
 		result.ErrorKind = "read_failed"
 		result.ErrorMessage = err.Error()
+		result.DebugLogPath = maybeWriteDebugLog(opts, req, resp, "", result, false)
 		return result
 	}
 
@@ -104,6 +123,7 @@ func FetchDetailed(pageURL string) FetchResult {
 		} else {
 			result.ErrorMessage = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
+		result.DebugLogPath = maybeWriteDebugLog(opts, req, resp, bodyStr, result, true)
 		return result
 	}
 
@@ -114,10 +134,12 @@ func FetchDetailed(pageURL string) FetchResult {
 		} else {
 			result.ErrorMessage = "response is not HTML"
 		}
+		result.DebugLogPath = maybeWriteDebugLog(opts, req, resp, bodyStr, result, false)
 		return result
 	}
 
 	result.Meta, result.MetaTags, result.HTMLTitle = ExtractMetaDetails(bodyStr)
+	result.DebugLogPath = maybeWriteDebugLog(opts, req, resp, bodyStr, result, result.Meta.Image == "")
 	return result
 }
 
@@ -247,4 +269,121 @@ func looksLikeCloudflareChallenge(resp *http.Response, body string) bool {
 		strings.Contains(body, "challenge-platform") ||
 		strings.Contains(body, "attention required! | cloudflare") ||
 		strings.Contains(body, "just a moment...")
+}
+
+func maybeWriteDebugLog(opts FetchOptions, req *http.Request, resp *http.Response, body string, result FetchResult, includeBody bool) string {
+	if !opts.Debug {
+		return ""
+	}
+	logPath, err := debugLogPath(result, opts)
+	if err != nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("==== chb og debug ====\n")
+	b.WriteString("Timestamp: " + time.Now().UTC().Format(time.RFC3339) + "\n")
+	if result.URL != "" {
+		b.WriteString("URL: " + result.URL + "\n")
+	}
+	if result.FinalURL != "" && result.FinalURL != result.URL {
+		b.WriteString("Final URL: " + result.FinalURL + "\n")
+	}
+	if result.ErrorKind != "" {
+		b.WriteString("Error Kind: " + result.ErrorKind + "\n")
+	}
+	if result.ErrorMessage != "" {
+		b.WriteString("Error: " + result.ErrorMessage + "\n")
+	}
+	if result.CloudflareChallenge {
+		b.WriteString("Cloudflare Challenge: yes\n")
+	}
+	if result.StatusCode != 0 {
+		b.WriteString(fmt.Sprintf("HTTP Status: %d\n", result.StatusCode))
+	}
+	if result.ContentType != "" {
+		b.WriteString("Content-Type: " + result.ContentType + "\n")
+	}
+	if result.HTMLTitle != "" {
+		b.WriteString("HTML Title: " + result.HTMLTitle + "\n")
+	}
+	if result.Meta.Title != "" {
+		b.WriteString("OG Title: " + result.Meta.Title + "\n")
+	}
+	if result.Meta.Description != "" {
+		b.WriteString("OG Description: " + result.Meta.Description + "\n")
+	}
+	if result.Meta.Image != "" {
+		b.WriteString("OG Image: " + result.Meta.Image + "\n")
+	}
+	if req != nil {
+		b.WriteString("\n-- Request --\n")
+		b.WriteString(req.Method + " " + req.URL.String() + "\n")
+		for name, values := range req.Header {
+			for _, value := range values {
+				b.WriteString(name + ": " + value + "\n")
+			}
+		}
+	}
+	if resp != nil {
+		b.WriteString("\n-- Response --\n")
+		b.WriteString(resp.Proto + " " + resp.Status + "\n")
+		for name, values := range resp.Header {
+			for _, value := range values {
+				b.WriteString(name + ": " + value + "\n")
+			}
+		}
+	}
+	if includeBody {
+		b.WriteString("\n-- Response Body --\n")
+		b.WriteString(body)
+		if !strings.HasSuffix(body, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+
+	debugLogMu.Lock()
+	defer debugLogMu.Unlock()
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if _, err := f.WriteString(b.String()); err != nil {
+		return ""
+	}
+	return logPath
+}
+
+func debugLogPath(result FetchResult, opts FetchOptions) (string, error) {
+	dir := opts.DebugDir
+	if strings.TrimSpace(dir) == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return "", err
+		}
+	}
+	targetURL := result.FinalURL
+	if targetURL == "" {
+		targetURL = result.URL
+	}
+	u, err := url.Parse(targetURL)
+	if err != nil || strings.TrimSpace(u.Hostname()) == "" {
+		return "", fmt.Errorf("no hostname for debug log")
+	}
+	return filepath.Join(dir, "debug."+sanitizeDebugDomain(u.Hostname())+".log"), nil
+}
+
+var debugDomainSanitizer = regexp.MustCompile(`[^a-z0-9.-]+`)
+
+func sanitizeDebugDomain(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = debugDomainSanitizer.ReplaceAllString(host, "_")
+	host = strings.Trim(host, "._-")
+	if host == "" {
+		return "unknown"
+	}
+	return host
 }
