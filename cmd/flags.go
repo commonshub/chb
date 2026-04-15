@@ -149,17 +149,9 @@ func ResolveSinceMonth(args []string, sourceSubdir string) (startMonth string, i
 	}
 
 	// Check --history flag
-	// If --force: start from 2024/01 (re-fetch everything)
-	// Otherwise: find the oldest cached month for this source and start from there
-	// to avoid re-paginating data we already have
+	// Full history starts from the first supported month.
+	// Use --since if you want a narrower historical window.
 	if HasFlag(args, "--history") {
-		if HasFlag(args, "--force") {
-			return "2024-01", true
-		}
-		oldest := findOldestCachedMonth(sourceSubdir)
-		if oldest != "" {
-			return oldest, true
-		}
 		return "2024-01", true
 	}
 

@@ -634,7 +634,7 @@ type yearMonth struct {
 func getMemberMonths(args []string) []yearMonth {
 	now := time.Now()
 
-	// Check --month=YYYY-MM
+	// Check --month=YYYY-MM (members-specific alias)
 	monthArg := GetOption(args, "--month")
 	if monthArg != "" {
 		parts := strings.Split(monthArg, "-")
@@ -643,6 +643,35 @@ func getMemberMonths(args []string) []yearMonth {
 			m, _ := strconv.Atoi(parts[1])
 			return []yearMonth{{y, m}}
 		}
+	}
+
+	// Shared sync semantics: positional year[/month], --since, --history
+	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	if posFound {
+		var months []yearMonth
+		if posMonth != "" {
+			return []yearMonth{{mustAtoi(posYear), mustAtoi(posMonth)}}
+		}
+		year := mustAtoi(posYear)
+		for month := 1; month <= 12; month++ {
+			months = append(months, yearMonth{year, month})
+		}
+		return months
+	}
+
+	if sinceMonth, isSince := ResolveSinceMonth(args, filepath.Join("generated", "members.json")); isSince {
+		start := parseYearMonthValue(sinceMonth)
+		var months []yearMonth
+		y, m := start.year, start.month
+		for y < now.Year() || (y == now.Year() && m <= int(now.Month())) {
+			months = append(months, yearMonth{y, m})
+			m++
+			if m > 12 {
+				m = 1
+				y++
+			}
+		}
+		return months
 	}
 
 	// Check --backfill
@@ -661,6 +690,23 @@ func getMemberMonths(args []string) []yearMonth {
 	}
 
 	return []yearMonth{{now.Year(), int(now.Month())}}
+}
+
+func parseYearMonthValue(ym string) yearMonth {
+	parts := strings.SplitN(ym, "-", 2)
+	if len(parts) != 2 {
+		now := time.Now()
+		return yearMonth{now.Year(), int(now.Month())}
+	}
+	return yearMonth{mustAtoi(parts[0]), mustAtoi(parts[1])}
+}
+
+func mustAtoi(value string) int {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ── Odoo JSON-RPC ───────────────────────────────────────────────────────────
