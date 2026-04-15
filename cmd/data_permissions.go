@@ -81,10 +81,6 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 	baseDir = filepath.Clean(baseDir)
 	targetPath = filepath.Clean(targetPath)
 
-	if err := os.Chmod(baseDir, dataRootDirMode); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
 	rel, err := filepath.Rel(baseDir, targetPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return nil

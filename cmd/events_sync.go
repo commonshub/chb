@@ -81,10 +81,17 @@ type eventOGCache struct {
 }
 
 type eventOGCacheItem struct {
-	Title       *string `json:"title,omitempty"`
-	Description *string `json:"description,omitempty"`
-	ImageURL    *string `json:"imageUrl,omitempty"`
-	CheckedAt   string  `json:"checkedAt"`
+	Title               *string `json:"title,omitempty"`
+	Description         *string `json:"description,omitempty"`
+	ImageURL            *string `json:"imageUrl,omitempty"`
+	FinalURL            *string `json:"finalUrl,omitempty"`
+	ContentType         *string `json:"contentType,omitempty"`
+	HTMLTitle           *string `json:"htmlTitle,omitempty"`
+	StatusCode          *int    `json:"statusCode,omitempty"`
+	ErrorKind           *string `json:"errorKind,omitempty"`
+	ErrorMessage        *string `json:"errorMessage,omitempty"`
+	CloudflareChallenge bool    `json:"cloudflareChallenge,omitempty"`
+	CheckedAt           string  `json:"checkedAt"`
 }
 
 type ogFetchTask struct {
@@ -95,11 +102,11 @@ type ogFetchTask struct {
 }
 
 type ogFetchResult struct {
-	URL  string
-	Meta og.Meta
+	URL    string
+	Result og.FetchResult
 }
 
-const eventOGCacheVersion = 2
+const eventOGCacheVersion = 3
 
 var (
 	eventOGPositiveTTL = 30 * 24 * time.Hour
@@ -477,9 +484,9 @@ func (c *eventSyncRunCache) save() {
 	}
 }
 
-func (c *eventSyncRunCache) getOGMeta(eventURL string) og.Meta {
+func (c *eventSyncRunCache) getOGResult(eventURL string) og.FetchResult {
 	if c == nil || c.og == nil {
-		return og.Fetch(eventURL)
+		return og.FetchDetailed(eventURL)
 	}
 	now := time.Now().UTC()
 	if entry, ok := c.og.Entries[eventURL]; ok {
@@ -489,51 +496,51 @@ func (c *eventSyncRunCache) getOGMeta(eventURL string) og.Meta {
 				ttl = eventOGPositiveTTL
 			}
 			if now.Sub(checkedAt) < ttl {
-				return eventOGCacheEntryMeta(entry)
+				return eventOGCacheEntryResult(eventURL, entry)
 			}
 		}
 	}
 
-	meta := og.Fetch(eventURL)
+	result := og.FetchDetailed(eventURL)
 	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
-	setEventOGCacheEntryMeta(&entry, meta)
+	setEventOGCacheEntryResult(&entry, result)
 	c.og.Entries[eventURL] = entry
 	c.og.Version = eventOGCacheVersion
 	c.og.UpdatedAt = now.Format(time.RFC3339)
 	c.dirty = true
-	return meta
+	return result
 }
 
-func (c *eventSyncRunCache) getCachedOGMeta(eventURL string) (og.Meta, bool) {
+func (c *eventSyncRunCache) getCachedOGResult(eventURL string) (og.FetchResult, bool) {
 	if c == nil || c.og == nil {
-		return og.Meta{}, false
+		return og.FetchResult{}, false
 	}
 	now := time.Now().UTC()
 	entry, ok := c.og.Entries[eventURL]
 	if !ok {
-		return og.Meta{}, false
+		return og.FetchResult{}, false
 	}
 	checkedAt, err := time.Parse(time.RFC3339, entry.CheckedAt)
 	if err != nil {
-		return og.Meta{}, false
+		return og.FetchResult{}, false
 	}
 	ttl := eventOGNegativeTTL
 	if eventOGCacheEntryHasMeta(entry) {
 		ttl = eventOGPositiveTTL
 	}
 	if now.Sub(checkedAt) >= ttl {
-		return og.Meta{}, false
+		return og.FetchResult{}, false
 	}
-	return eventOGCacheEntryMeta(entry), true
+	return eventOGCacheEntryResult(eventURL, entry), true
 }
 
-func (c *eventSyncRunCache) storeOGMeta(eventURL string, meta og.Meta) {
+func (c *eventSyncRunCache) storeOGResult(eventURL string, result og.FetchResult) {
 	if c == nil || c.og == nil {
 		return
 	}
 	now := time.Now().UTC()
 	entry := eventOGCacheItem{CheckedAt: now.Format(time.RFC3339)}
-	setEventOGCacheEntryMeta(&entry, meta)
+	setEventOGCacheEntryResult(&entry, result)
 	c.og.Entries[eventURL] = entry
 	c.og.Version = eventOGCacheVersion
 	c.og.UpdatedAt = now.Format(time.RFC3339)
@@ -546,36 +553,83 @@ func eventOGCacheEntryHasMeta(entry eventOGCacheItem) bool {
 		(entry.Description != nil && *entry.Description != "")
 }
 
-func eventOGCacheEntryMeta(entry eventOGCacheItem) og.Meta {
-	meta := og.Meta{}
+func eventOGCacheEntryResult(eventURL string, entry eventOGCacheItem) og.FetchResult {
+	result := og.FetchResult{URL: eventURL}
 	if entry.Title != nil {
-		meta.Title = *entry.Title
+		result.Meta.Title = *entry.Title
 	}
 	if entry.Description != nil {
-		meta.Description = *entry.Description
+		result.Meta.Description = *entry.Description
 	}
 	if entry.ImageURL != nil {
-		meta.Image = *entry.ImageURL
+		result.Meta.Image = *entry.ImageURL
 	}
-	return meta
+	if entry.FinalURL != nil {
+		result.FinalURL = *entry.FinalURL
+	}
+	if entry.ContentType != nil {
+		result.ContentType = *entry.ContentType
+	}
+	if entry.HTMLTitle != nil {
+		result.HTMLTitle = *entry.HTMLTitle
+	}
+	if entry.StatusCode != nil {
+		result.StatusCode = *entry.StatusCode
+	}
+	if entry.ErrorKind != nil {
+		result.ErrorKind = *entry.ErrorKind
+	}
+	if entry.ErrorMessage != nil {
+		result.ErrorMessage = *entry.ErrorMessage
+	}
+	result.CloudflareChallenge = entry.CloudflareChallenge
+	if result.FinalURL == "" {
+		result.FinalURL = eventURL
+	}
+	return result
 }
 
-func setEventOGCacheEntryMeta(entry *eventOGCacheItem, meta og.Meta) {
+func setEventOGCacheEntryResult(entry *eventOGCacheItem, result og.FetchResult) {
 	if entry == nil {
 		return
 	}
-	if meta.Title != "" {
-		title := meta.Title
+	if result.Meta.Title != "" {
+		title := result.Meta.Title
 		entry.Title = &title
 	}
-	if meta.Description != "" {
-		desc := meta.Description
+	if result.Meta.Description != "" {
+		desc := result.Meta.Description
 		entry.Description = &desc
 	}
-	if meta.Image != "" {
-		image := meta.Image
+	if result.Meta.Image != "" {
+		image := result.Meta.Image
 		entry.ImageURL = &image
 	}
+	if result.FinalURL != "" {
+		finalURL := result.FinalURL
+		entry.FinalURL = &finalURL
+	}
+	if result.ContentType != "" {
+		contentType := result.ContentType
+		entry.ContentType = &contentType
+	}
+	if result.HTMLTitle != "" {
+		htmlTitle := result.HTMLTitle
+		entry.HTMLTitle = &htmlTitle
+	}
+	if result.StatusCode != 0 {
+		statusCode := result.StatusCode
+		entry.StatusCode = &statusCode
+	}
+	if result.ErrorKind != "" {
+		errorKind := result.ErrorKind
+		entry.ErrorKind = &errorKind
+	}
+	if result.ErrorMessage != "" {
+		errorMessage := result.ErrorMessage
+		entry.ErrorMessage = &errorMessage
+	}
+	entry.CloudflareChallenge = result.CloudflareChallenge
 }
 
 func eventOGCachePath(dataDir string) string {
@@ -667,9 +721,9 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	}
 	fmt.Printf("  🔎 %s: %d public event(s), %d page fetch(es), %d cover(s) pending images sync\n", label, len(roomEvents), needsOGFetch, needsCoverSync)
 
-	ogMeta := map[string]og.Meta{}
+	ogResults := map[string]og.FetchResult{}
 	if len(ogTasks) > 0 {
-		ogMeta = runCache.prefetchOGMeta(label, ogTasks, 4)
+		ogResults = runCache.prefetchOGResults(label, ogTasks, 4)
 	}
 
 	processedIDs := map[string]bool{}
@@ -715,17 +769,16 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 				description = existing.Description
 			}
 		}
-		meta, ok := ogMeta[eventURL]
+		ogResult, ok := ogResults[eventURL]
 		if !ok {
-			meta = runCache.getOGMeta(eventURL)
+			ogResult = runCache.getOGResult(eventURL)
 		}
+		meta := ogResult.Meta
 		if coverImage == "" && meta.Image != "" {
 			coverImage = meta.Image
 		}
 		if coverImage == "" {
-			if meta.Image == "" {
-				fmt.Printf("      ↳ no og:image for %s\n", name)
-			}
+			fmt.Printf("      ↳ %s\n", describeOGImageIssue(ogResult))
 		}
 		description = chooseEventDescription(description, meta.Description)
 		name = chooseEventTitle(name, meta.Title)
@@ -826,8 +879,8 @@ func looksLikeThinEventDescription(desc string) bool {
 	return strings.HasPrefix(desc, "get up-to-date information at:")
 }
 
-func (c *eventSyncRunCache) prefetchOGMeta(label string, tasks []ogFetchTask, maxWorkers int) map[string]og.Meta {
-	results := map[string]og.Meta{}
+func (c *eventSyncRunCache) prefetchOGResults(label string, tasks []ogFetchTask, maxWorkers int) map[string]og.FetchResult {
+	results := map[string]og.FetchResult{}
 	if len(tasks) == 0 {
 		return results
 	}
@@ -835,8 +888,8 @@ func (c *eventSyncRunCache) prefetchOGMeta(label string, tasks []ogFetchTask, ma
 	grouped := map[string][]ogFetchTask{}
 	var domains []string
 	for _, task := range tasks {
-		if meta, ok := c.getCachedOGMeta(task.URL); ok {
-			results[task.URL] = meta
+		if result, ok := c.getCachedOGResult(task.URL); ok {
+			results[task.URL] = result
 			continue
 		}
 		domain := task.Domain
@@ -877,7 +930,7 @@ func (c *eventSyncRunCache) prefetchOGMeta(label string, tasks []ogFetchTask, ma
 			defer wg.Done()
 			for domainTasks := range domainCh {
 				for _, task := range domainTasks {
-					resultCh <- ogFetchResult{URL: task.URL, Meta: og.Fetch(task.URL)}
+					resultCh <- ogFetchResult{URL: task.URL, Result: og.FetchDetailed(task.URL)}
 				}
 			}
 		}()
@@ -891,11 +944,33 @@ func (c *eventSyncRunCache) prefetchOGMeta(label string, tasks []ogFetchTask, ma
 	close(resultCh)
 
 	for res := range resultCh {
-		c.storeOGMeta(res.URL, res.Meta)
-		results[res.URL] = res.Meta
+		c.storeOGResult(res.URL, res.Result)
+		results[res.URL] = res.Result
 	}
 
 	return results
+}
+
+func describeOGImageIssue(result og.FetchResult) string {
+	targetURL := strings.TrimSpace(result.FinalURL)
+	if targetURL == "" {
+		targetURL = strings.TrimSpace(result.URL)
+	}
+	switch {
+	case result.ErrorKind != "":
+		return fmt.Sprintf("failed to fetch metadata from %s: %s", targetURL, result.ErrorMessage)
+	case result.CloudflareChallenge:
+		return fmt.Sprintf("fetched %s but got a Cloudflare challenge page instead of event metadata", targetURL)
+	case result.ContentType != "" && !strings.Contains(strings.ToLower(result.ContentType), "html"):
+		return fmt.Sprintf("fetched %s but got non-HTML content (%s)", targetURL, result.ContentType)
+	case result.Meta.Image == "":
+		if result.HTMLTitle != "" {
+			return fmt.Sprintf("fetched %s but found no og:image meta tag (HTML title: %q)", targetURL, result.HTMLTitle)
+		}
+		return fmt.Sprintf("fetched %s but found no og:image meta tag", targetURL)
+	default:
+		return fmt.Sprintf("no og:image for %s", targetURL)
+	}
 }
 
 func eventHostFromURL(raw string) string {

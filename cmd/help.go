@@ -38,6 +38,7 @@ func PrintHelp(version string) {
   %sreport%s <period>     Generate monthly/yearly report
   %sstats%s               Show data directory size and breakdown
   %sdoctor%s              Audit DATA_DIR integrity and suggest fixes
+  %stools%s               Run debugging helpers
 
 %sOPTIONS%s
   %s--help, -h%s          Show help for a command
@@ -60,6 +61,7 @@ func PrintHelp(version string) {
   $ chb attachments sync                 # sync invoice/bill attachments from Odoo
   $ chb messages sync 2025              # sync messages for all of 2025
   $ chb bookings sync 2025/06            # sync bookings for Jun 2025
+  $ chb tools getUrlMetadata https://example.com/event
   $ chb report 2025/11                   # monthly report
   $ chb report 2025                      # yearly report%s
 
@@ -93,6 +95,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
@@ -105,6 +108,58 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+	)
+}
+
+func PrintToolsHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb tools%s — Debugging helpers
+
+%sUSAGE%s
+  %schb tools%s <command> [options]
+
+%sCOMMANDS%s
+  %sgetUrlMetadata%s <url>   Fetch title, description, and og:image from a page
+
+%sEXAMPLES%s
+  %schb tools getUrlMetadata%s https://example.com/event
+  %schb tools getUrlMetadata%s https://example.com/event --verbose
+`,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+	)
+}
+
+func PrintGetURLMetadataHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb tools getUrlMetadata%s — Fetch URL metadata for debugging
+
+%sUSAGE%s
+  %schb tools getUrlMetadata%s <url> [--verbose]
+
+%sOUTPUT%s
+  Prints the fetched URL, final URL after redirects, HTTP status, content type,
+  title, description, og:image, and explicit fetch/debug errors.
+
+%sOPTIONS%s
+  %s--verbose, -v%s       Also print all discovered HTML meta tags
+  %s--help, -h%s          Show this help
+	`,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 	)

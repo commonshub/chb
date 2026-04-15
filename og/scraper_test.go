@@ -1,8 +1,9 @@
 package og
 
 import (
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -128,17 +129,16 @@ func TestFetchLive(t *testing.T) {
 }
 
 func TestFetchWithServer(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><head>
+	restore := withMockTransport(func(req *http.Request) (*http.Response, error) {
+		return newTestResponse(req, http.StatusOK, "text/html", `<html><head>
 			<meta property="og:title" content="Test Event" />
 			<meta property="og:description" content="A test event" />
 			<meta property="og:image" content="https://example.com/test.jpg" />
-		</head></html>`))
-	}))
-	defer srv.Close()
+		</head></html>`), nil
+	})
+	defer restore()
 
-	m := Fetch(srv.URL)
+	m := Fetch("https://example.com/event")
 	if m.Title != "Test Event" {
 		t.Errorf("Title = %q, want %q", m.Title, "Test Event")
 	}
@@ -151,13 +151,94 @@ func TestFetchWithServer(t *testing.T) {
 }
 
 func TestFetchNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(404)
-	}))
-	defer srv.Close()
+	restore := withMockTransport(func(req *http.Request) (*http.Response, error) {
+		return newTestResponse(req, http.StatusNotFound, "text/html", ""), nil
+	})
+	defer restore()
 
-	m := Fetch(srv.URL)
+	m := Fetch("https://example.com/missing")
 	if m != (Meta{}) {
 		t.Errorf("expected empty Meta for 404, got %+v", m)
 	}
+}
+
+func TestFetchDetailedMissingOGImage(t *testing.T) {
+	restore := withMockTransport(func(req *http.Request) (*http.Response, error) {
+		return newTestResponse(req, http.StatusOK, "text/html; charset=utf-8", `<html><head>
+			<title>OpenClaworking Day</title>
+			<meta property="og:title" content="OpenClaworking Day" />
+			<meta property="og:description" content="Coworking session at Commons Hub" />
+		</head></html>`), nil
+	})
+	defer restore()
+
+	result := FetchDetailed("https://example.com/openclaworking-day")
+	if result.ErrorKind != "" {
+		t.Fatalf("expected no fetch error, got %s: %s", result.ErrorKind, result.ErrorMessage)
+	}
+	if result.Meta.Image != "" {
+		t.Fatalf("expected missing og:image, got %q", result.Meta.Image)
+	}
+	if result.HTMLTitle != "OpenClaworking Day" {
+		t.Fatalf("expected HTML title to be captured, got %q", result.HTMLTitle)
+	}
+	if len(result.MetaTags) != 2 {
+		t.Fatalf("expected 2 meta tags, got %d", len(result.MetaTags))
+	}
+}
+
+func TestFetchDetailedCloudflareChallenge(t *testing.T) {
+	restore := withMockTransport(func(req *http.Request) (*http.Response, error) {
+		resp := newTestResponse(req, http.StatusServiceUnavailable, "text/html", `<html><head><title>Just a moment...</title></head><body>challenge-platform</body></html>`)
+		resp.Header.Set("Server", "cloudflare")
+		return resp, nil
+	})
+	defer restore()
+
+	result := FetchDetailed("https://example.com/protected")
+	if result.ErrorKind != "http_error" {
+		t.Fatalf("expected http_error, got %q", result.ErrorKind)
+	}
+	if !result.CloudflareChallenge {
+		t.Fatal("expected Cloudflare challenge to be detected")
+	}
+}
+
+func TestFetchDetailedNonHTMLResponse(t *testing.T) {
+	restore := withMockTransport(func(req *http.Request) (*http.Response, error) {
+		return newTestResponse(req, http.StatusOK, "application/pdf", "%PDF-1.4"), nil
+	})
+	defer restore()
+
+	result := FetchDetailed("https://example.com/file.pdf")
+	if result.ErrorKind != "non_html_response" {
+		t.Fatalf("expected non_html_response, got %q", result.ErrorKind)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func withMockTransport(fn roundTripFunc) func() {
+	original := ogHTTPClient.Transport
+	ogHTTPClient.Transport = fn
+	return func() {
+		ogHTTPClient.Transport = original
+	}
+}
+
+func newTestResponse(req *http.Request, status int, contentType, body string) *http.Response {
+	resp := &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}
+	if contentType != "" {
+		resp.Header.Set("Content-Type", contentType)
+	}
+	return resp
 }

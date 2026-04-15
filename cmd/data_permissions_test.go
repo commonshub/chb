@@ -21,6 +21,18 @@ func TestWriteDataFileSetsPublicPermissions(t *testing.T) {
 	assertMode(t, path, 0644)
 }
 
+func TestDataDirDoesNotChmodRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.Chmod(dataDir, 0700); err != nil {
+		t.Fatalf("chmod data dir: %v", err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+
+	_ = DataDir()
+
+	assertMode(t, dataDir, 0700)
+}
+
 func TestWriteDataFileSetsPrivateDirectoryPermissions(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("DATA_DIR", dataDir)

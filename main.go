@@ -207,6 +207,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
 			os.Exit(1)
 		}
+	case "tools":
+		if err := cmd.Tools(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+			os.Exit(1)
+		}
 	case "sync":
 		if err := cmd.SyncAll(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
