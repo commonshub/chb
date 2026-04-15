@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,36 @@ func TestWriteMonthFileCreatesNestedMessageDirectories(t *testing.T) {
 	assertMode(t, monthPath, 0644)
 	assertMode(t, filepath.Dir(latestPath), 0755)
 	assertMode(t, latestPath, 0644)
+}
+
+func TestEnsureWritableDataDirAcceptsWritableDirectory(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+
+	got, err := EnsureWritableDataDir()
+	if err != nil {
+		t.Fatalf("ensure writable data dir: %v", err)
+	}
+	if got != dataDir {
+		t.Fatalf("expected %q, got %q", dataDir, got)
+	}
+}
+
+func TestEnsureWritableDataDirRejectsFilePath(t *testing.T) {
+	baseDir := t.TempDir()
+	dataPath := filepath.Join(baseDir, "not-a-dir")
+	if err := os.WriteFile(dataPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("DATA_DIR", dataPath)
+
+	_, err := EnsureWritableDataDir()
+	if err == nil {
+		t.Fatal("expected file DATA_DIR to fail")
+	}
+	if !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func assertMode(t *testing.T, path string, want os.FileMode) {

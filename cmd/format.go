@@ -96,18 +96,19 @@ func TruncateDescription(desc string, maxLen int) string {
 
 // DataDir returns the data directory from env or default (~/.chb/data), creating it if needed
 func DataDir() string {
-	var dir string
-	if d := os.Getenv("DATA_DIR"); d != "" {
-		dir = d
-	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			dir = "./data"
-		} else {
-			dir = filepath.Join(home, ".chb", "data")
-		}
-	}
+	dir := resolveDataDir()
 	return ensureManagedDataDir(dir)
+}
+
+func resolveDataDir() string {
+	if d := os.Getenv("DATA_DIR"); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "./data"
+	}
+	return filepath.Join(home, ".chb", "data")
 }
 
 // writeMonthFile writes data to dataDir/year/month/<relPath> AND mirrors

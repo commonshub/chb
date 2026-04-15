@@ -22,6 +22,13 @@ func main() {
 		return
 	}
 
+	if needsWritableDataDir(args) {
+		if _, err := cmd.EnsureWritableDataDir(); err != nil {
+			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+			os.Exit(1)
+		}
+	}
+
 	switch args[0] {
 	case "--help", "-h", "help":
 		cmd.PrintHelp(cmd.Version)
@@ -236,4 +243,21 @@ func hasArg(args []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func needsWritableDataDir(args []string) bool {
+	if len(args) == 0 || cmd.HasFlag(args, "--help", "-h", "help") {
+		return false
+	}
+
+	switch args[0] {
+	case "setup", "sync":
+		return true
+	case "events", "bookings", "invoices", "bills", "messages", "images", "attachments", "members", "odoo":
+		return len(args) > 1 && strings.EqualFold(args[1], "sync")
+	case "transactions":
+		return hasArg(args[1:], "sync")
+	default:
+		return false
+	}
 }
