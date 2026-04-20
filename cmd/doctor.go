@@ -90,8 +90,65 @@ func runDoctorChecks(dataDir string) doctorReport {
 		report.ImagesChecked += checkImagesFile(dataDir, scope, &report)
 	}
 	checkLatestHomepageEvents(dataDir, &report)
+	checkOdooJournalBalances(&report)
 
 	return report
+}
+
+// checkOdooJournalBalances verifies that each Odoo journal linked to a local
+// account has statements that satisfy the running-balance / chain-continuity
+// invariants. Skipped silently when Odoo credentials aren't configured.
+func checkOdooJournalBalances(report *doctorReport) {
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return
+	}
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
+	if err != nil || uid == 0 {
+		return
+	}
+
+	seen := map[int]bool{}
+	for _, acc := range LoadAccountConfigs() {
+		if acc.OdooJournalID == 0 || seen[acc.OdooJournalID] {
+			continue
+		}
+		seen[acc.OdooJournalID] = true
+
+		issues, err := CheckOdooJournalStatements(creds, uid, acc.OdooJournalID)
+		if err != nil {
+			report.Findings = append(report.Findings, doctorFinding{
+				Severity: "warning",
+				Scope:    fmt.Sprintf("odoo/journal-%d", acc.OdooJournalID),
+				Message:  fmt.Sprintf("could not check journal %q: %v", acc.OdooJournalName, err),
+				Fix:      fmt.Sprintf("Run: chb odoo journals %d check", acc.OdooJournalID),
+			})
+			continue
+		}
+		for _, i := range issues {
+			scope := fmt.Sprintf("odoo/journal-%d", acc.OdooJournalID)
+			fix := fmt.Sprintf("Run: chb odoo journals %d fix", acc.OdooJournalID)
+			var msg string
+			switch i.Kind {
+			case "balance_mismatch":
+				msg = fmt.Sprintf("statement %q (#%d, %s): running balance %s ≠ balance_end_real %s (off by %s)",
+					i.StatementName, i.StatementID, i.Date,
+					fmtEUR(i.RunningBalance), fmtEUR(i.BalanceEndReal), fmtEURSigned(i.Diff()))
+			case "chain_gap":
+				msg = fmt.Sprintf("statement %q (#%d, %s): balance_start %s doesn't chain from previous end_real %s",
+					i.StatementName, i.StatementID, i.Date,
+					fmtEUR(i.BalanceStart), fmtEUR(i.PreviousEndReal))
+				fix = fmt.Sprintf("Run: chb odoo journals %d fix (if gap persists, re-run: chb odoo journals %d sync)",
+					acc.OdooJournalID, acc.OdooJournalID)
+			}
+			report.Findings = append(report.Findings, doctorFinding{
+				Severity: "error",
+				Scope:    scope,
+				Message:  msg,
+				Fix:      fix,
+			})
+		}
+	}
 }
 
 func collectDoctorScopes(dataDir string) []doctorScope {

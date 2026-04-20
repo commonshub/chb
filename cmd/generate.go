@@ -549,16 +549,17 @@ func Generate(args []string) error {
 	fmt.Printf("👥 Generating monthly contributors...\n")
 	contributorsCache := newContributorsRunCache(dataDir)
 	for _, scope := range scopes {
-		n := generateMonthContributorsGo(dataDir, scope.Year, scope.Month, settings, contributorsCache)
+		n := generateMonthContributorsGo(dataDir, scope.Year, scope.Month, settings, contributorsCache, time.Time{})
 		if n > 0 {
 			fmt.Printf("  ✓ %s-%s: %d contributor(s)\n", scope.Year, scope.Month, n)
 		}
 	}
-	// Also generate for latest/
+	// Also generate for latest/ — rolling 90-day window
 	if _, err := os.Stat(latestDir); err == nil {
-		n := generateMonthContributorsGo(dataDir, "latest", "", settings, contributorsCache)
+		cutoff := time.Now().UTC().AddDate(0, 0, -LatestContributorsWindowDays)
+		n := generateMonthContributorsGo(dataDir, "latest", "", settings, contributorsCache, cutoff)
 		if n > 0 {
-			fmt.Printf("  ✓ latest: %d contributor(s)\n", n)
+			fmt.Printf("  ✓ latest (%dd): %d contributor(s)\n", LatestContributorsWindowDays, n)
 		}
 	}
 	contributorsCache.save()
@@ -952,14 +953,40 @@ func readMonthlyContributorCount(path string) int {
 	return f.Summary.TotalContributors
 }
 
-func generateMonthContributorsGo(dataDir, year, month string, settings *Settings, runCache *contributorsRunCache) int {
+// LatestContributorsWindowDays controls the rolling window used when computing
+// latest/generated/contributors.json.
+const LatestContributorsWindowDays = 90
+
+// parseMessageTimestamp parses Discord/image timestamps, which are RFC3339 with
+// microsecond precision (e.g. "2026-04-14T13:34:10.952000+00:00"). Returns zero
+// time on failure.
+func parseMessageTimestamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+// generateMonthContributorsGo builds contributors.json for a year/month. If
+// cutoff is non-zero, messages, token transfers, and images older than cutoff
+// are excluded (used for the rolling latest/ window).
+func generateMonthContributorsGo(dataDir, year, month string, settings *Settings, runCache *contributorsRunCache, cutoff time.Time) int {
 	discordDir := filepath.Join(dataDir, year, month, "messages", "discord")
 	if _, err := os.Stat(discordDir); os.IsNotExist(err) {
 		return 0
 	}
 
 	outputPath := contributorsOutputPath(dataDir, year, month)
-	if isGeneratedFileUpToDate(outputPath, contributorInputPaths(dataDir, year, month)) {
+	// The cutoff depends on wall-clock time, so skip the mtime-based freshness
+	// check whenever it's active; otherwise the same mtimes keep serving a stale
+	// window across runs.
+	if cutoff.IsZero() && isGeneratedFileUpToDate(outputPath, contributorInputPaths(dataDir, year, month)) {
 		return readMonthlyContributorCount(outputPath)
 	}
 
@@ -982,6 +1009,11 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 			m := parseMessage(raw)
 			if m.AuthorID == "" {
 				continue
+			}
+			if !cutoff.IsZero() {
+				if ts := parseMessageTimestamp(m.Timestamp); ts.IsZero() || ts.Before(cutoff) {
+					continue
+				}
 			}
 			u, ok := users[m.AuthorID]
 			if !ok {
@@ -1019,9 +1051,10 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	// Read CHT transactions
 	chtPath := filepath.Join(dataDir, year, month, "finance", "celo", "CHT.json")
 	type chtTx struct {
-		From  string `json:"from"`
-		To    string `json:"to"`
-		Value string `json:"value"`
+		From      string `json:"from"`
+		To        string `json:"to"`
+		Value     string `json:"value"`
+		TimeStamp string `json:"timeStamp"`
 	}
 	var chtTxs []chtTx
 	if data, err := os.ReadFile(chtPath); err == nil {
@@ -1078,6 +1111,12 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	addrTotals := map[string]*addrTokens{}
 	divisor := math.Pow10(decimals)
 	for _, tx := range chtTxs {
+		if !cutoff.IsZero() {
+			secs, err := strconv.ParseInt(tx.TimeStamp, 10, 64)
+			if err != nil || time.Unix(secs, 0).UTC().Before(cutoff) {
+				continue
+			}
+		}
 		val := 0.0
 		if v, err := strconv.ParseFloat(tx.Value, 64); err == nil {
 			val = v / divisor
@@ -1142,7 +1181,15 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	if data, err := os.ReadFile(imagesPath); err == nil {
 		var imgFile ImagesFile
 		if json.Unmarshal(data, &imgFile) == nil {
-			totalImages = imgFile.Count
+			if cutoff.IsZero() {
+				totalImages = imgFile.Count
+			} else {
+				for _, img := range imgFile.Images {
+					if ts := parseMessageTimestamp(img.Timestamp); !ts.IsZero() && !ts.Before(cutoff) {
+						totalImages++
+					}
+				}
+			}
 		}
 	}
 

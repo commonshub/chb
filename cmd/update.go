@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -140,14 +142,12 @@ func Update(yes bool) error {
 		return fmt.Errorf("failed to extract binary: %w", err)
 	}
 
-	// Find where the current binary lives
-	execPath, err := os.Executable()
+	// Find where the current binary lives.
+	// In musl-based containers os.Executable may resolve through /proc/self/exe
+	// to the loader, so prefer argv[0]/PATH when available.
+	execPath, err := currentBinaryPath(os.Args)
 	if err != nil {
 		return fmt.Errorf("cannot determine executable path: %w", err)
-	}
-	execPath, err = resolveSymlinks(execPath)
-	if err != nil {
-		return fmt.Errorf("cannot resolve executable path: %w", err)
 	}
 
 	// Write to a temp file next to the binary, then rename (atomic on same FS)
@@ -233,6 +233,40 @@ func releaseAssetNames(assets []ghAsset) []string {
 		return []string{"(none)"}
 	}
 	return names
+}
+
+func currentBinaryPath(args []string) (string, error) {
+	if len(args) > 0 && args[0] != "" {
+		candidate := args[0]
+		if strings.ContainsRune(candidate, os.PathSeparator) {
+			if !filepath.IsAbs(candidate) {
+				absPath, err := filepath.Abs(candidate)
+				if err == nil {
+					candidate = absPath
+				}
+			}
+			if resolved, err := resolveSymlinks(candidate); err == nil {
+				return resolved, nil
+			}
+			return candidate, nil
+		}
+		if lookedUp, err := exec.LookPath(candidate); err == nil {
+			if resolved, err := resolveSymlinks(lookedUp); err == nil {
+				return resolved, nil
+			}
+			return lookedUp, nil
+		}
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	execPath, err = resolveSymlinks(execPath)
+	if err != nil {
+		return "", err
+	}
+	return execPath, nil
 }
 
 // resolveSymlinks resolves a path through symlinks to the real file.

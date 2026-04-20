@@ -332,12 +332,21 @@ func OdooJournals(args []string) error {
 		return fmt.Errorf("Odoo authentication failed: %v", err)
 	}
 
-	// Check for `chb odoo journals <id> --reset`
+	// Check for `chb odoo journals <id> [sync|--reset]`
 	if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
 		var journalID int
 		fmt.Sscanf(args[0], "%d", &journalID)
 		if journalID == 0 {
 			return fmt.Errorf("invalid journal ID: %s", args[0])
+		}
+		if len(args) >= 2 && args[1] == "sync" {
+			return odooJournalSync(journalID, args[2:])
+		}
+		if len(args) >= 2 && args[1] == "check" {
+			return odooJournalCheck(creds, uid, journalID)
+		}
+		if len(args) >= 2 && args[1] == "fix" {
+			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
 		}
 		if HasFlag(args, "--reset") {
 			return odooJournalReset(creds, uid, journalID)
@@ -390,6 +399,12 @@ func OdooJournals(args []string) error {
 	fmt.Printf("%sCOMMANDS%s\n\n", Fmt.Bold, Fmt.Reset)
 	fmt.Printf("  %s%schb odoo journals <id>%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sShow details for a specific journal%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id> sync%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id> check%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id> fix%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("    %sSet balance_end_real = running balance on invalid statements%s\n\n", Fmt.Dim, Fmt.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> --reset%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", Fmt.Dim, Fmt.Reset)
 
@@ -461,6 +476,98 @@ func odooJournalDetail(creds *OdooCredentials, uid int, journalID int) error {
 	return nil
 }
 
+// odooJournalCheck reports statements in the journal that violate Odoo's
+// running-balance / chain-continuity invariants.
+func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
+	fmt.Printf("\n  %sChecking journal #%d…%s\n", Fmt.Dim, journalID, Fmt.Reset)
+	issues, err := CheckOdooJournalStatements(creds, uid, journalID)
+	if err != nil {
+		return err
+	}
+	if len(issues) == 0 {
+		fmt.Printf("  %s✓ All statements are valid%s\n\n", Fmt.Green, Fmt.Reset)
+		return nil
+	}
+	PrintStatementIssues(issues)
+	fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
+	return nil
+}
+
+// odooJournalFix sets balance_end_real to the running balance for each
+// statement with a balance_mismatch issue. chain_gap issues are reported but
+// not auto-fixed (they usually indicate a missing/extra line).
+func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun bool) error {
+	issues, err := CheckOdooJournalStatements(creds, uid, journalID)
+	if err != nil {
+		return err
+	}
+	if len(issues) == 0 {
+		fmt.Printf("\n  %s✓ Nothing to fix%s\n\n", Fmt.Green, Fmt.Reset)
+		return nil
+	}
+	PrintStatementIssues(issues)
+
+	var fixable []StatementBalanceIssue
+	var chainGaps []StatementBalanceIssue
+	for _, i := range issues {
+		if i.Kind == "balance_mismatch" {
+			fixable = append(fixable, i)
+		} else {
+			chainGaps = append(chainGaps, i)
+		}
+	}
+
+	if len(chainGaps) > 0 {
+		fmt.Printf("  %s⚠ %d chain gap(s) — often clear automatically after the balance fixes below.%s\n", Fmt.Yellow, len(chainGaps), Fmt.Reset)
+		fmt.Printf("  %s  If any remain after fixing, a line is missing — re-run the account sync.%s\n\n", Fmt.Dim, Fmt.Reset)
+	}
+
+	if len(fixable) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		fmt.Printf("  %s(dry-run) would update balance_end_real on %d statement(s)%s\n\n",
+			Fmt.Dim, len(fixable), Fmt.Reset)
+		return nil
+	}
+
+	if !assumeYes {
+		fmt.Printf("  %sApply %d fix(es)? This sets balance_end_real = running balance.%s [y/N] ",
+			Fmt.Bold, len(fixable), Fmt.Reset)
+		var resp string
+		fmt.Scanln(&resp)
+		if resp != "y" && resp != "Y" && resp != "yes" {
+			fmt.Println("  Aborted.")
+			return nil
+		}
+	}
+
+	okCount, errCount := 0, 0
+	for _, i := range fixable {
+		if err := FixOdooStatementBalance(creds, uid, i.StatementID, i.RunningBalance); err != nil {
+			fmt.Printf("  %s✗ #%d %s: %v%s\n", Fmt.Red, i.StatementID, i.StatementName, err, Fmt.Reset)
+			errCount++
+			continue
+		}
+		fmt.Printf("  %s✓%s #%d %s → balance_end_real = %s\n",
+			Fmt.Green, Fmt.Reset, i.StatementID, i.StatementName, fmtEUR(i.RunningBalance))
+		okCount++
+	}
+	fmt.Printf("\n  %s✓ Fixed %d, errors %d%s\n\n", Fmt.Green, okCount, errCount, Fmt.Reset)
+	return nil
+}
+
+// odooJournalSync resolves a journal ID to its linked account and runs the account sync.
+func odooJournalSync(journalID int, args []string) error {
+	for _, acc := range LoadAccountConfigs() {
+		if acc.OdooJournalID == journalID {
+			return AccountOdooSync(acc.Slug, args)
+		}
+	}
+	return fmt.Errorf("no account linked to Odoo journal #%d. Run: chb accounts <slug> link", journalID)
+}
+
 func odooJournalReset(creds *OdooCredentials, uid int, journalID int) error {
 	// Fetch journal name
 	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
@@ -494,6 +601,12 @@ func PrintOdooHelp() {
 	fmt.Printf("    %sList Odoo journals linked to accounts%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id>%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sShow journal details (statements, line counts)%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo journals <id> sync%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo journals <id> check%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo journals <id> fix%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sSet balance_end_real = running balance on invalid statements%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> --reset%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", f.Dim, f.Reset)
 }

@@ -985,6 +985,7 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		fmt.Printf("  %s✓%s %s  %s  %.2f\n", Fmt.Green, Fmt.Reset, t.Format("2006-01-02"), paymentRef, amt)
 	}
 	fmt.Printf("\n  %s✓ Synced %d, errors %d%s\n\n", Fmt.Green, synced, errors, Fmt.Reset)
+	warnInvalidStatements(creds, uid, acc.OdooJournalID)
 	return nil
 }
 
@@ -1388,10 +1389,25 @@ func syncStripeToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, month
 
 	if !dryRun {
 		stats.print()
+		warnInvalidStatements(creds, uid, acc.OdooJournalID)
 	} else {
 		fmt.Printf("\n  %s✓ Dry run: %d payouts%s\n\n", Fmt.Green, len(toSync), Fmt.Reset)
 	}
 	return nil
+}
+
+// warnInvalidStatements runs the statement invariant check and prints a warning
+// block listing any violations. Non-fatal — if Odoo is unreachable, stay silent.
+func warnInvalidStatements(creds *OdooCredentials, uid int, journalID int) {
+	if journalID == 0 {
+		return
+	}
+	issues, err := CheckOdooJournalStatements(creds, uid, journalID)
+	if err != nil || len(issues) == 0 {
+		return
+	}
+	PrintStatementIssues(issues)
+	fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
 }
 
 // batchCreateStatementLines creates multiple statement lines in one Odoo API call.
