@@ -611,6 +611,12 @@ func Generate(args []string) error {
 	generateMembersGo(dataDir, scopes)
 	fmt.Println()
 
+	// 8.5 Attach ticket-sale transactions to each event. Must run after
+	// transactions are regenerated so the Event → tx index is current.
+	fmt.Printf("🎟  Attaching ticket sales to events...\n")
+	enrichEventsWithTicketSales(dataDir)
+	fmt.Println()
+
 	// 9. Generate latest events
 	fmt.Printf("📅 Generating latest events...\n")
 	generateLatestEventsGo(dataDir, years)
@@ -684,13 +690,17 @@ func GenerateTransactions(args []string) error {
 	return nil
 }
 
-// GenerateEvents runs only event-related generators (latest events digest).
+// GenerateEvents runs only event-related generators: it attaches ticket
+// sales to every events.json (requires transactions to have been generated
+// already) and then rebuilds the latest-upcoming digest.
 func GenerateEvents(args []string) error {
 	dataDir := DataDir()
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
 		return nil
 	}
+	fmt.Printf("\n%s🎟  Attaching ticket sales to events...%s\n", Fmt.Bold, Fmt.Reset)
+	enrichEventsWithTicketSales(dataDir)
 	fmt.Printf("\n%s📅 Generating latest events...%s\n", Fmt.Bold, Fmt.Reset)
 	generateLatestEventsGo(dataDir, years)
 	fmt.Printf("%s✓ Events generators complete%s\n\n", Fmt.Green, Fmt.Reset)

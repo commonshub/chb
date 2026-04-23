@@ -22,22 +22,49 @@ var calendarHTTPClient = &http.Client{Timeout: 20 * time.Second}
 
 // FullEvent is the rich event structure written to events.json
 type FullEvent struct {
-	ID              string          `json:"id"`
-	Name            string          `json:"name"`
-	Description     string          `json:"description,omitempty"`
-	StartAt         string          `json:"startAt"`
-	EndAt           string          `json:"endAt,omitempty"`
-	Timezone        string          `json:"timezone,omitempty"`
-	Location        string          `json:"location,omitempty"`
-	URL             string          `json:"url,omitempty"`
-	CoverImage      string          `json:"coverImage,omitempty"`
-	CoverImageLocal string          `json:"coverImageLocal,omitempty"`
-	Source          string          `json:"source"`
-	CalendarSource  string          `json:"calendarSource,omitempty"`
-	Tags            json.RawMessage `json:"tags,omitempty"`
-	Guests          json.RawMessage `json:"guests,omitempty"`
-	LumaData        json.RawMessage `json:"lumaData,omitempty"`
-	Metadata        EventMetadata   `json:"metadata"`
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	Description     string            `json:"description,omitempty"`
+	StartAt         string            `json:"startAt"`
+	EndAt           string            `json:"endAt,omitempty"`
+	Timezone        string            `json:"timezone,omitempty"`
+	Location        string            `json:"location,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	CoverImage      string            `json:"coverImage,omitempty"`
+	CoverImageLocal string            `json:"coverImageLocal,omitempty"`
+	Source          string            `json:"source"`
+	CalendarSource  string            `json:"calendarSource,omitempty"`
+	Tags            json.RawMessage   `json:"tags,omitempty"`
+	Guests          json.RawMessage   `json:"guests,omitempty"`
+	LumaData        json.RawMessage   `json:"lumaData,omitempty"`
+	Metadata        EventMetadata     `json:"metadata"`
+	TicketSales     *EventTicketSales `json:"ticketSales,omitempty"`
+}
+
+// EventTicketSales summarises transactions tagged with this event. Populated
+// during `chb generate` after transactions are regenerated — see
+// enrichEventsWithTicketSales. Tickets for a given event can be sold months
+// before (or after) the event date, so the enrichment walks every month.
+type EventTicketSales struct {
+	TxCount      int                `json:"txCount"`
+	RefundCount  int                `json:"refundCount,omitempty"`
+	Gross        map[string]float64 `json:"gross"`                  // currency → sum of CREDIT amounts
+	Net          map[string]float64 `json:"net"`                    // currency → gross + signed DEBIT/refunds
+	FirstTx      string             `json:"firstTx,omitempty"`      // earliest tx date (YYYY-MM-DD)
+	LastTx       string             `json:"lastTx,omitempty"`       // latest tx date (YYYY-MM-DD)
+	Transactions []EventTicketTx    `json:"transactions,omitempty"` // raw refs, ordered by date
+}
+
+// EventTicketTx is a lightweight pointer to a transaction from EventTicketSales.
+// Keeps the full tx out of events.json — consumers needing more can look it up
+// in <YYYY>/<MM>/generated/transactions.json by ID.
+type EventTicketTx struct {
+	ID       string  `json:"id"`
+	Provider string  `json:"provider"`
+	Date     string  `json:"date"`
+	Amount   float64 `json:"amount"`
+	Currency string  `json:"currency"`
+	Type     string  `json:"type"`
 }
 
 type EventMetadata struct {
