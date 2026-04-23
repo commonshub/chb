@@ -31,6 +31,39 @@ var nameFieldKeys = map[string]struct{}{
 	"name":      {},
 }
 
+// piiSoftAllowlist suppresses the "email in <field>" soft warning for known
+// non-PII identifiers: Luma event IDs and Google Calendar UIDs, which embed
+// an "@" in their ID but aren't actually mailboxes. Keyed by the JSON leaf
+// key (lowercased). Each pattern is matched against the whole value.
+//
+// The /hard/ check on name fields is unaffected — only these specific fields
+// get the soft-warning exemption.
+var piiSoftAllowlist = map[string][]*regexp.Regexp{
+	"id": {
+		regexp.MustCompile(`@events\.lu\.ma$`),
+		regexp.MustCompile(`@google\.com$`),
+	},
+	"coverimagelocal": {
+		regexp.MustCompile(`@events\.lu\.ma\.(jpg|jpeg|png|webp)$`),
+		regexp.MustCompile(`@google\.com\.(jpg|jpeg|png|webp)$`),
+	},
+}
+
+// softAllowlistMatch reports whether a given value in a given field is
+// covered by the soft-warning allowlist.
+func softAllowlistMatch(leafKey, value string) bool {
+	patterns, ok := piiSoftAllowlist[strings.ToLower(leafKey)]
+	if !ok {
+		return false
+	}
+	for _, p := range patterns {
+		if p.MatchString(value) {
+			return true
+		}
+	}
+	return false
+}
+
 // PIILeak describes a single PII leak detected in a JSON payload.
 type PIILeak struct {
 	Field string // JSON path of the offending value
@@ -95,6 +128,9 @@ func scanPII(v interface{}, path string, hard, soft *[]PIILeak) {
 			}
 		}
 		if emailPattern.MatchString(t) {
+			if softAllowlistMatch(leafLower, t) {
+				return
+			}
 			*soft = append(*soft, PIILeak{Field: path, Kind: "email", Value: redactEmail(t)})
 		}
 	}

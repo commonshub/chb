@@ -92,6 +92,39 @@ func TestPathHasPrivateSegment(t *testing.T) {
 	}
 }
 
+func TestSoftAllowlistSuppressesLumaAndGoogleCalendarIDs(t *testing.T) {
+	payload := []byte(`{
+  "events": [
+    {
+      "id": "evt-abc@events.lu.ma",
+      "coverImageLocal": "evt-abc@events.lu.ma.jpg",
+      "extra": "real-email-here hello@example.com"
+    },
+    {
+      "id": "1234@google.com",
+      "coverImageLocal": "1234@google.com.png"
+    }
+  ]
+}`)
+	_, soft := validatePublicJSON(payload)
+	// The only soft violation should be the "extra" field with a real email.
+	if len(soft) != 1 {
+		t.Fatalf("expected 1 soft violation, got %d: %+v", len(soft), soft)
+	}
+	if !strings.Contains(soft[0].Field, "extra") {
+		t.Errorf("expected violation on 'extra', got %q", soft[0].Field)
+	}
+}
+
+func TestSoftAllowlistDoesNotSuppressRealEmailsInAllowlistedField(t *testing.T) {
+	// A real email in id (not matching the allowlist pattern) should still warn.
+	payload := []byte(`{"id": "actual@person.com"}`)
+	_, soft := validatePublicJSON(payload)
+	if len(soft) != 1 {
+		t.Fatalf("expected 1 soft violation for real email in id, got %d", len(soft))
+	}
+}
+
 func TestEnforcePIIPolicyScrubsOnlyOutsidePrivate(t *testing.T) {
 	data := []byte(`{"firstName":"alice@example.com"}`)
 	cleaned := enforcePIIPolicy("/tmp/data/2025/01/generated/members.json", data)
