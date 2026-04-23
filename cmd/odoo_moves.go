@@ -30,29 +30,66 @@ func preserveMoveAnnotations(fresh, prev OdooOutgoingInvoice) OdooOutgoingInvoic
 // Both invoices and bills share the OdooOutgoingInvoicePublic wire type but
 // live under different filenames / wrapping structures.
 type moveKind struct {
-	label    string // human label used in prompts and logs ("invoice", "bill")
-	labelPl  string // plural ("invoices", "bills")
-	relPath  string // per-month path, e.g. finance/odoo/invoices.json
-	model    string // Odoo model technical name
-	isBill   bool
+	label          string // human label used in prompts and logs ("invoice", "bill")
+	labelPl        string // plural ("invoices", "bills")
+	relPath        string // per-month public path, e.g. finance/odoo/invoices.json
+	privateRelPath string // per-month private path with PII
+	model          string // Odoo model technical name
+	isBill         bool
 }
 
 var (
 	moveKindInvoice = moveKind{
-		label:   "invoice",
-		labelPl: "invoices",
-		relPath: filepath.Join("finance", "odoo", "invoices.json"),
-		model:   "account.move",
-		isBill:  false,
+		label:          "invoice",
+		labelPl:        "invoices",
+		relPath:        filepath.Join("finance", "odoo", "invoices.json"),
+		privateRelPath: filepath.Join("finance", "odoo", "private", "invoices.json"),
+		model:          "account.move",
+		isBill:         false,
 	}
 	moveKindBill = moveKind{
-		label:   "bill",
-		labelPl: "bills",
-		relPath: filepath.Join("finance", "odoo", "bills.json"),
-		model:   "account.move",
-		isBill:  true,
+		label:          "bill",
+		labelPl:        "bills",
+		relPath:        filepath.Join("finance", "odoo", "bills.json"),
+		privateRelPath: filepath.Join("finance", "odoo", "private", "bills.json"),
+		model:          "account.move",
+		isBill:         true,
 	}
 )
+
+// loadMovePartners reads a month's *private* moves file and returns a map of
+// move ID → PartnerDisplayName. Used to enrich the categorize TUI with
+// counterpart info without leaking PII into the public files.
+func loadMovePartners(dataDir, year, month string, kind moveKind) map[int]string {
+	path := filepath.Join(dataDir, year, month, kind.privateRelPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[int]string{}
+	}
+	out := map[int]string{}
+	if kind.isBill {
+		var f OdooVendorBillsPrivateFile
+		if err := json.Unmarshal(data, &f); err != nil {
+			return out
+		}
+		for _, b := range f.Bills {
+			if name := firstNonEmptyStr(b.PartnerDisplayName, b.Partner.Name); name != "" {
+				out[b.ID] = name
+			}
+		}
+		return out
+	}
+	var f OdooOutgoingInvoicesPrivateFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return out
+	}
+	for _, inv := range f.Invoices {
+		if name := firstNonEmptyStr(inv.PartnerDisplayName, inv.Partner.Name); name != "" {
+			out[inv.ID] = name
+		}
+	}
+	return out
+}
 
 // loadMoves reads a single month's public moves file (invoices.json or
 // bills.json) and returns the unmarshalled records. Returns (nil, nil) if

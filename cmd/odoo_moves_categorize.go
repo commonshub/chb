@@ -76,6 +76,11 @@ func categorizeMoves(kind moveKind, args []string) error {
 			return nil
 		}
 
+		// Load partner names from the private file so the TUI can show who
+		// sent/received the invoice without ever writing PII to the public
+		// output.
+		partners := loadMovePartners(dataDir, year, month, kind)
+
 		// Find moves without a collective (treat collective as the primary
 		// "annotated" signal — a move may have a Category from Odoo analytics
 		// but still need a collective).
@@ -97,6 +102,9 @@ func categorizeMoves(kind moveKind, args []string) error {
 		for _, idx := range unannotated {
 			m := moves[idx]
 			label := moveDisplayLabel(m)
+			if partner := partners[m.ID]; partner != "" {
+				label = partner + " — " + label
+			}
 			fmt.Printf("\n  %s%s%s\n", Fmt.Bold, label, Fmt.Reset)
 			if m.Category != "" {
 				fmt.Printf("  %sOdoo category: %s%s\n", Fmt.Dim, m.Category, Fmt.Reset)
