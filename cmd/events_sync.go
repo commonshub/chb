@@ -836,11 +836,6 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		}
 		processedIDs[eventID] = true
 
-		// Track new events
-		if !existingIDs[eventID] {
-			newEvents = append(newEvents, newEventInfo{name, startAt, re.roomSlug})
-		}
-
 		// Preserve existing metadata
 		metadata := existingMetadata[eventID]
 
@@ -863,6 +858,19 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			CalendarSource:  re.roomSlug,
 			Metadata:        metadata,
 		})
+	}
+
+	// Dedup events sharing URL + start + end (e.g. a manually-added Google
+	// Calendar entry alongside the same event imported from Luma). Keep the
+	// record with a cover image and the longest description.
+	fullEvents = dedupeFullEvents(fullEvents)
+
+	// Track new events from dedup survivors so we don't announce a duplicate
+	// that was discarded.
+	for _, e := range fullEvents {
+		if !existingIDs[e.ID] {
+			newEvents = append(newEvents, newEventInfo{e.Name, e.StartAt, e.CalendarSource})
+		}
 	}
 
 	// Sort by start date
@@ -905,6 +913,37 @@ func chooseEventTitle(icsTitle, ogTitle string) string {
 		return icsTitle
 	}
 	return strings.TrimSpace(ogTitle)
+}
+
+// dedupeFullEvents collapses events that share (URL, StartAt, EndAt) — for
+// instance, the same Luma event imported via its public ICS feed and also
+// added manually to a Google Calendar. The "best" record wins: prefer one
+// with a cover image, then the longer description; ties go to the first.
+func dedupeFullEvents(events []FullEvent) []FullEvent {
+	type key struct{ url, start, end string }
+	idxByKey := map[key]int{}
+	out := make([]FullEvent, 0, len(events))
+	for _, e := range events {
+		k := key{e.URL, e.StartAt, e.EndAt}
+		if idx, ok := idxByKey[k]; ok {
+			if isRicherEvent(e, out[idx]) {
+				out[idx] = e
+			}
+			continue
+		}
+		idxByKey[k] = len(out)
+		out = append(out, e)
+	}
+	return out
+}
+
+func isRicherEvent(candidate, current FullEvent) bool {
+	candHasCover := candidate.CoverImage != "" || candidate.CoverImageLocal != ""
+	currHasCover := current.CoverImage != "" || current.CoverImageLocal != ""
+	if candHasCover != currHasCover {
+		return candHasCover
+	}
+	return len(candidate.Description) > len(current.Description)
 }
 
 func chooseEventDescription(icsDescription, ogDescription string) string {
