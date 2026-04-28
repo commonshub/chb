@@ -79,7 +79,20 @@ func shortAddr(s string) string {
 
 // ── Data loading ──
 
+// TxFilter narrows the set of transactions returned by loadFilteredTransactions.
+// Zero-valued fields are treated as "no filter".
+type TxFilter struct {
+	AccountSlug string    // matches AccountSlug or Slug-like account fields
+	Currency    string    // "EUR" matches the EUR family; other codes are exact
+	Since       time.Time // inclusive lower bound
+	Until       time.Time // inclusive upper bound (end-of-day handled by caller)
+}
+
 func loadAllTransactions(currencyFilter string) []TransactionEntry {
+	return loadFilteredTransactions(TxFilter{Currency: currencyFilter})
+}
+
+func loadFilteredTransactions(f TxFilter) []TransactionEntry {
 	dataDir := DataDir()
 	var all []TransactionEntry
 
@@ -101,14 +114,8 @@ func loadAllTransactions(currencyFilter string) []TransactionEntry {
 				if tx.Type == "INTERNAL" {
 					continue
 				}
-				if currencyFilter != "" {
-					if strings.EqualFold(currencyFilter, "EUR") {
-						if !isEURCurrency(tx.Currency) {
-							continue
-						}
-					} else if !strings.EqualFold(tx.Currency, currencyFilter) {
-						continue
-					}
+				if !f.matches(tx) {
+					continue
 				}
 				all = append(all, tx)
 			}
@@ -119,6 +126,28 @@ func loadAllTransactions(currencyFilter string) []TransactionEntry {
 		return all[i].Timestamp > all[j].Timestamp
 	})
 	return all
+}
+
+func (f TxFilter) matches(tx TransactionEntry) bool {
+	if f.Currency != "" {
+		if strings.EqualFold(f.Currency, "EUR") {
+			if !isEURCurrency(tx.Currency) {
+				return false
+			}
+		} else if !strings.EqualFold(tx.Currency, f.Currency) {
+			return false
+		}
+	}
+	if f.AccountSlug != "" && !strings.EqualFold(tx.AccountSlug, f.AccountSlug) {
+		return false
+	}
+	if !f.Since.IsZero() && tx.Timestamp < f.Since.Unix() {
+		return false
+	}
+	if !f.Until.IsZero() && tx.Timestamp > f.Until.Unix() {
+		return false
+	}
+	return true
 }
 
 // ── Build table rows ──
@@ -992,19 +1021,23 @@ func TransactionsBrowser(args []string) {
 		return
 	}
 
-	currency := ""
-	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-") {
-			upper := strings.ToUpper(arg)
-			if upper == "EUR" || upper == "EURE" || upper == "EURB" || upper == "CHT" {
-				currency = upper
-				break
-			}
+	filter, n, skip, err := parseTxListFlags(args)
+	if err != nil {
+		if JSONMode(args) {
+			EmitJSONError(err)
+			os.Exit(1)
 		}
+		fmt.Printf("%sError: %v%s\n", Fmt.Red, err, Fmt.Reset)
+		os.Exit(1)
+	}
+
+	if JSONMode(args) {
+		emitTransactionsJSON(filter, n, skip)
+		return
 	}
 
 	fmt.Printf("  Loading transactions...\n")
-	txs := loadAllTransactions(currency)
+	txs := applyOffsetLimit(loadFilteredTransactions(filter), skip, n)
 
 	for {
 		t := newStickerTable(txs, 0, 0)
@@ -1012,7 +1045,7 @@ func TransactionsBrowser(args []string) {
 		m := txBrowserModel{
 			table:    t,
 			txs:      txs,
-			currency: currency,
+			currency: filter.Currency,
 		}
 
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -1029,21 +1062,108 @@ func TransactionsBrowser(args []string) {
 			return
 		case browserCreateRule:
 			createRuleFromBrowser(txs)
-			txs = loadAllTransactions(currency)
+			txs = applyOffsetLimit(loadFilteredTransactions(filter), skip, n)
 		}
 	}
+}
+
+// parseTxListFlags reads the shared filter flags used by both the interactive
+// browser and the JSON listing. A negative limit means "no limit". A bare
+// positional currency code (EUR/EURE/EURB/CHT) is still accepted as a
+// shorthand for --currency to keep prior muscle memory working.
+func parseTxListFlags(args []string) (TxFilter, int, int, error) {
+	f := TxFilter{
+		AccountSlug: GetOption(args, "--account"),
+		Currency:    strings.ToUpper(GetOption(args, "--currency")),
+	}
+
+	if f.Currency == "" {
+		for _, a := range args {
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			upper := strings.ToUpper(a)
+			if upper == "EUR" || upper == "EURE" || upper == "EURB" || upper == "CHT" {
+				f.Currency = upper
+				break
+			}
+		}
+	}
+
+	if s := GetOption(args, "--since"); s != "" {
+		t, ok := ParseSinceDate(s)
+		if !ok {
+			return f, 0, 0, fmt.Errorf("invalid --since value %q (expected YYYYMMDD)", s)
+		}
+		f.Since = t
+	}
+	if s := GetOption(args, "--until"); s != "" {
+		t, ok := ParseSinceDate(s)
+		if !ok {
+			return f, 0, 0, fmt.Errorf("invalid --until value %q (expected YYYYMMDD)", s)
+		}
+		// --until is inclusive: extend to the very end of that day.
+		f.Until = t.Add(24*time.Hour - time.Second)
+	}
+
+	limit := GetNumber(args, []string{"-n", "--limit"}, -1)
+	skip := GetNumber(args, []string{"--skip"}, 0)
+	if skip < 0 {
+		skip = 0
+	}
+	return f, limit, skip, nil
+}
+
+func applyOffsetLimit(txs []TransactionEntry, skip, limit int) []TransactionEntry {
+	if skip > 0 {
+		if skip >= len(txs) {
+			return nil
+		}
+		txs = txs[skip:]
+	}
+	if limit >= 0 && limit < len(txs) {
+		txs = txs[:limit]
+	}
+	return txs
+}
+
+func emitTransactionsJSON(f TxFilter, limit, skip int) {
+	txs := applyOffsetLimit(loadFilteredTransactions(f), skip, limit)
+	out := struct {
+		Count        int                `json:"count"`
+		Transactions []TransactionEntry `json:"transactions"`
+	}{
+		Count:        len(txs),
+		Transactions: txs,
+	}
+	if txs == nil {
+		out.Transactions = []TransactionEntry{}
+	}
+	_ = EmitJSON(out)
 }
 
 func printTransactionsBrowserHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb transactions%s [currency] — Browse transactions interactively
+%schb transactions%s [filters] — Browse transactions interactively
 
 %sUSAGE%s
-  %schb transactions%s              Browse all transactions
-  %schb transactions EUR%s           Browse EUR-family transactions
-  %schb transactions CHT%s           Browse CHT transactions
-  %schb transactions stats%s         Show transaction statistics
+  %schb transactions%s                                  Browse all transactions
+  %schb transactions --account savings%s                Browse one account
+  %schb transactions --currency EUR%s                   Browse EUR-family transactions
+  %schb transactions --since 20260101 --until 20260131%s   Date range (inclusive)
+  %schb transactions -n 50 --skip 100%s                 Paginate
+  %schb transactions --json%s                           Print matching txs as JSON
+  %schb transactions stats%s                            Show transaction statistics
+
+%sFILTERS%s
+  %s--account <slug>%s     Limit to one account (e.g. savings, stripe-asbl)
+  %s--currency <CODE>%s    EUR (matches the EUR family), CHT, etc.
+  %s--since YYYYMMDD%s     Inclusive lower bound on transaction date
+  %s--until YYYYMMDD%s     Inclusive upper bound on transaction date
+  %s-n N%s                 Limit to N transactions (most recent first)
+  %s--skip N%s             Skip the first N matches before applying -n
+  %s--json%s               Emit JSON instead of launching the interactive browser
 
 %sINTERACTIVE KEYS%s
   %s↑↓/jk%s       Navigate rows
@@ -1059,13 +1179,24 @@ func printTransactionsBrowserHelp() {
   %sEsc%s         Clear filter / Back
   %sq%s           Quit
 `,
-		f.Bold, f.Reset,
-		f.Bold, f.Reset,
+		f.Bold, f.Reset, // heading
+		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
-		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset, // FILTERS
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Bold, f.Reset, // INTERACTIVE KEYS
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

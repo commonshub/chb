@@ -402,7 +402,16 @@ func AccountDetail(slug string, args []string) {
 		}
 	}
 	if acc == nil {
+		if JSONMode(args) {
+			EmitJSONError(fmt.Errorf("account '%s' not found", slug))
+			os.Exit(1)
+		}
 		fmt.Printf("  %sAccount '%s' not found%s\n\n", Fmt.Red, slug, Fmt.Reset)
+		return
+	}
+
+	if JSONMode(args) {
+		emitAccountDetailJSON(acc, args)
 		return
 	}
 
@@ -500,11 +509,48 @@ func AccountDetail(slug string, args []string) {
 	printAccountSlugHelp(slug)
 }
 
+// AccountJSON is the machine-readable shape of an account row, used by
+// `chb accounts --json` and `chb accounts <slug> --json`.
+type AccountJSON struct {
+	Slug            string   `json:"slug"`
+	Name            string   `json:"name"`
+	Provider        string   `json:"provider"`
+	Chain           string   `json:"chain,omitempty"`
+	Address         string   `json:"address,omitempty"`
+	AccountID       string   `json:"accountId,omitempty"`
+	Currency        string   `json:"currency"`
+	Balance         *float64 `json:"balance,omitempty"`
+	BalanceSource   string   `json:"balanceSource,omitempty"`
+	TxCount         int      `json:"txCount,omitempty"`
+	LastTxAt        string   `json:"lastTxAt,omitempty"`
+	LastSyncAt      string   `json:"lastSyncAt,omitempty"`
+	OdooJournalID   int      `json:"odooJournalId,omitempty"`
+	OdooJournalName string   `json:"odooJournalName,omitempty"`
+	OdooMissing     *int     `json:"odooMissing,omitempty"`
+	OdooLastTxDate  string   `json:"odooLastTxDate,omitempty"`
+}
+
+// AccountsJSON is the top-level payload for `chb accounts --json`.
+type AccountsJSON struct {
+	Accounts []AccountJSON      `json:"accounts"`
+	Totals   map[string]float64 `json:"totals"`
+	FetchedAt string            `json:"fetchedAt,omitempty"`
+}
+
 // Accounts lists all configured finance accounts with balance and last tx.
 func Accounts(args []string) {
 	configs := LoadAccountConfigs()
 	if len(configs) == 0 {
+		if JSONMode(args) {
+			_ = EmitJSON(AccountsJSON{Accounts: []AccountJSON{}, Totals: map[string]float64{}})
+			return
+		}
 		fmt.Printf("\n%sNo accounts configured.%s\n\n", Fmt.Dim, Fmt.Reset)
+		return
+	}
+
+	if JSONMode(args) {
+		emitAccountsJSON(args, configs)
 		return
 	}
 

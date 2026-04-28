@@ -73,7 +73,9 @@ func ParseYearMonthArg(args []string) (year string, month string, found bool) {
 		}
 		if strings.HasPrefix(a, "--") || strings.HasPrefix(a, "-") {
 			// Flags that take a value
-			if a == "--since" || a == "--month" || a == "--channel" || a == "--room" || a == "-n" {
+			switch a {
+			case "--since", "--until", "--month", "--channel", "--room", "--account",
+				"--currency", "--limit", "--skip", "-n":
 				skipNext = true
 			}
 			continue
