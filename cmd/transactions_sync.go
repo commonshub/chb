@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	nostrstripeplugin "github.com/CommonsHub/chb/plugins/nostr-stripe"
+	"github.com/CommonsHub/chb/sources"
 	stripesource "github.com/CommonsHub/chb/sources/stripe"
 )
 
@@ -46,6 +46,7 @@ type TransactionsCacheFile struct {
 }
 
 func TransactionsSync(args []string) (int, error) {
+	startedAt := time.Now()
 	if HasFlag(args, "--help", "-h", "help") {
 		printTransactionsSyncHelp()
 		return 0, nil
@@ -101,8 +102,9 @@ func TransactionsSync(args []string) (int, error) {
 		startMonth = DefaultRecentStartMonth(now)
 	}
 
-	fmt.Printf("\n%s⛓️  Syncing transactions%s\n", Fmt.Bold, Fmt.Reset)
+	fmt.Printf("\n%s⛓️  Syncing source transaction data%s\n", Fmt.Bold, Fmt.Reset)
 	fmt.Printf("%sDATA_DIR: %s%s\n", Fmt.Dim, DataDir(), Fmt.Reset)
+	fmt.Printf("%sPipeline: fetch provider data → write sources/<source>/ files%s\n", Fmt.Dim, Fmt.Reset)
 	fmt.Printf("%sMonth range: %s → %s%s\n", Fmt.Dim, startMonth, endMonth, Fmt.Reset)
 	if sourceFilter != "" {
 		fmt.Printf("%sSource filter: %s%s\n", Fmt.Dim, sourceFilter, Fmt.Reset)
@@ -334,7 +336,8 @@ func TransactionsSync(args []string) (int, error) {
 			if stripeKey == "" {
 				fmt.Printf("\n%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe sync%s\n", Fmt.Yellow, Fmt.Reset)
 			} else {
-				fmt.Printf("\n%s💳 Syncing Stripe transactions%s\n\n", Fmt.Bold, Fmt.Reset)
+				fmt.Printf("\n%s💳 Source: stripe%s\n", Fmt.Bold, Fmt.Reset)
+				fmt.Printf("%sFiles: %s, %s, %s%s\n\n", Fmt.Dim, stripesource.BalanceTransactionsFile, stripesource.ChargesFile, stripesource.CustomersFile, Fmt.Reset)
 				for _, acc := range stripeAccounts {
 					fmt.Printf("  %s%s%s", Fmt.Bold, acc.Name, Fmt.Reset)
 					if acc.AccountID != "" {
@@ -379,24 +382,7 @@ func TransactionsSync(args []string) (int, error) {
 						StopAtMonthBoundary: stopAtMonthBoundary,
 						DataDir:             DataDir(),
 						Location:            BrusselsTZ(),
-						Logf: func(format string, args ...interface{}) {
-							msg := fmt.Sprintf(format, args...)
-							switch {
-							case strings.HasPrefix(msg, "page="):
-								var page, count, total int
-								if _, err := fmt.Sscanf(msg, "page=%d count=%d total=%d", &page, &count, &total); err == nil {
-									fmt.Printf("    %sStripe page %d: +%d tx (total %d)%s\n", Fmt.Dim, page, count, total, Fmt.Reset)
-								}
-							case strings.HasPrefix(msg, "rate_limited"):
-								fmt.Printf("    %sStripe rate limited, waiting 2s...%s\n", Fmt.Dim, Fmt.Reset)
-							case strings.HasPrefix(msg, "stop_at_cached_month"):
-								var month string
-								var count int
-								if _, err := fmt.Sscanf(msg, "stop_at_cached_month month=%s count=%d", &month, &count); err == nil {
-									fmt.Printf("    %sStripe stop heuristic: %s count matches local cache (%d)%s\n", Fmt.Dim, month, count, Fmt.Reset)
-								}
-							}
-						},
+						Progress:            printSourceProgress,
 					})
 					if err != nil {
 						fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
@@ -456,6 +442,8 @@ func TransactionsSync(args []string) (int, error) {
 							Currency:     acc.Currency,
 						}
 
+						relPath := stripesource.RelPath(stripesource.BalanceTransactionsFile)
+						fmt.Printf("    %s%s: writing %s (%d tx)%s\n", Fmt.Dim, ym, relPath, len(monthTxs), Fmt.Reset)
 						if err := stripesource.WriteJSON(dataDir, year, month, cache, stripesource.BalanceTransactionsFile); err != nil {
 							fmt.Printf("    %s✗ Failed to write Stripe source data: %v%s\n", Fmt.Red, err, Fmt.Reset)
 							continue
@@ -469,54 +457,11 @@ func TransactionsSync(args []string) (int, error) {
 						fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
 					}
 
-					// Fetch Nostr annotations for Stripe transactions
-					if !noNostr && len(stripeTxs) > 0 && len(monthsToUpdate) > 0 {
-						fmt.Printf("    %sFetching Nostr annotations...%s", Fmt.Dim, Fmt.Reset)
-						if stripeCreatedAfter != nil {
-							fmt.Printf(" %s(since %s)%s", Fmt.Dim, stripeCreatedAfter.In(BrusselsTZ()).Format(time.RFC3339), Fmt.Reset)
-						}
-						var uris []string
-						for _, tx := range stripeTxs {
-							txMonth := time.Unix(tx.Created, 0).In(BrusselsTZ()).Format("2006-01")
-							if monthsToUpdate[txMonth] {
-								uris = append(uris, BuildStripeURI(tx.ID))
-							}
-						}
-						annotations, err := FetchNostrAnnotations(uris, stripeCreatedAfter)
-						if err != nil {
-							fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
-						} else {
-							fmt.Printf(" %s✓ %d annotations%s\n", Fmt.Green, len(annotations), Fmt.Reset)
-							// Save per month
-							for ym, monthTxs := range byMonth {
-								if ym < startMonth || ym > endMonth || !monthsToUpdate[ym] {
-									continue
-								}
-								monthAnnotations := map[string]*TxAnnotation{}
-								for _, tx := range monthTxs {
-									uri := BuildStripeURI(tx.ID)
-									if ann, ok := annotations[uri]; ok {
-										monthAnnotations[uri] = ann
-									}
-								}
-								if len(monthAnnotations) > 0 {
-									parts := strings.Split(ym, "-")
-									if len(parts) == 2 {
-										cache := NostrAnnotationCache{
-											FetchedAt:   time.Now().UTC().Format(time.RFC3339),
-											Annotations: monthAnnotations,
-										}
-										_ = writePluginDataJSON(DataDir(), parts[0], parts[1], nostrstripeplugin.Name, cache, nostrstripeplugin.AnnotationsFile)
-									}
-								}
-							}
-						}
-					}
 					// Fetch Stripe charge details (customer name, app, metadata) only for months being updated.
 					if len(monthsToUpdate) == 0 {
 						continue
 					}
-					fmt.Printf("    %sFetching charge details...%s", Fmt.Dim, Fmt.Reset)
+					fmt.Printf("    %sFetching Stripe charge/session data for updated months...%s\n", Fmt.Dim, Fmt.Reset)
 					var chargeIDs []string
 					chargeByTxn := map[string]string{} // txn_id → ch_id for month grouping
 					refundLookups := 0
@@ -535,7 +480,7 @@ func TransactionsSync(args []string) (int, error) {
 							if strings.HasPrefix(srcID, "re_") {
 								refundLookups++
 								if refundLookups == 1 || refundLookups%10 == 0 {
-									fmt.Printf(" %srefunds:%d%s", Fmt.Dim, refundLookups, Fmt.Reset)
+									fmt.Printf("    %sstripe: resolved refund source %d%s\n", Fmt.Dim, refundLookups, Fmt.Reset)
 								}
 								origCharge := stripesource.FetchRefundChargeID(stripeKey, acc.AccountID, srcID)
 								if origCharge != "" {
@@ -561,14 +506,12 @@ func TransactionsSync(args []string) (int, error) {
 						}
 					}
 
-					fmt.Printf(" %s(%d charge ids)%s", Fmt.Dim, len(chargeIDs), Fmt.Reset)
-					charges, err := stripesource.FetchChargesWithProgress(stripeKey, acc.AccountID, chargeIDs, func(current, total int) {
-						fmt.Printf(" %s%d/%d%s", Fmt.Dim, current, total, Fmt.Reset)
-					})
+					fmt.Printf("    %sstripe: fetching %d charge id(s)%s\n", Fmt.Dim, len(chargeIDs), Fmt.Reset)
+					charges, err := stripesource.FetchChargesWithProgress(stripeKey, acc.AccountID, chargeIDs, printSourceProgress)
 					if err != nil {
-						fmt.Printf(" %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
+						fmt.Printf("    %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
 					} else {
-						fmt.Printf(" %s✓ %d charges enriched%s\n", Fmt.Green, len(charges), Fmt.Reset)
+						fmt.Printf("    %s✓ fetched %d Stripe charge record(s)%s\n", Fmt.Green, len(charges), Fmt.Reset)
 
 						// Discover application names from fetched charges
 						appNames := map[string]int{} // track ca_ IDs for discovery
@@ -604,6 +547,7 @@ func TransactionsSync(args []string) (int, error) {
 							if len(monthCharges) > 0 {
 								parts := strings.Split(ym, "-")
 								if len(parts) == 2 {
+									fmt.Printf("    %s%s: writing %s (%d charges)%s\n", Fmt.Dim, ym, stripesource.RelPath(stripesource.ChargesFile), len(monthCharges), Fmt.Reset)
 									_ = stripesource.SaveChargeData(DataDir(), parts[0], parts[1], monthCharges, refundToCharge)
 								}
 							}
@@ -631,6 +575,7 @@ func TransactionsSync(args []string) (int, error) {
 							if len(customers.Customers) > 0 {
 								parts := strings.Split(ym, "-")
 								if len(parts) == 2 {
+									fmt.Printf("    %s%s: writing %s (%d customers)%s\n", Fmt.Dim, ym, stripesource.RelPath(stripesource.CustomersFile), len(customers.Customers), Fmt.Reset)
 									_ = stripesource.WriteJSON(DataDir(), parts[0], parts[1], customers, stripesource.CustomersFile)
 								}
 							}
@@ -761,10 +706,34 @@ func TransactionsSync(args []string) (int, error) {
 		}
 	}
 
-	fmt.Printf("\n%s✓ Done!%s %d transactions processed\n\n", Fmt.Green, Fmt.Reset, totalProcessed)
+	elapsed := time.Since(startedAt).Round(time.Millisecond)
+	fmt.Printf("\n%s✓ Source sync complete%s: %d transaction(s), %s\n\n", Fmt.Green, Fmt.Reset, totalProcessed, elapsed)
 	UpdateSyncSource("transactions", isFullSync)
 	UpdateSyncActivity(isFullSync)
 	return totalProcessed, nil
+}
+
+func printSourceProgress(ev sources.ProgressEvent) {
+	if ev.Source == "stripe" && ev.Step == "fetch_transactions" {
+		switch ev.Detail {
+		case "page":
+			fmt.Printf("    %sstripe: fetched page %d (%d tx total)%s\n", Fmt.Dim, ev.Current, ev.Total, Fmt.Reset)
+		case "rate_limited":
+			fmt.Printf("    %sstripe: rate limited on page %d, waiting 2s%s\n", Fmt.Dim, ev.Current, Fmt.Reset)
+		case "stop_at_cached_month":
+			fmt.Printf("    %sstripe: stop heuristic %s count matches local source file (%d)%s\n", Fmt.Dim, ev.Month, ev.Total, Fmt.Reset)
+		}
+		return
+	}
+	if ev.Source == "stripe" && ev.Step == "fetch_charges" {
+		if ev.Detail == "charge_session" {
+			fmt.Printf("    %sstripe: charge/session %d/%d%s\n", Fmt.Dim, ev.Current, ev.Total, Fmt.Reset)
+		}
+		return
+	}
+	if ev.Detail != "" {
+		fmt.Printf("    %s%s: %s%s\n", Fmt.Dim, ev.Source, ev.Detail, Fmt.Reset)
+	}
 }
 
 func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, error) {

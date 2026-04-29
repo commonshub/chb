@@ -83,8 +83,13 @@ func runTransactionPlugins(dataDir, year, month string, txs []TransactionEntry) 
 	if len(plugins) == 0 {
 		return
 	}
+	label := year
+	if month != "" {
+		label = year + "-" + month
+	}
 	ctx := newPluginContext(dataDir, year, month)
 	for _, plugin := range plugins {
+		fmt.Printf("    %s%s: applying plugin %s to %d transaction(s)%s\n", Fmt.Dim, label, plugin.Name(), len(txs), Fmt.Reset)
 		if err := plugin.WarmUp(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: plugin %s warm-up failed: %v\n", plugin.Name(), err)
 			continue

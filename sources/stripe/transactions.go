@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/CommonsHub/chb/sources"
 )
 
 func RelPath(elems ...string) string {
@@ -120,7 +122,7 @@ type FetchOptions struct {
 	StopAtMonthBoundary bool
 	DataDir             string
 	Location            *time.Location
-	Logf                func(format string, args ...interface{})
+	Progress            sources.ProgressFunc
 }
 
 func FetchTransactions(opts FetchOptions) ([]Transaction, error) {
@@ -173,8 +175,8 @@ func FetchTransactions(opts FetchOptions) ([]Transaction, error) {
 		defer resp.Body.Close()
 
 		if resp.StatusCode == 429 {
-			if opts.Logf != nil {
-				opts.Logf("rate_limited page=%d", page)
+			if opts.Progress != nil {
+				opts.Progress(sources.ProgressEvent{Source: Source, Step: "fetch_transactions", Detail: "rate_limited", Current: page})
 			}
 			time.Sleep(2 * time.Second)
 			continue
@@ -189,8 +191,14 @@ func FetchTransactions(opts FetchOptions) ([]Transaction, error) {
 		}
 
 		allTxs = append(allTxs, listResp.Data...)
-		if opts.Logf != nil {
-			opts.Logf("page=%d count=%d total=%d", page, len(listResp.Data), len(allTxs))
+		if opts.Progress != nil {
+			opts.Progress(sources.ProgressEvent{
+				Source:  Source,
+				Step:    "fetch_transactions",
+				Detail:  "page",
+				Current: page,
+				Total:   len(allTxs),
+			})
 		}
 
 		if opts.StopAtMonthBoundary && opts.DataDir != "" && len(allTxs) > 0 {
@@ -207,8 +215,14 @@ func FetchTransactions(opts FetchOptions) ([]Transaction, error) {
 				localCount = LocalTransactionCount(TransactionCachePath(opts.DataDir, parts[0], parts[1]))
 			}
 			if localCount > 0 && countSeen == localCount {
-				if opts.Logf != nil {
-					opts.Logf("stop_at_cached_month month=%s count=%d", oldestMonth, localCount)
+				if opts.Progress != nil {
+					opts.Progress(sources.ProgressEvent{
+						Source: Source,
+						Step:   "fetch_transactions",
+						Detail: "stop_at_cached_month",
+						Month:  oldestMonth,
+						Total:  localCount,
+					})
 				}
 				break
 			}

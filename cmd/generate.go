@@ -649,6 +649,7 @@ func Generate(args []string) error {
 //
 // Steps: aggregated transactions (`transactions.json`) + counterparties.
 func GenerateTransactions(args []string) error {
+	startedAt := time.Now()
 	dataDir := DataDir()
 	now := time.Now().In(BrusselsTZ())
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
@@ -666,33 +667,39 @@ func GenerateTransactions(args []string) error {
 	settings, _ := LoadSettings()
 	latestDir := filepath.Join(dataDir, "latest")
 
-	fmt.Printf("\n%s💰 Generating transactions...%s\n", Fmt.Bold, Fmt.Reset)
+	fmt.Printf("\n%s💰 Generating standardized transaction data%s\n", Fmt.Bold, Fmt.Reset)
+	fmt.Printf("%sPipeline: read source files → build generated/transactions.json → apply plugins → split private PII%s\n", Fmt.Dim, Fmt.Reset)
 	totalTx := 0
 	for _, scope := range scopes {
+		fmt.Printf("  %s%s-%s: generating %s%s\n", Fmt.Dim, scope.Year, scope.Month, filepath.Join("generated", "transactions.json"), Fmt.Reset)
 		n := generateTransactionsGo(dataDir, scope.Year, scope.Month, settings)
 		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %d transaction(s)\n", scope.Year, scope.Month, n)
+			fmt.Printf("  %s✓ %s-%s: %d transaction(s)%s\n", Fmt.Green, scope.Year, scope.Month, n, Fmt.Reset)
 			totalTx += n
 		}
 	}
 	if _, err := os.Stat(latestDir); err == nil {
+		fmt.Printf("  %slatest: generating %s%s\n", Fmt.Dim, filepath.Join("generated", "transactions.json"), Fmt.Reset)
 		n := generateTransactionsGo(dataDir, "latest", "", settings)
 		if n > 0 {
-			fmt.Printf("  ✓ latest: %d transaction(s)\n", n)
+			fmt.Printf("  %s✓ latest: %d transaction(s)%s\n", Fmt.Green, n, Fmt.Reset)
 			totalTx += n
 		}
 	}
 
 	fmt.Printf("\n%s🏢 Generating counterparties...%s\n", Fmt.Bold, Fmt.Reset)
 	for _, scope := range scopes {
+		fmt.Printf("  %s%s-%s: generating %s%s\n", Fmt.Dim, scope.Year, scope.Month, filepath.Join("generated", "counterparties.json"), Fmt.Reset)
 		generateCounterpartiesGo(dataDir, scope.Year, scope.Month)
 	}
 	if _, err := os.Stat(latestDir); err == nil {
+		fmt.Printf("  %slatest: generating %s%s\n", Fmt.Dim, filepath.Join("generated", "counterparties.json"), Fmt.Reset)
 		generateCounterpartiesGo(dataDir, "latest", "")
 	}
 
-	fmt.Printf("\n%s✓ Transaction generators complete%s (%d tx across %d month(s))\n\n",
-		Fmt.Green, Fmt.Reset, totalTx, len(scopes))
+	elapsed := time.Since(startedAt).Round(time.Millisecond)
+	fmt.Printf("\n%s✓ Transaction generation complete%s: %d tx across %d month(s), %s\n\n",
+		Fmt.Green, Fmt.Reset, totalTx, len(scopes), elapsed)
 	return nil
 }
 
