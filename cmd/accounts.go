@@ -1095,7 +1095,7 @@ func AccountFetch(slug string, args []string) error {
 	if acc == nil {
 		return fmt.Errorf("account '%s' not found", slug)
 	}
-	fetchArgs := append([]string{"--slug", acc.Slug}, args...)
+	fetchArgs := accountFetchArgs(*acc, args)
 	if _, err := TransactionsSync(fetchArgs); err != nil {
 		return err
 	}
@@ -1123,7 +1123,7 @@ func AccountsFetchAll(args []string) (int, error) {
 
 	failed := 0
 	for _, acc := range configs {
-		slugArgs := append([]string{"--slug", acc.Slug}, args...)
+		slugArgs := accountFetchArgs(acc, args)
 		output, count, err := captureTransactionsSync(slugArgs)
 		label := acc.Slug
 		if err != nil {
@@ -1150,6 +1150,31 @@ func AccountsFetchAll(args []string) (int, error) {
 		return failed, fmt.Errorf("%d account(s) failed", failed)
 	}
 	return 0, nil
+}
+
+func accountFetchArgs(acc AccountConfig, args []string) []string {
+	out := append([]string{"--slug", acc.Slug}, args...)
+	if GetOption(args, "--source") != "" {
+		return out
+	}
+	source := accountTransactionSource(acc)
+	if source == "" {
+		return out
+	}
+	return append([]string{"--source", source}, out...)
+}
+
+func accountTransactionSource(acc AccountConfig) string {
+	switch strings.ToLower(strings.TrimSpace(acc.Provider)) {
+	case "stripe":
+		return "stripe"
+	case "monerium":
+		return "monerium"
+	case "etherscan":
+		return "etherscan"
+	default:
+		return ""
+	}
 }
 
 // captureTransactionsSync runs TransactionsSync with its stdout redirected to
