@@ -1815,7 +1815,12 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 
 func generateTransactionsGo(dataDir, year, month string, settings *Settings) int {
 	financeDir := filepath.Join(dataDir, year, month, "finance")
+	financeExists := true
 	if _, err := os.Stat(financeDir); os.IsNotExist(err) {
+		financeExists = false
+	}
+	stripePaths := stripeTransactionCachePaths(dataDir, year, month)
+	if !financeExists && len(stripePaths) == 0 {
 		return 0
 	}
 
@@ -1833,13 +1838,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	seenTxHash := map[string]bool{} // track blockchain tx hashes to dedup internal transfers
 
 	// Process Stripe transactions
-	stripeDir := filepath.Join(financeDir, "stripe")
-	if entries, err := os.ReadDir(stripeDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(stripeDir, e.Name()))
+	if len(stripePaths) > 0 {
+		for _, path := range stripePaths {
+			data, err := os.ReadFile(path)
 			if err != nil {
 				continue
 			}

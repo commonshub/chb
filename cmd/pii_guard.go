@@ -24,6 +24,47 @@ func pathHasPrivateSegment(path string) bool {
 	return false
 }
 
+// pathHasSourceDataSegment reports whether the path is under a monthly or
+// latest source dump directory: <YYYY>/<MM>/data/<source>/... or
+// latest/data/<source>/.... Source dumps are private backups by default; only
+// generated files are expected to be public-safe.
+func pathHasSourceDataSegment(path string) bool {
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	for i, part := range parts {
+		if part != "data" {
+			continue
+		}
+		if i >= 2 && isYearSegment(parts[i-2]) && isMonthSegment(parts[i-1]) {
+			return true
+		}
+		if i >= 1 && parts[i-1] == "latest" {
+			return true
+		}
+	}
+	return false
+}
+
+func isYearSegment(s string) bool {
+	if len(s) != 4 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isMonthSegment(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	return s >= "01" && s <= "12"
+}
+
 // nameFieldKeys are the JSON fields that must never contain an "@".
 var nameFieldKeys = map[string]struct{}{
 	"firstname": {},

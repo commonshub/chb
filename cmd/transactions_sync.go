@@ -484,6 +484,10 @@ func TransactionsSync(args []string) (int, error) {
 							fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
 							continue
 						}
+						if err := writeProviderDataJSON(dataDir, year, month, "stripe", cache, "balance-transactions.json"); err != nil {
+							fmt.Printf("    %s✗ Failed to write Stripe source data: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							continue
+						}
 
 						saved++
 						totalProcessed += len(monthTxs)
@@ -658,6 +662,7 @@ func TransactionsSync(args []string) (int, error) {
 									piiData, _ := json.MarshalIndent(customers, "", "  ")
 									piiRelPath := filepath.Join("finance", "stripe", "private", "customers.json")
 									writeMonthFile(DataDir(), parts[0], parts[1], piiRelPath, piiData)
+									_ = writeProviderDataJSON(DataDir(), parts[0], parts[1], "stripe", customers, "customers.json")
 								}
 							}
 						}

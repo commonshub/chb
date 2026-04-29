@@ -298,10 +298,14 @@ func (c *StripeCharge) BestEmail() string {
 
 // LoadStripeChargeEnrichment reads the private charge data for a month.
 func LoadStripeChargeEnrichment(dataDir, year, month string) (map[string]*StripeCharge, map[string]string) {
-	path := filepath.Join(dataDir, year, month, "finance", "stripe", "private", "charges.json")
+	path := providerDataPath(dataDir, year, month, "stripe", "charges.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil
+		path = filepath.Join(dataDir, year, month, "finance", "stripe", "private", "charges.json")
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil, nil
+		}
 	}
 	var enrichment StripeChargeEnrichment
 	if json.Unmarshal(data, &enrichment) != nil {
@@ -322,14 +326,19 @@ func SaveStripeChargeEnrichment(dataDir, year, month string, charges map[string]
 	_ = writeDataFile(filepath.Join(dataDir, year, month, relPath), data)
 	// Also write to latest
 	_ = writeDataFile(filepath.Join(dataDir, "latest", relPath), data)
+	_ = writeProviderDataJSON(dataDir, year, month, "stripe", enrichment, "charges.json")
 }
 
 // loadStripeCustomerData reads the private customer PII for a month.
 func loadStripeCustomerData(dataDir, year, month string) map[string]*StripeCustomerPII {
-	path := filepath.Join(dataDir, year, month, "finance", "stripe", "private", "customers.json")
+	path := providerDataPath(dataDir, year, month, "stripe", "customers.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		path = filepath.Join(dataDir, year, month, "finance", "stripe", "private", "customers.json")
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
 	}
 	var customerData StripeCustomerData
 	if json.Unmarshal(data, &customerData) != nil {

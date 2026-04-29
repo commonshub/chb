@@ -50,6 +50,26 @@ func TestWriteDataFileSetsPrivateDirectoryPermissions(t *testing.T) {
 	assertMode(t, path, 0644)
 }
 
+func TestWriteDataFileTreatsSourceDataAsPrivate(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+
+	path := filepath.Join(DataDir(), "2026", "04", "data", "stripe", "customers.json")
+	if err := writeDataFile(path, []byte(`{"name":"alice@example.org"}`)); err != nil {
+		t.Fatalf("write source data file: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"name":"alice@example.org"}` {
+		t.Fatalf("source data should not be scrubbed, got %s", data)
+	}
+	assertMode(t, filepath.Join(dataDir, "2026", "04", "data"), 0700)
+	assertMode(t, filepath.Join(dataDir, "2026", "04", "data", "stripe"), 0700)
+}
+
 func TestDataDirNormalizesExistingPrivateDirectoryModes(t *testing.T) {
 	dataDir := t.TempDir()
 	privateDir := filepath.Join(dataDir, "2026", "04", "generated", "private")

@@ -9,9 +9,9 @@ import (
 
 func TestSplitNameStripsEmailTokens(t *testing.T) {
 	cases := []struct {
-		in             string
-		wantFirst      string
-		wantLast       string
+		in        string
+		wantFirst string
+		wantLast  string
 	}{
 		{"Judith Saragossi", "Judith", "Saragossi"},
 		{"judithsaragossi@gmail.com", "Member", ""},
@@ -88,6 +88,23 @@ func TestPathHasPrivateSegment(t *testing.T) {
 	for _, c := range cases {
 		if got := pathHasPrivateSegment(c.path); got != c.want {
 			t.Errorf("pathHasPrivateSegment(%q) = %v; want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestPathHasSourceDataSegment(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/org-data/2026/04/data/stripe/balance-transactions.json", true},
+		{"/org-data/latest/data/luma/events.json", true},
+		{"/org-data/data/2026/04/generated/transactions.json", false},
+		{"/org-data/2026/04/generated/data.json", false},
+	}
+	for _, c := range cases {
+		if got := pathHasSourceDataSegment(c.path); got != c.want {
+			t.Errorf("pathHasSourceDataSegment(%q) = %v; want %v", c.path, got, c.want)
 		}
 	}
 }

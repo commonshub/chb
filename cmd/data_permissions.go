@@ -77,7 +77,7 @@ func enforcePIIPolicy(path string, data []byte) []byte {
 	if !strings.HasSuffix(path, ".json") {
 		return data
 	}
-	if pathHasPrivateSegment(path) {
+	if pathHasPrivateSegment(path) || pathHasSourceDataSegment(path) {
 		return data
 	}
 	cleaned, scrubbed := scrubNameFields(data)
@@ -126,7 +126,7 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 				continue
 			}
 			current = filepath.Join(current, part)
-			if part == "private" {
+			if part == "private" || sourceDataStartsAt(baseDir, current) {
 				privateMode = true
 			}
 			mode := dataPublicDirMode
@@ -146,4 +146,19 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 	}
 
 	return nil
+}
+
+func sourceDataStartsAt(baseDir, currentPath string) bool {
+	rel, err := filepath.Rel(baseDir, currentPath)
+	if err != nil || rel == "." {
+		return false
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) == 3 && isYearSegment(parts[0]) && isMonthSegment(parts[1]) && parts[2] == "data" {
+		return true
+	}
+	if len(parts) == 2 && parts[0] == "latest" && parts[1] == "data" {
+		return true
+	}
+	return false
 }
