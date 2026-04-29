@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,6 +45,15 @@ func registeredDataPlugins() []DataPlugin {
 	}
 }
 
+func registeredDataPluginNames() []string {
+	plugins := registeredDataPlugins()
+	names := make([]string, 0, len(plugins))
+	for _, plugin := range plugins {
+		names = append(names, plugin.Name())
+	}
+	return names
+}
+
 func (ctx *PluginContext) ReadPublicJSON(plugin, name string, v interface{}) error {
 	return ctx.readJSON(filepath.Join("plugins", plugin, name), v)
 }
@@ -83,13 +91,8 @@ func runTransactionPlugins(dataDir, year, month string, txs []TransactionEntry) 
 	if len(plugins) == 0 {
 		return
 	}
-	label := year
-	if month != "" {
-		label = year + "-" + month
-	}
 	ctx := newPluginContext(dataDir, year, month)
 	for _, plugin := range plugins {
-		fmt.Printf("    %s%s: applying plugin %s to %d transaction(s)%s\n", Fmt.Dim, label, plugin.Name(), len(txs), Fmt.Reset)
 		if err := plugin.WarmUp(ctx); err != nil {
 			Warnf("Warning: plugin %s warm-up failed: %v", plugin.Name(), err)
 			continue

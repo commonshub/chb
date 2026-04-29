@@ -1091,16 +1091,9 @@ func AccountFetch(slug string, args []string) error {
 		return fmt.Errorf("account '%s' not found", slug)
 	}
 	fetchArgs := accountFetchArgs(*acc, args)
-	source := accountTransactionSource(*acc)
-	if source == "" {
-		source = acc.Provider
-	}
-	fmt.Printf("\n%sAccount sync: %s%s\n", Fmt.Bold, acc.Slug, Fmt.Reset)
-	fmt.Printf("  %s1/2 Sync source data (source=%s)%s\n", Fmt.Dim, source, Fmt.Reset)
 	if _, err := TransactionsSync(fetchArgs); err != nil {
 		return err
 	}
-	fmt.Printf("  %s2/2 Generate standardized files and apply plugins%s\n", Fmt.Dim, Fmt.Reset)
 	if err := GenerateTransactions(args); err != nil {
 		return fmt.Errorf("generate transactions after fetch: %v", err)
 	}
