@@ -529,7 +529,7 @@ func TransactionsSync(args []string) (int, error) {
 											FetchedAt:   time.Now().UTC().Format(time.RFC3339),
 											Annotations: monthAnnotations,
 										}
-										_ = writeProviderSourceJSON(DataDir(), parts[0], parts[1], "stripe", cache, "nostr-annotations.json")
+										_ = writePluginDataJSON(DataDir(), parts[0], parts[1], "nostr-stripe", cache, "annotations.json")
 									}
 								}
 							}

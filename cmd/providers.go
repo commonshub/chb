@@ -72,6 +72,24 @@ func writeProviderSourceJSON(dataDir, year, month, source string, v interface{},
 	return writeMonthFile(dataDir, year, month, providerSourceRelPath(source, elems...), data)
 }
 
+func pluginDataRelPath(plugin string, elems ...string) string {
+	parts := append([]string{"plugins", normalizeSourceName(plugin)}, elems...)
+	return filepath.Join(parts...)
+}
+
+func pluginDataPath(dataDir, year, month, plugin string, elems ...string) string {
+	parts := []string{dataDir, year, month, pluginDataRelPath(plugin, elems...)}
+	return filepath.Join(parts...)
+}
+
+func writePluginDataJSON(dataDir, year, month, plugin string, v interface{}, elems ...string) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeMonthFile(dataDir, year, month, pluginDataRelPath(plugin, elems...), data)
+}
+
 func normalizeSourceName(source string) string {
 	source = strings.TrimSpace(strings.ToLower(source))
 	source = strings.ReplaceAll(source, "_", "-")

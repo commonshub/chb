@@ -142,7 +142,7 @@ func TransactionsSyncNostr(args []string) error {
 				FetchedAt:   time.Now().UTC().Format(time.RFC3339),
 				Annotations: monthAnns,
 			}
-			_ = writeProviderSourceJSON(dataDir, parts[0], parts[1], "stripe", cache, "nostr-annotations.json")
+			_ = writePluginDataJSON(dataDir, parts[0], parts[1], "nostr-stripe", cache, "annotations.json")
 		}
 		fmt.Printf("  %sSaved stripe annotations to disk%s\n", Fmt.Dim, Fmt.Reset)
 	}
