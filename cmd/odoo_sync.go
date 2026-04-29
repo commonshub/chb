@@ -89,7 +89,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 		if quietOdooContext() {
 			odooSyncLine("categories", "ODOO env not set — skipped")
 		} else {
-			fmt.Printf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo sync%s\n", Fmt.Yellow, Fmt.Reset)
+			Warnf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo sync%s", Fmt.Yellow, Fmt.Reset)
 		}
 		return 0, nil
 	}
@@ -154,7 +154,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 			"order": "date desc",
 		})
 	if err != nil {
-		odooLog("  %s⚠ Could not fetch analytic lines: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch analytic lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 
 	type analyticLine struct {
@@ -808,7 +808,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		if len(after) == 0 {
 			fmt.Printf("  %s✓ Journal is valid%s\n\n", Fmt.Green, Fmt.Reset)
 		} else {
-			fmt.Printf("\n  %s⚠ %d issue(s) remain:%s\n", Fmt.Yellow, len(after), Fmt.Reset)
+			Warnf("  %s⚠ %d issue(s) remain:%s", Fmt.Yellow, len(after), Fmt.Reset)
 			PrintStatementIssues(after)
 		}
 	}

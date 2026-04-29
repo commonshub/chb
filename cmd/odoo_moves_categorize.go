@@ -69,7 +69,7 @@ func categorizeMoves(kind moveKind, args []string) error {
 
 		moves, err := loadMoves(dataDir, year, month, kind)
 		if err != nil {
-			fmt.Printf("  %s⚠ %s: %v%s\n", Fmt.Yellow, ym, err, Fmt.Reset)
+			Warnf("  %s⚠ %s: %v%s", Fmt.Yellow, ym, err, Fmt.Reset)
 			return nil
 		}
 		if len(moves) == 0 {

@@ -34,22 +34,22 @@ func (s *odooStr) UnmarshalJSON(b []byte) error {
 //     balance_end_real. A gap means a transaction is missing (or an extra one
 //     was declared) between the two statements.
 type StatementBalanceIssue struct {
-	JournalID       int
-	StatementID     int
-	StatementName   string
-	Date            string
-	BalanceStart    float64
-	BalanceEndReal  float64
-	LineSum         float64
-	RunningBalance  float64 // BalanceStart + LineSum
-	LineCount       int
-	Kind              string  // "balance_mismatch" | "chain_gap"
-	StatementRef      string  // Odoo statement reference field (Stripe payout ID for Stripe journals)
-	PreviousEndReal   float64 // for chain_gap only
-	PreviousStmtID    int     // for chain_gap only
-	PreviousStmtName  string  // for chain_gap only
-	PreviousStmtDate  string  // for chain_gap only
-	PreviousStmtRef   string  // for chain_gap only
+	JournalID        int
+	StatementID      int
+	StatementName    string
+	Date             string
+	BalanceStart     float64
+	BalanceEndReal   float64
+	LineSum          float64
+	RunningBalance   float64 // BalanceStart + LineSum
+	LineCount        int
+	Kind             string  // "balance_mismatch" | "chain_gap"
+	StatementRef     string  // Odoo statement reference field (Stripe payout ID for Stripe journals)
+	PreviousEndReal  float64 // for chain_gap only
+	PreviousStmtID   int     // for chain_gap only
+	PreviousStmtName string  // for chain_gap only
+	PreviousStmtDate string  // for chain_gap only
+	PreviousStmtRef  string  // for chain_gap only
 }
 
 // Diff returns running minus declared; positive means declared is too low.
@@ -198,7 +198,7 @@ func PrintStatementIssues(issues []StatementBalanceIssue) {
 	if len(issues) == 0 {
 		return
 	}
-	fmt.Printf("\n  %s⚠ %d invalid statement(s):%s\n\n", Fmt.Yellow, len(issues), Fmt.Reset)
+	Warnf("  %s⚠ %d invalid statement(s):%s", Fmt.Yellow, len(issues), Fmt.Reset)
 	for _, i := range issues {
 		switch i.Kind {
 		case "balance_mismatch":

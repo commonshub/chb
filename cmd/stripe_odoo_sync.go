@@ -287,7 +287,7 @@ func syncStripeChronological(
 		}
 		odooLog("  %supdating open statement balance...%s\n", Fmt.Dim, Fmt.Reset)
 		if err := setStatementBalanceEndReal(creds, uid, openStmtID, end); err != nil {
-			fmt.Printf("  %s⚠ Failed to update open statement balance: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to update open statement balance: %v%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 	}
 	if skippedBTs > 0 || processedBTs > 0 {

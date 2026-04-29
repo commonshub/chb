@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,11 +81,11 @@ func enforcePIIPolicy(path string, data []byte) []byte {
 	}
 	cleaned, scrubbed := scrubNameFields(data)
 	for _, leak := range scrubbed {
-		fmt.Fprintf(os.Stderr, "⚠ PII guard: scrubbed %s in %s (%s)\n", leak.Kind, path, leak.String())
+		Warnf("⚠ PII guard: scrubbed %s in %s (%s)", leak.Kind, path, leak.String())
 	}
 	_, soft := validatePublicJSON(cleaned)
 	for _, leak := range soft {
-		fmt.Fprintf(os.Stderr, "⚠ PII guard: possible email in %s — %s\n", path, leak.String())
+		Warnf("⚠ PII guard: possible email in %s — %s", path, leak.String())
 	}
 	return cleaned
 }

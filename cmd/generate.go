@@ -509,7 +509,7 @@ func Generate(args []string) error {
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
-		fmt.Println("⚠️  No data found. Run sync first.")
+		Warnf("%s⚠ No data found. Run sync first.%s", Fmt.Yellow, Fmt.Reset)
 		return nil
 	}
 
@@ -671,7 +671,7 @@ func GenerateTransactions(args []string) error {
 	fmt.Printf("%sPipeline: read source files → build generated/transactions.json → apply plugins → split private PII%s\n", Fmt.Dim, Fmt.Reset)
 	totalTx := 0
 	for _, scope := range scopes {
-		fmt.Printf("  %s%s-%s: generating %s%s\n", Fmt.Dim, scope.Year, scope.Month, filepath.Join("generated", "transactions.json"), Fmt.Reset)
+		fmt.Printf("  %sWriting %s%s\n", Fmt.Dim, displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "transactions.json")), Fmt.Reset)
 		n := generateTransactionsGo(dataDir, scope.Year, scope.Month, settings)
 		if n > 0 {
 			fmt.Printf("  %s✓ %s-%s: %d transaction(s)%s\n", Fmt.Green, scope.Year, scope.Month, n, Fmt.Reset)
@@ -679,7 +679,7 @@ func GenerateTransactions(args []string) error {
 		}
 	}
 	if _, err := os.Stat(latestDir); err == nil {
-		fmt.Printf("  %slatest: generating %s%s\n", Fmt.Dim, filepath.Join("generated", "transactions.json"), Fmt.Reset)
+		fmt.Printf("  %sWriting %s%s\n", Fmt.Dim, displayMonthRelPath("latest", "", filepath.Join("generated", "transactions.json")), Fmt.Reset)
 		n := generateTransactionsGo(dataDir, "latest", "", settings)
 		if n > 0 {
 			fmt.Printf("  %s✓ latest: %d transaction(s)%s\n", Fmt.Green, n, Fmt.Reset)
@@ -689,11 +689,11 @@ func GenerateTransactions(args []string) error {
 
 	fmt.Printf("\n%s🏢 Generating counterparties...%s\n", Fmt.Bold, Fmt.Reset)
 	for _, scope := range scopes {
-		fmt.Printf("  %s%s-%s: generating %s%s\n", Fmt.Dim, scope.Year, scope.Month, filepath.Join("generated", "counterparties.json"), Fmt.Reset)
+		fmt.Printf("  %sWriting %s%s\n", Fmt.Dim, displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "counterparties.json")), Fmt.Reset)
 		generateCounterpartiesGo(dataDir, scope.Year, scope.Month)
 	}
 	if _, err := os.Stat(latestDir); err == nil {
-		fmt.Printf("  %slatest: generating %s%s\n", Fmt.Dim, filepath.Join("generated", "counterparties.json"), Fmt.Reset)
+		fmt.Printf("  %sWriting %s%s\n", Fmt.Dim, displayMonthRelPath("latest", "", filepath.Join("generated", "counterparties.json")), Fmt.Reset)
 		generateCounterpartiesGo(dataDir, "latest", "")
 	}
 
@@ -1596,7 +1596,7 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 	}
 
 	if len(contributors) == 0 {
-		fmt.Printf("  ⚠ No contributors found\n")
+		Warnf("  %s⚠ No contributors found%s", Fmt.Yellow, Fmt.Reset)
 		return
 	}
 

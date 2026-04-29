@@ -158,18 +158,18 @@ func MembersSync(args []string) error {
 		var err error
 		stripeSubscriptions, err = stripesource.FetchSubscriptions(stripeKey, stripeProductID)
 		if err != nil {
-			fmt.Printf("  %s⚠ Stripe error: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Stripe error: %v%s", Fmt.Yellow, err, Fmt.Reset)
 			doStripe = false
 		} else {
 			fmt.Printf("  %d Stripe subscriptions\n", len(stripeSubscriptions))
 		}
 	} else if doStripe {
-		fmt.Printf("%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe%s\n", Fmt.Yellow, Fmt.Reset)
+		Warnf("%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe%s", Fmt.Yellow, Fmt.Reset)
 		doStripe = false
 	}
 
 	if doOdoo && (odooURL == "" || odooLogin == "" || odooPassword == "") {
-		fmt.Printf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo%s\n", Fmt.Yellow, Fmt.Reset)
+		Warnf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo%s", Fmt.Yellow, Fmt.Reset)
 		doOdoo = false
 	}
 

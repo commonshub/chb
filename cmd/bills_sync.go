@@ -43,7 +43,7 @@ func BillsSync(args []string) (int, error) {
 		if quietOdooContext() {
 			odooSyncLine("bills", fmt.Sprintf("skipped (%v)", err))
 		} else {
-			fmt.Printf("%s⚠ %v, skipping bills sync%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("%s⚠ %v, skipping bills sync%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 		return 0, nil
 	}

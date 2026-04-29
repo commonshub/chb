@@ -268,7 +268,7 @@ func InvoicesSync(args []string) (int, error) {
 		if quietOdooContext() {
 			odooSyncLine("invoices", fmt.Sprintf("skipped (%v)", err))
 		} else {
-			fmt.Printf("%s⚠ %v, skipping invoices sync%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("%s⚠ %v, skipping invoices sync%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 		return 0, nil
 	}
@@ -734,16 +734,16 @@ func enrichOutgoingInvoices(creds *OdooCredentials, uid int, rawInvoices []map[s
 		[]string{"id", "provider_code", "provider_reference", "amount", "currency_id", "state", "invoice_ids", "reference", "create_date", "last_state_change", "operation"},
 		"id desc")
 	if err != nil {
-		fmt.Printf("  %s⚠ Could not fetch payment transactions: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch payment transactions: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 
 	attachmentsByInvoiceID, err := fetchOdooDocumentAttachments(creds, uid, invoiceIDs)
 	if err != nil {
-		fmt.Printf("  %s⚠ Could not fetch document attachments: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch document attachments: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 	sentAtByInvoiceID, err := fetchInvoiceSentDates(creds, uid, invoiceIDs)
 	if err != nil {
-		fmt.Printf("  %s⚠ Could not fetch invoice sent dates: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch invoice sent dates: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 
 	localTxIndex := loadOdooLocalTxIndex()

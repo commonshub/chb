@@ -23,7 +23,7 @@ func AttachmentsSync(args []string) (int, error) {
 
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
-		fmt.Printf("%s⚠ %v, skipping attachments sync%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("%s⚠ %v, skipping attachments sync%s", Fmt.Yellow, err, Fmt.Reset)
 		return 0, nil
 	}
 
@@ -34,7 +34,7 @@ func AttachmentsSync(args []string) (int, error) {
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
-		fmt.Println("⚠️  No data found. Run sync first.")
+		Warnf("%s⚠ No data found. Run sync first.%s", Fmt.Yellow, Fmt.Reset)
 		return 0, nil
 	}
 
@@ -53,11 +53,11 @@ func AttachmentsSync(args []string) (int, error) {
 	for _, scope := range collectAttachmentSyncScopes(dataDir, years, posYear, posMonth, posFound, startMonth, isHistory) {
 		invoiceRes, err := syncInvoiceAttachmentMonth(dataDir, scope.Year, scope.Month, force, creds, uid)
 		if err != nil {
-			fmt.Printf("  %s⚠ %s invoices: %v%s\n", Fmt.Yellow, scope.Label, err, Fmt.Reset)
+			Warnf("  %s⚠ %s invoices: %v%s", Fmt.Yellow, scope.Label, err, Fmt.Reset)
 		}
 		billRes, err := syncBillAttachmentMonth(dataDir, scope.Year, scope.Month, force, creds, uid)
 		if err != nil {
-			fmt.Printf("  %s⚠ %s bills: %v%s\n", Fmt.Yellow, scope.Label, err, Fmt.Reset)
+			Warnf("  %s⚠ %s bills: %v%s", Fmt.Yellow, scope.Label, err, Fmt.Reset)
 		}
 
 		totalDownloaded += invoiceRes.Downloaded + billRes.Downloaded
@@ -244,7 +244,7 @@ func syncDocumentAttachments(dataDir, year, month, docKind string, docs []*OdooO
 			}
 
 			if err := downloadOdooAttachment(localAbsPath, *att, creds, uid); err != nil {
-				fmt.Printf("  %s⚠ Failed to download attachment %d: %v%s\n", Fmt.Yellow, att.ID, err, Fmt.Reset)
+				Warnf("  %s⚠ Failed to download attachment %d: %v%s", Fmt.Yellow, att.ID, err, Fmt.Reset)
 				continue
 			}
 

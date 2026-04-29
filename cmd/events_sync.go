@@ -223,13 +223,13 @@ func CalendarsSync(args []string) (int, int, error) {
 
 		icsData, err := fetchURL(calURL)
 		if err != nil {
-			fmt.Printf("  %sWarning: failed to fetch %s: %v%s\n", Fmt.Yellow, room.Slug, err, Fmt.Reset)
+			Warnf("  %sWarning: failed to fetch %s: %v%s", Fmt.Yellow, room.Slug, err, Fmt.Reset)
 			continue
 		}
 
 		events, err := ical.ParseICS(icsData)
 		if err != nil {
-			fmt.Printf("  %sWarning: failed to parse %s ICS: %v%s\n", Fmt.Yellow, room.Slug, err, Fmt.Reset)
+			Warnf("  %sWarning: failed to parse %s ICS: %v%s", Fmt.Yellow, room.Slug, err, Fmt.Reset)
 			continue
 		}
 
@@ -289,12 +289,12 @@ func CalendarsSync(args []string) (int, int, error) {
 		fmt.Printf("  Fetching %s calendar...\n", cs.slug)
 		icsData, err := fetchURL(cs.url)
 		if err != nil {
-			fmt.Printf("  %sWarning: failed to fetch %s calendar: %v%s\n", Fmt.Yellow, cs.slug, err, Fmt.Reset)
+			Warnf("  %sWarning: failed to fetch %s calendar: %v%s", Fmt.Yellow, cs.slug, err, Fmt.Reset)
 			continue
 		}
 		events, err := ical.ParseICS(icsData)
 		if err != nil {
-			fmt.Printf("  %sWarning: failed to parse %s calendar: %v%s\n", Fmt.Yellow, cs.slug, err, Fmt.Reset)
+			Warnf("  %sWarning: failed to parse %s calendar: %v%s", Fmt.Yellow, cs.slug, err, Fmt.Reset)
 			continue
 		}
 		fmt.Printf("  %s✓%s %s calendar: %d events\n", Fmt.Green, Fmt.Reset, cs.slug, len(events))
@@ -358,7 +358,7 @@ func CalendarsSync(args []string) (int, int, error) {
 
 		r, err := processMonthFromRooms(dataDir, year, month, eventsByMonth[ym], force, runCache)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: error processing %s-%s: %v\n", year, month, err)
+			Warnf("  Warning: error processing %s-%s: %v", year, month, err)
 			continue
 		}
 		if r != nil {

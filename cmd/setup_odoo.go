@@ -59,7 +59,7 @@ func SetupOdoo() error {
 	odooLogin := os.Getenv("ODOO_LOGIN")
 	odooPassword := os.Getenv("ODOO_PASSWORD")
 	if odooURL == "" || odooLogin == "" || odooPassword == "" {
-		fmt.Printf("\n%s⚠ Credentials incomplete, cannot continue%s\n\n", Fmt.Yellow, Fmt.Reset)
+		Warnf("%s⚠ Credentials incomplete, cannot continue%s", Fmt.Yellow, Fmt.Reset)
 		return nil
 	}
 
@@ -96,8 +96,8 @@ func SetupOdoo() error {
 	json.Unmarshal(accountsResult, &analyticAccounts)
 
 	analyticNameByID := map[int]string{}
-	analyticPlanByID := map[int]string{}   // account ID -> plan name
-	analyticPlanIDByAcct := map[int]int{}  // account ID -> plan ID
+	analyticPlanByID := map[int]string{}  // account ID -> plan name
+	analyticPlanIDByAcct := map[int]int{} // account ID -> plan ID
 	for _, a := range analyticAccounts {
 		analyticNameByID[a.ID] = a.Name
 		analyticPlanByID[a.ID] = odooFieldName(a.PlanID)
@@ -390,7 +390,7 @@ func SetupOdoo() error {
 	acctSettings.Odoo.CategoryMapping = odooMapping
 
 	if err := SaveAccountingSettings(acctSettings); err != nil {
-		fmt.Printf("  %s⚠ Failed to save settings: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Failed to save settings: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	} else {
 		fmt.Printf("\n%s✓ Saved %d category mappings to settings.json%s\n", Fmt.Green, len(odooMapping), Fmt.Reset)
 	}

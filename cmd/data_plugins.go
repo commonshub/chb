@@ -91,16 +91,16 @@ func runTransactionPlugins(dataDir, year, month string, txs []TransactionEntry) 
 	for _, plugin := range plugins {
 		fmt.Printf("    %s%s: applying plugin %s to %d transaction(s)%s\n", Fmt.Dim, label, plugin.Name(), len(txs), Fmt.Reset)
 		if err := plugin.WarmUp(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: plugin %s warm-up failed: %v\n", plugin.Name(), err)
+			Warnf("Warning: plugin %s warm-up failed: %v", plugin.Name(), err)
 			continue
 		}
 		for i := range txs {
 			if err := plugin.AugmentTransaction(ctx, &txs[i]); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: plugin %s transaction %s failed: %v\n", plugin.Name(), txs[i].ID, err)
+				Warnf("Warning: plugin %s transaction %s failed: %v", plugin.Name(), txs[i].ID, err)
 			}
 		}
 		if err := plugin.Flush(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: plugin %s flush failed: %v\n", plugin.Name(), err)
+			Warnf("Warning: plugin %s flush failed: %v", plugin.Name(), err)
 		}
 	}
 }
@@ -113,16 +113,16 @@ func runEventPlugins(dataDir, year, month string, events []FullEvent) {
 	ctx := newPluginContext(dataDir, year, month)
 	for _, plugin := range plugins {
 		if err := plugin.WarmUp(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: plugin %s warm-up failed: %v\n", plugin.Name(), err)
+			Warnf("Warning: plugin %s warm-up failed: %v", plugin.Name(), err)
 			continue
 		}
 		for i := range events {
 			if err := plugin.AugmentEvent(ctx, &events[i]); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: plugin %s event %s failed: %v\n", plugin.Name(), events[i].ID, err)
+				Warnf("Warning: plugin %s event %s failed: %v", plugin.Name(), events[i].ID, err)
 			}
 		}
 		if err := plugin.Flush(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: plugin %s flush failed: %v\n", plugin.Name(), err)
+			Warnf("Warning: plugin %s flush failed: %v", plugin.Name(), err)
 		}
 	}
 }

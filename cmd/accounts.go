@@ -379,8 +379,7 @@ func AccountsCommand(args []string) {
 	// `chb accounts sync` → fetch source → local, for all accounts.
 	if len(args) >= 1 && args[0] == "sync" {
 		if _, err := AccountsFetchAll(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-			os.Exit(1)
+			Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 		}
 		return
 	}
@@ -406,38 +405,31 @@ func AccountsCommand(args []string) {
 				// Pure source→local fetch for one account. Use `chb odoo
 				// journals <id> sync` to push into Odoo afterward.
 				if err := AccountFetch(slug, args[2:]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-					os.Exit(1)
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
 			case "push":
 				// Back-channel for now: push local→Odoo for this one account.
 				if err := AccountOdooPush(slug, args[2:]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-					os.Exit(1)
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
 			case "link":
 				if err := AccountOdooLink(slug, args[2:]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-					os.Exit(1)
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
 			case "payouts":
 				if err := AccountStripePayouts(slug, args[2:]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-					os.Exit(1)
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
 			case "pending":
 				if err := AccountStripePending(slug); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-					os.Exit(1)
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
 			case "import-csv":
 				if len(args) < 3 {
-					fmt.Fprintf(os.Stderr, "%sUsage: chb accounts %s import-csv <file.csv>%s\n", Fmt.Yellow, slug, Fmt.Reset)
-					os.Exit(1)
+					Fatalf("%sUsage: chb accounts %s import-csv <file.csv>%s", Fmt.Yellow, slug, Fmt.Reset)
 				}
 				if err := ImportStripeCSV(args[2]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", Fmt.Red, Fmt.Reset, err)
-					os.Exit(1)
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
 			default:
 				AccountDetail(slug, args[1:])
@@ -464,9 +456,11 @@ func AccountDetail(slug string, args []string) {
 	if acc == nil {
 		if JSONMode(args) {
 			EmitJSONError(fmt.Errorf("account '%s' not found", slug))
+			PrintDiagnosticsSummary()
+			CloseDiagnosticsLog()
 			os.Exit(1)
 		}
-		fmt.Printf("  %sAccount '%s' not found%s\n\n", Fmt.Red, slug, Fmt.Reset)
+		Errorf("  %sAccount '%s' not found%s", Fmt.Red, slug, Fmt.Reset)
 		return
 	}
 
@@ -517,9 +511,9 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 			cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 			saveBalanceCache(cache)
 		} else if err != nil {
-			fmt.Printf("  %s⚠ Failed to refresh: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to refresh: %v%s", Fmt.Yellow, err, Fmt.Reset)
 		} else {
-			fmt.Printf("  %s⚠ No live balance source for this account (provider=%s)%s\n", Fmt.Yellow, acc.Provider, Fmt.Reset)
+			Warnf("  %s⚠ No live balance source for this account (provider=%s)%s", Fmt.Yellow, acc.Provider, Fmt.Reset)
 		}
 	}
 
@@ -1136,7 +1130,7 @@ func AccountsFetchAll(args []string) (int, error) {
 		output, count, err := captureTransactionsSync(slugArgs)
 		label := acc.Slug
 		if err != nil {
-			fmt.Printf("  %s%s%s: %s✗ %v%s\n", Fmt.Bold, label, Fmt.Reset, Fmt.Red, err, Fmt.Reset)
+			Errorf("  %s%s%s: %s✗ %v%s", Fmt.Bold, label, Fmt.Reset, Fmt.Red, err, Fmt.Reset)
 			if strings.TrimSpace(output) != "" {
 				fmt.Print(output)
 			}
@@ -1151,7 +1145,7 @@ func AccountsFetchAll(args []string) (int, error) {
 	// accounts have been fetched, rather than after each account.
 	fmt.Printf("\n  %sRegenerating per-month transactions...%s\n", Fmt.Dim, Fmt.Reset)
 	if err := GenerateTransactions(args); err != nil {
-		fmt.Printf("  %s✗ generate: %v%s\n", Fmt.Red, err, Fmt.Reset)
+		Errorf("  %s✗ generate: %v%s", Fmt.Red, err, Fmt.Reset)
 	}
 	fmt.Println()
 
@@ -1380,7 +1374,7 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 	if err != nil {
 		warn := fmt.Sprintf("  %s⚠ %s: could not fetch live balance: %v%s\n", Fmt.Yellow, acc.Slug, err, Fmt.Reset)
 		if !quietOdooContext() {
-			fmt.Print(warn)
+			Warnf("%s", strings.TrimRight(warn, "\n"))
 		}
 		return 0, warn
 	}
@@ -1402,7 +1396,7 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 	if err != nil {
 		warn := fmt.Sprintf("  %s⚠ %s: could not fetch Odoo journal balance: %v%s\n", Fmt.Yellow, acc.Slug, err, Fmt.Reset)
 		if !quietOdooContext() {
-			fmt.Print(warn)
+			Warnf("%s", strings.TrimRight(warn, "\n"))
 		}
 		return live, warn
 	}
@@ -1437,7 +1431,7 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 	detail += fmt.Sprintf("    %sIf the local cache is already correct: chb odoo journals %d fix%s\n",
 		Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
 	if !quietOdooContext() {
-		fmt.Print(detail)
+		Warnf("%s", strings.TrimRight(detail, "\n"))
 	}
 	return live, detail
 }
@@ -1656,7 +1650,7 @@ func (s *syncStats) print() {
 		s.PartnersMatched, s.PartnersCreated, s.PartnersSkipped)
 	if len(s.Ambiguous) > 0 {
 		for _, a := range s.Ambiguous {
-			fmt.Printf("      %s⚠ %s%s\n", Fmt.Yellow, a, Fmt.Reset)
+			Warnf("      %s⚠ %s%s", Fmt.Yellow, a, Fmt.Reset)
 		}
 	}
 	fmt.Printf("    Reconciled:     %d, %d internal transfer(s), %d ambiguous\n",
@@ -1667,7 +1661,7 @@ func (s *syncStats) print() {
 	}
 	if len(s.ReconcileDetails) > 0 {
 		for _, detail := range s.ReconcileDetails {
-			fmt.Printf("      %s⚠ %s%s\n", Fmt.Yellow, detail, Fmt.Reset)
+			Warnf("      %s⚠ %s%s", Fmt.Yellow, detail, Fmt.Reset)
 		}
 	}
 	hasStripeBreakdown := s.Charges > 0 || s.Refunds > 0 || s.ChargeFees > 0 || s.StripeFees > 0 || math.Abs(s.PayoutsTotal) > 0.005
@@ -1846,7 +1840,7 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 		return nil
 	}
 
-	fmt.Printf("  %s⚠ This will delete %d statement lines from journal '%s'%s\n", Fmt.Yellow, count, journalName, Fmt.Reset)
+	Warnf("  %s⚠ This will delete %d statement lines from journal '%s'%s", Fmt.Yellow, count, journalName, Fmt.Reset)
 	fmt.Printf("  %sType 'yes' to confirm: %s", Fmt.Bold, Fmt.Reset)
 	reader := bufio.NewReader(os.Stdin)
 	confirm, _ := reader.ReadString('\n')
@@ -1910,7 +1904,7 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 					"account.move.line", "remove_move_reconcile",
 					[]interface{}{reconIDsIface}, nil)
 				if err != nil {
-					fmt.Printf("  %s⚠ Failed to unreconcile some lines: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+					Warnf("  %s⚠ Failed to unreconcile some lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
 				}
 			}
 		}
@@ -1920,7 +1914,7 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 			"account.move", "button_draft",
 			[]interface{}{moveIDsIface}, nil)
 		if err != nil {
-			fmt.Printf("  %s⚠ Failed to reset moves to draft: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to reset moves to draft: %v%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 
 		// Step 3: Delete the moves (this cascades to delete statement lines)
@@ -1928,7 +1922,7 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 			"account.move", "unlink",
 			[]interface{}{moveIDsIface}, nil)
 		if err != nil {
-			fmt.Printf("  %s⚠ Failed to delete moves: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to delete moves: %v%s", Fmt.Yellow, err, Fmt.Reset)
 			// Fall back to trying to delete statement lines directly
 			lineIDs := make([]interface{}, len(lines))
 			for i, l := range lines {
@@ -2516,7 +2510,7 @@ func printAccountSlugHelp(slug string) {
 		}
 	}
 	if acc == nil {
-		fmt.Fprintf(os.Stderr, "%sAccount '%s' not found%s\n", f.Red, slug, f.Reset)
+		Errorf("%sAccount '%s' not found%s", f.Red, slug, f.Reset)
 		return
 	}
 

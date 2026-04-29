@@ -166,7 +166,7 @@ func TransactionsSync(args []string) (int, error) {
 				apiKey = os.Getenv("GNOSISSCAN_API_KEY")
 			}
 			if apiKey == "" {
-				fmt.Printf("%s⚠ ETHERSCAN_API_KEY not set, skipping blockchain sync%s\n", Fmt.Yellow, Fmt.Reset)
+				Warnf("%s⚠ ETHERSCAN_API_KEY not set, skipping blockchain sync%s", Fmt.Yellow, Fmt.Reset)
 			} else {
 				fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
 				for _, acc := range etherscanAccounts {
@@ -198,7 +198,7 @@ func TransactionsSync(args []string) (int, error) {
 
 					transfers, err := fetchTokenTransfers(acc, apiKey)
 					if err != nil {
-						fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+						Errorf("    %s✗ Error: %v%s", Fmt.Red, err, Fmt.Reset)
 						continue
 					}
 
@@ -243,7 +243,7 @@ func TransactionsSync(args []string) (int, error) {
 
 						data, _ := json.MarshalIndent(cache, "", "  ")
 						if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
-							fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							Errorf("    %s✗ Failed to write: %v%s", Fmt.Red, err, Fmt.Reset)
 							continue
 						}
 
@@ -276,7 +276,7 @@ func TransactionsSync(args []string) (int, error) {
 						}
 						txMeta, addrMeta, nostrErr := FetchNostrMetadata(acc.ChainID, txHashes, addresses, nostrSince)
 						if nostrErr != nil {
-							fmt.Printf(" %s✗ %v%s\n", Fmt.Red, nostrErr, Fmt.Reset)
+							Errorf(" %s✗ %v%s", Fmt.Red, nostrErr, Fmt.Reset)
 						} else {
 							fmt.Printf(" %s✓ %d tx, %d address annotations%s\n", Fmt.Green, len(txMeta), len(addrMeta), Fmt.Reset)
 							// Collect affected months to write per-month nostr-metadata.json
@@ -334,7 +334,7 @@ func TransactionsSync(args []string) (int, error) {
 		if len(stripeAccounts) > 0 {
 			stripeKey := os.Getenv("STRIPE_SECRET_KEY")
 			if stripeKey == "" {
-				fmt.Printf("\n%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe sync%s\n", Fmt.Yellow, Fmt.Reset)
+				Warnf("%s⚠ STRIPE_SECRET_KEY not set, skipping Stripe sync%s", Fmt.Yellow, Fmt.Reset)
 			} else {
 				fmt.Printf("\n%s💳 Source: stripe%s\n", Fmt.Bold, Fmt.Reset)
 				fmt.Printf("%sFiles: %s, %s, %s%s\n\n", Fmt.Dim, stripesource.BalanceTransactionsFile, stripesource.ChargesFile, stripesource.CustomersFile, Fmt.Reset)
@@ -385,7 +385,7 @@ func TransactionsSync(args []string) (int, error) {
 						Progress:            printSourceProgress,
 					})
 					if err != nil {
-						fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+						Errorf("    %s✗ Error: %v%s", Fmt.Red, err, Fmt.Reset)
 						continue
 					}
 
@@ -443,9 +443,9 @@ func TransactionsSync(args []string) (int, error) {
 						}
 
 						relPath := stripesource.RelPath(stripesource.BalanceTransactionsFile)
-						fmt.Printf("    %s%s: writing %s (%d tx)%s\n", Fmt.Dim, ym, relPath, len(monthTxs), Fmt.Reset)
+						fmt.Printf("    %sWriting %s (%d tx)%s\n", Fmt.Dim, displayMonthRelPath(year, month, relPath), len(monthTxs), Fmt.Reset)
 						if err := stripesource.WriteJSON(dataDir, year, month, cache, stripesource.BalanceTransactionsFile); err != nil {
-							fmt.Printf("    %s✗ Failed to write Stripe source data: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							Errorf("    %s✗ Failed to write Stripe source data: %v%s", Fmt.Red, err, Fmt.Reset)
 							continue
 						}
 
@@ -509,7 +509,7 @@ func TransactionsSync(args []string) (int, error) {
 					fmt.Printf("    %sstripe: fetching %d charge id(s)%s\n", Fmt.Dim, len(chargeIDs), Fmt.Reset)
 					charges, err := stripesource.FetchChargesWithProgress(stripeKey, acc.AccountID, chargeIDs, printSourceProgress)
 					if err != nil {
-						fmt.Printf("    %s✗ %v%s\n", Fmt.Red, err, Fmt.Reset)
+						Errorf("    %s✗ %v%s", Fmt.Red, err, Fmt.Reset)
 					} else {
 						fmt.Printf("    %s✓ fetched %d Stripe charge record(s)%s\n", Fmt.Green, len(charges), Fmt.Reset)
 
@@ -547,7 +547,7 @@ func TransactionsSync(args []string) (int, error) {
 							if len(monthCharges) > 0 {
 								parts := strings.Split(ym, "-")
 								if len(parts) == 2 {
-									fmt.Printf("    %s%s: writing %s (%d charges)%s\n", Fmt.Dim, ym, stripesource.RelPath(stripesource.ChargesFile), len(monthCharges), Fmt.Reset)
+									fmt.Printf("    %sWriting %s (%d charges)%s\n", Fmt.Dim, displayMonthRelPath(parts[0], parts[1], stripesource.RelPath(stripesource.ChargesFile)), len(monthCharges), Fmt.Reset)
 									_ = stripesource.SaveChargeData(DataDir(), parts[0], parts[1], monthCharges, refundToCharge)
 								}
 							}
@@ -575,7 +575,7 @@ func TransactionsSync(args []string) (int, error) {
 							if len(customers.Customers) > 0 {
 								parts := strings.Split(ym, "-")
 								if len(parts) == 2 {
-									fmt.Printf("    %s%s: writing %s (%d customers)%s\n", Fmt.Dim, ym, stripesource.RelPath(stripesource.CustomersFile), len(customers.Customers), Fmt.Reset)
+									fmt.Printf("    %sWriting %s (%d customers)%s\n", Fmt.Dim, displayMonthRelPath(parts[0], parts[1], stripesource.RelPath(stripesource.CustomersFile)), len(customers.Customers), Fmt.Reset)
 									_ = stripesource.WriteJSON(DataDir(), parts[0], parts[1], customers, stripesource.CustomersFile)
 								}
 							}
@@ -619,20 +619,20 @@ func TransactionsSync(args []string) (int, error) {
 			}
 
 			if clientID == "" || clientSecret == "" {
-				fmt.Printf("\n%s⚠ MONERIUM_CLIENT_ID/MONERIUM_CLIENT_SECRET not set, skipping Monerium sync%s\n", Fmt.Yellow, Fmt.Reset)
+				Warnf("%s⚠ MONERIUM_CLIENT_ID/MONERIUM_CLIENT_SECRET not set, skipping Monerium sync%s", Fmt.Yellow, Fmt.Reset)
 			} else {
 				fmt.Printf("\n%s🏦 Syncing Monerium orders%s\n\n", Fmt.Bold, Fmt.Reset)
 
 				token, err := authenticateMonerium(clientID, clientSecret, moneriumEnv)
 				if err != nil {
-					fmt.Printf("  %s✗ Auth failed: %v%s\n", Fmt.Red, err, Fmt.Reset)
+					Errorf("  %s✗ Auth failed: %v%s", Fmt.Red, err, Fmt.Reset)
 				} else {
 					for _, acc := range moneriumAccounts {
 						fmt.Printf("  %s%s%s (%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Address)
 
 						orders, err := fetchMoneriumOrders(token, acc.Address, moneriumEnv)
 						if err != nil {
-							fmt.Printf("    %s✗ Error: %v%s\n", Fmt.Red, err, Fmt.Reset)
+							Errorf("    %s✗ Error: %v%s", Fmt.Red, err, Fmt.Reset)
 							continue
 						}
 
@@ -689,7 +689,7 @@ func TransactionsSync(args []string) (int, error) {
 
 							data, _ := json.MarshalIndent(cache, "", "  ")
 							if err := writeMonthFile(dataDir, year, month, relPath, data); err != nil {
-								fmt.Printf("    %s✗ Failed to write: %v%s\n", Fmt.Red, err, Fmt.Reset)
+								Errorf("    %s✗ Failed to write: %v%s", Fmt.Red, err, Fmt.Reset)
 								continue
 							}
 

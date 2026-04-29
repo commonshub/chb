@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
@@ -11,9 +10,25 @@ import (
 // VERSION is injected at release build time via ldflags.
 var VERSION string
 
+func exitWithError(err error) {
+	cmd.Errorf("%sError:%s %v", cmd.Fmt.Red, cmd.Fmt.Reset, err)
+	exitAfterDiagnostics()
+}
+
+func exitWithUsage(format string, args ...interface{}) {
+	cmd.Errorf(format, args...)
+	exitAfterDiagnostics()
+}
+
+func exitAfterDiagnostics() {
+	cmd.ExitWithDiagnostics(1)
+}
+
 func main() {
 	cmd.Version = cmd.ResolveVersion(VERSION)
 	cmd.LoadEnvFromConfig()
+	defer cmd.CloseDiagnosticsLog()
+	defer cmd.PrintDiagnosticsSummary()
 
 	args := os.Args[1:]
 
@@ -24,8 +39,7 @@ func main() {
 
 	if needsWritableDataDir(args) {
 		if _, err := cmd.EnsureWritableDataDir(); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	}
 
@@ -37,31 +51,26 @@ func main() {
 	case "setup":
 		if len(args) > 1 && args[1] == "nostr" {
 			if err := cmd.SetupNostr(); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else if len(args) > 1 && args[1] == "odoo" {
 			if err := cmd.SetupOdoo(); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else {
 			if err := cmd.Setup(); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		}
 	case "update":
 		yes := cmd.HasFlag(args[1:], "--yes", "-y")
 		if err := cmd.Update(yes); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	case "events":
 		if len(args) > 1 && args[1] == "sync" {
 			if err := cmd.EventsSync(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else if len(args) > 1 && args[1] == "stats" {
 			cmd.EventsStats(args[2:])
@@ -73,8 +82,7 @@ func main() {
 	case "bookings":
 		if len(args) > 1 && args[1] == "sync" {
 			if err := cmd.BookingsSync(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else if len(args) > 1 && args[1] == "stats" {
 			cmd.BookingsStats(args[2:])
@@ -98,20 +106,17 @@ func main() {
 		switch {
 		case hasSyncNostr:
 			if err := cmd.TransactionsSyncNostr(txArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case txSubcmd == "sync":
 			if _, err := cmd.TransactionsSync(txArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case txSubcmd == "categorize":
 			cmd.TransactionsCategorize(txArgs)
 		case txSubcmd == "publish":
 			if err := cmd.TransactionsPublish(txArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case txSubcmd == "stats":
 			cmd.TransactionsStats(txArgs)
@@ -127,28 +132,23 @@ func main() {
 		case "sync", "help", "--help", "-h":
 			if len(args) > 2 && args[2] == "nostr" {
 				if err := cmd.InvoicesSyncNostr(args[3:]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-					os.Exit(1)
+					exitWithError(err)
 				}
 				return
 			}
 			if _, err := cmd.InvoicesSync(args[1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "categorize":
 			if err := cmd.InvoicesCategorize(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "publish":
 			if err := cmd.InvoicesPublish(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		default:
-			fmt.Fprintf(os.Stderr, "%sUsage: chb invoices [sync|categorize|publish] [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			exitWithUsage("%sUsage: chb invoices [sync|categorize|publish] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "bills":
 		billSub := ""
@@ -159,60 +159,49 @@ func main() {
 		case "sync", "help", "--help", "-h":
 			if len(args) > 2 && args[2] == "nostr" {
 				if err := cmd.BillsSyncNostr(args[3:]); err != nil {
-					fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-					os.Exit(1)
+					exitWithError(err)
 				}
 				return
 			}
 			if _, err := cmd.BillsSync(args[1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "categorize":
 			if err := cmd.BillsCategorize(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "publish":
 			if err := cmd.BillsPublish(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		default:
-			fmt.Fprintf(os.Stderr, "%sUsage: chb bills [sync|categorize|publish] [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			exitWithUsage("%sUsage: chb bills [sync|categorize|publish] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "messages":
 		if len(args) > 1 && args[1] == "sync" {
 			if _, err := cmd.MessagesSync(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else if len(args) > 1 && args[1] == "stats" {
 			cmd.MessagesStats(args[2:])
 		} else {
-			fmt.Fprintf(os.Stderr, "%sUsage: chb messages [sync|stats]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			exitWithUsage("%sUsage: chb messages [sync|stats]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "images":
 		if len(args) > 1 && (args[1] == "sync" || args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
 			if _, err := cmd.ImagesSync(args[1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "%sUsage: chb images sync [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			exitWithUsage("%sUsage: chb images sync [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "attachments":
 		if len(args) > 1 && (args[1] == "sync" || args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
 			if _, err := cmd.AttachmentsSync(args[1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "%sUsage: chb attachments sync [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			exitWithUsage("%sUsage: chb attachments sync [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "generate":
 		sub := ""
@@ -234,14 +223,12 @@ func main() {
 			genErr = cmd.Generate(rest)
 		}
 		if genErr != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, genErr)
-			os.Exit(1)
+			exitWithError(genErr)
 		}
 	case "members":
 		if len(args) > 1 && args[1] == "sync" {
 			if err := cmd.MembersSync(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else {
 			cmd.MembersStats(args[1:])
@@ -255,8 +242,7 @@ func main() {
 		case "sync":
 			// Meta-command: run invoices + bills + journals sync in order.
 			if err := cmd.OdooSyncAll(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "categories":
 			// Back-compat: what `chb odoo sync` used to be.
@@ -265,8 +251,7 @@ func main() {
 				catArgs = catArgs[1:]
 			}
 			if _, err := cmd.OdooAnalyticSync(catArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "invoices":
 			invArgs := args[2:]
@@ -274,8 +259,7 @@ func main() {
 				invArgs = invArgs[1:]
 			}
 			if _, err := cmd.InvoicesSync(invArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "bills":
 			billArgs := args[2:]
@@ -283,18 +267,15 @@ func main() {
 				billArgs = billArgs[1:]
 			}
 			if _, err := cmd.BillsSync(billArgs); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "journals":
 			if err := cmd.OdooJournals(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		case "backup":
 			if err := cmd.OdooBackup(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		default:
 			cmd.PrintOdooHelp()
@@ -302,12 +283,10 @@ func main() {
 	case "nostr":
 		if len(args) > 1 && args[1] == "sync" {
 			if err := cmd.NostrSync(args[2:]); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-				os.Exit(1)
+				exitWithError(err)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "%sUsage: chb nostr sync <scope> [options]%s\n", cmd.Fmt.Yellow, cmd.Fmt.Reset)
-			os.Exit(1)
+			exitWithUsage("%sUsage: chb nostr sync <scope> [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "rules":
 		cmd.RulesCommand(args[1:])
@@ -317,28 +296,24 @@ func main() {
 		cmd.Stats(args[1:])
 	case "doctor":
 		if err := cmd.Doctor(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	case "tools":
 		if err := cmd.Tools(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	case "sync":
 		if err := cmd.SyncAll(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	case "report":
 		if err := cmd.Report(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError:%s %v\n", cmd.Fmt.Red, cmd.Fmt.Reset, err)
-			os.Exit(1)
+			exitWithError(err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "%sUnknown command: %s%s\n\n", cmd.Fmt.Red, args[0], cmd.Fmt.Reset)
+		cmd.Errorf("%sUnknown command: %s%s", cmd.Fmt.Red, args[0], cmd.Fmt.Reset)
 		cmd.PrintHelp(cmd.Version)
-		os.Exit(1)
+		exitAfterDiagnostics()
 	}
 }
 

@@ -44,7 +44,7 @@ func ImagesSync(args []string) (int, error) {
 	fmt.Printf("%sDATA_DIR: %s%s\n", Fmt.Dim, dataDir, Fmt.Reset)
 
 	if discordToken == "" {
-		fmt.Printf("%s⚠ DISCORD_BOT_TOKEN not set — skipping Discord image downloads%s\n", Fmt.Yellow, Fmt.Reset)
+		Warnf("%s⚠ DISCORD_BOT_TOKEN not set — skipping Discord image downloads%s", Fmt.Yellow, Fmt.Reset)
 	}
 
 	// Determine time range
@@ -53,7 +53,7 @@ func ImagesSync(args []string) (int, error) {
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
-		fmt.Println("⚠️  No data found. Run sync first.")
+		Warnf("%s⚠ No data found. Run sync first.%s", Fmt.Yellow, Fmt.Reset)
 		return 0, nil
 	}
 
@@ -121,7 +121,7 @@ func syncDiscordImages(dataDir, year, month, label, token string, force bool) (d
 		outPath := resolveDiscordImagePath(dataDir, year, month, img)
 		imagesDir := filepath.Dir(outPath)
 		if err := mkdirAllManagedData(imagesDir); err != nil {
-			fmt.Printf("  %s⚠ Failed to create %s: %v%s\n", Fmt.Yellow, imagesDir, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to create %s: %v%s", Fmt.Yellow, imagesDir, err, Fmt.Reset)
 			continue
 		}
 
@@ -139,7 +139,7 @@ func syncDiscordImages(dataDir, year, month, label, token string, force bool) (d
 
 		outPath = filepath.Join(imagesDir, img.ID+ext)
 		if err := downloadFile(attachmentURL, outPath); err != nil {
-			fmt.Printf("  %s⚠ Failed to download %s: %v%s\n", Fmt.Yellow, img.ID, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to download %s: %v%s", Fmt.Yellow, img.ID, err, Fmt.Reset)
 			continue
 		}
 
@@ -316,7 +316,7 @@ func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResul
 
 		for _, res := range downloadEventCoverTasks(tasks, workerCount) {
 			if res.Err != nil {
-				fmt.Printf("  %s⚠ Failed to download cover for %s: %v%s\n", Fmt.Yellow, eventsFile.Events[res.Index].ID, res.Err, Fmt.Reset)
+				Warnf("  %s⚠ Failed to download cover for %s: %v%s", Fmt.Yellow, eventsFile.Events[res.Index].ID, res.Err, Fmt.Reset)
 				continue
 			}
 			if res.Downloaded {
