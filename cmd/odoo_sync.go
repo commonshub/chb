@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/sources/odoo"
 )
 
 // OdooCredentials holds resolved Odoo connection info.
@@ -18,7 +19,7 @@ type OdooCredentials struct {
 	Password string
 }
 
-// ResolveOdooCredentials returns Odoo credentials from env vars (set in APP_DATA_DIR/config.env).
+// ResolveOdooCredentials returns Odoo credentials from env vars (set in APP_DATA_DIR/settings/config.env).
 // Database is derived from the ODOO_URL hostname unless ODOO_DATABASE is set.
 func ResolveOdooCredentials() (*OdooCredentials, error) {
 	creds := &OdooCredentials{
@@ -29,7 +30,7 @@ func ResolveOdooCredentials() (*OdooCredentials, error) {
 	}
 
 	if creds.URL == "" || creds.Login == "" || creds.Password == "" {
-		return nil, fmt.Errorf("ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set (check APP_DATA_DIR/config.env)")
+		return nil, fmt.Errorf("ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set (check APP_DATA_DIR/settings/config.env)")
 	}
 
 	if creds.DB == "" {
@@ -311,7 +312,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 			Mappings:  monthMappings,
 		}
 		data, _ := json.MarshalIndent(enrichment, "", "  ")
-		relPath := filepath.Join("finance", "odoo", "analytic-enrichment.json")
+		relPath := odoosource.RelPath(odoosource.AnalyticEnrichmentFile)
 		writeMonthFile(dataDir, parts[0], parts[1], relPath, data)
 		saved++
 	}
@@ -1028,7 +1029,8 @@ func PrintOdooHelp() {
 	fmt.Printf("  %s%schb odoo journals <id>%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sShow journal details (statements, line counts)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> sync%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n", f.Dim, f.Reset)
+	fmt.Printf("    %sUse --skip-reconciliation for fast imports; reconcile later with `chb odoo journals <id> reconcile`%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> check%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> fix%s\n", f.Bold, f.Cyan, f.Reset)

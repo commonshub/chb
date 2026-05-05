@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	etherscansource "github.com/CommonsHub/chb/sources/etherscan"
 	stripesource "github.com/CommonsHub/chb/sources/stripe"
 )
 
@@ -26,6 +27,18 @@ type accountSummary struct {
 	LastTxAt        time.Time
 	TxCount         int
 	InternalTxCount int
+}
+
+type accountTotals struct {
+	Currency          string
+	TxCount           int
+	GrossIncome       float64
+	TotalPaidOut      float64
+	TxFees            float64
+	OtherFees         float64
+	InternalTransfers float64
+	CurrentBalance    float64
+	LastTxAt          time.Time
 }
 
 // fetchTokenBalance fetches the live on-chain token balance. It prefers
@@ -358,6 +371,172 @@ func computeAccountSummaries() map[string]*accountSummary {
 	return summaries
 }
 
+func computeAccountTotals(acc *AccountConfig) *accountTotals {
+	if acc == nil {
+		return nil
+	}
+	if acc.Provider == "stripe" {
+		txs, err := stripesource.LoadTransactions(DataDir(), acc.AccountID)
+		if err == nil && len(txs) > 0 {
+			currency := acc.Currency
+			if currency == "" {
+				currency = "EUR"
+			}
+			return accountTotalsFromStripeTransactions(txs, currency)
+		}
+	}
+	return accountTotalsFromGeneratedTransactions(acc, loadAccountTransactionsWithOptions(acc, true))
+}
+
+func accountTotalsFromStripeTransactions(txs []stripesource.Transaction, currency string) *accountTotals {
+	if len(txs) == 0 {
+		return nil
+	}
+	if currency == "" {
+		currency = strings.ToUpper(txs[0].Currency)
+	}
+	if currency == "" {
+		currency = "EUR"
+	}
+	totals := &accountTotals{Currency: strings.ToUpper(currency)}
+	for _, tx := range txs {
+		totals.TxCount++
+		totals.CurrentBalance += centsToEuros(tx.Net)
+		if tx.Created > 0 {
+			t := time.Unix(tx.Created, 0)
+			if t.After(totals.LastTxAt) {
+				totals.LastTxAt = t
+			}
+		}
+		switch tx.Type {
+		case "charge", "payment":
+			totals.GrossIncome += centsToEuros(tx.Amount)
+			totals.TxFees += centsToEuros(tx.Fee)
+		case "refund", "payment_refund":
+			totals.TotalPaidOut += centsToEuros(-tx.Amount)
+			totals.TxFees += centsToEuros(tx.Fee)
+		case "stripe_fee", "adjustment":
+			totals.OtherFees += centsToEuros(-tx.Amount)
+		case "payout", "payout_cancel":
+			totals.InternalTransfers += centsToEuros(-tx.Amount)
+		}
+	}
+	roundAccountTotals(totals)
+	return totals
+}
+
+func accountTotalsFromGeneratedTransactions(acc *AccountConfig, txs []TransactionEntry) *accountTotals {
+	if len(txs) == 0 {
+		return nil
+	}
+	currency := acc.Currency
+	if currency == "" && acc.Token != nil {
+		currency = acc.Token.Symbol
+	}
+	if currency == "" {
+		currency = txs[0].Currency
+	}
+	if currency == "" {
+		currency = "EUR"
+	}
+	totals := &accountTotals{Currency: strings.ToUpper(currency)}
+	for _, tx := range txs {
+		if tx.Currency != "" && currency != "" && !strings.EqualFold(tx.Currency, currency) {
+			continue
+		}
+		totals.TxCount++
+		if tx.Timestamp > 0 {
+			t := time.Unix(tx.Timestamp, 0)
+			if t.After(totals.LastTxAt) {
+				totals.LastTxAt = t
+			}
+		}
+
+		amount := tx.NormalizedAmount
+		if amount == 0 {
+			amount = tx.Amount
+		}
+		gross := tx.GrossAmount
+		if gross == 0 {
+			gross = math.Abs(amount)
+		}
+		totals.CurrentBalance += signedAccountTransactionAmount(acc, tx)
+
+		switch tx.Type {
+		case "INTERNAL":
+			switch internalTransactionDirection(acc, tx) {
+			case "DEBIT":
+				totals.InternalTransfers += math.Abs(amount)
+			case "CREDIT":
+				totals.InternalTransfers -= math.Abs(amount)
+			}
+		case "CREDIT":
+			totals.GrossIncome += math.Abs(gross)
+			totals.TxFees += tx.Fee
+		case "DEBIT":
+			if accountTransactionLooksLikeFee(tx) {
+				totals.OtherFees += math.Abs(amount)
+			} else {
+				totals.TotalPaidOut += math.Abs(gross)
+				totals.TxFees += tx.Fee
+			}
+		}
+	}
+	if totals.TxCount == 0 {
+		return nil
+	}
+	roundAccountTotals(totals)
+	return totals
+}
+
+func signedAccountTransactionAmount(acc *AccountConfig, tx TransactionEntry) float64 {
+	amount := tx.NormalizedAmount
+	if amount == 0 {
+		amount = tx.Amount
+	}
+	switch tx.Type {
+	case "INTERNAL":
+		if internalTransactionDirection(acc, tx) == "DEBIT" {
+			return -math.Abs(amount)
+		}
+		return math.Abs(amount)
+	case "DEBIT":
+		return -math.Abs(amount)
+	case "CREDIT":
+		return math.Abs(amount)
+	default:
+		return amount
+	}
+}
+
+func accountTransactionLooksLikeFee(tx TransactionEntry) bool {
+	if strings.EqualFold(tx.Category, "fee") {
+		return true
+	}
+	if tx.Metadata != nil {
+		for _, key := range []string{"category", "stripe_reporting_category"} {
+			if value, ok := tx.Metadata[key].(string); ok && strings.EqualFold(value, "fee") {
+				return true
+			}
+		}
+	}
+	for _, tag := range tx.Tags {
+		if len(tag) >= 2 && strings.EqualFold(tag[0], "category") && strings.EqualFold(tag[1], "fee") {
+			return true
+		}
+	}
+	return false
+}
+
+func roundAccountTotals(t *accountTotals) {
+	t.GrossIncome = roundCents(t.GrossIncome)
+	t.TotalPaidOut = roundCents(t.TotalPaidOut)
+	t.TxFees = roundCents(t.TxFees)
+	t.OtherFees = roundCents(t.OtherFees)
+	t.InternalTransfers = roundCents(t.InternalTransfers)
+	t.CurrentBalance = roundCents(t.CurrentBalance)
+}
+
 // accountKey returns the lookup key for an account in the summaries map.
 func accountKey(acc FinanceAccount) string {
 	if acc.Address != "" {
@@ -486,6 +665,7 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 		Slug:      acc.Slug,
 	}
 	s := summaries[accountKey(fa)]
+	totals := computeAccountTotals(acc)
 
 	currency := acc.Currency
 	if currency == "" && acc.Token != nil {
@@ -530,7 +710,7 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 			if v, ok := cache.Balances[strings.ToLower(key)]; ok {
 				balance = v
 				hasBalance = true
-				balanceSource = "on-chain (cached " + cache.FetchedAt + ")"
+				balanceSource = accountBalanceSourceLabel(acc.Provider, cache.FetchedAt)
 				break
 			}
 		}
@@ -549,11 +729,14 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 			Fmt.Dim, Fmt.Reset, formatBalance(balance, currency),
 			Fmt.Dim, balanceSource, Fmt.Reset)
 	}
-	if s != nil && s.TxCount > 0 {
+	if totals == nil && s != nil && s.TxCount > 0 {
 		fmt.Printf("  %sTxs:        %d%s\n", Fmt.Dim, s.TxCount, Fmt.Reset)
 	}
-	if s != nil && s.InternalTxCount > 0 {
+	if totals == nil && s != nil && s.InternalTxCount > 0 {
 		fmt.Printf("  %sInternal:   %d%s\n", Fmt.Dim, s.InternalTxCount, Fmt.Reset)
+	}
+	if totals != nil {
+		printAccountTotals(totals)
 	}
 	if s != nil && !s.LastTxAt.IsZero() {
 		fmt.Printf("  %sLast tx:    %s  %s(%s)%s\n", Fmt.Dim, s.LastTxAt.In(BrusselsTZ()).Format("2006-01-02 15:04"), Fmt.Dim, formatTimeAgo(s.LastTxAt), Fmt.Reset)
@@ -567,6 +750,31 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	if acc.OdooJournalID > 0 {
 		fmt.Printf("  %sOdoo:       %s (journal #%d)%s\n", Fmt.Dim, acc.OdooJournalName, acc.OdooJournalID, Fmt.Reset)
 	}
+}
+
+func accountBalanceSourceLabel(provider, fetchedAt string) string {
+	source := "live"
+	switch provider {
+	case "stripe":
+		source = "Stripe API"
+	case "etherscan":
+		source = "on-chain"
+	}
+	if fetchedAt == "" {
+		return source
+	}
+	return source + " (cached " + fetchedAt + ")"
+}
+
+func printAccountTotals(totals *accountTotals) {
+	fmt.Printf("  %sSummary:%s\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("    %sTransactions:       %d%s\n", Fmt.Dim, totals.TxCount, Fmt.Reset)
+	fmt.Printf("    %sGross income:       %s%s\n", Fmt.Dim, formatBalancePlain(totals.GrossIncome, totals.Currency), Fmt.Reset)
+	fmt.Printf("    %sTotal paid out:     %s%s\n", Fmt.Dim, formatBalancePlain(totals.TotalPaidOut, totals.Currency), Fmt.Reset)
+	fmt.Printf("    %sTx fees:            %s%s\n", Fmt.Dim, formatBalancePlain(totals.TxFees, totals.Currency), Fmt.Reset)
+	fmt.Printf("    %sOther fees:         %s%s\n", Fmt.Dim, formatBalancePlain(totals.OtherFees, totals.Currency), Fmt.Reset)
+	fmt.Printf("    %sInternal transfers: %s%s\n", Fmt.Dim, formatBalancePlain(totals.InternalTransfers, totals.Currency), Fmt.Reset)
+	fmt.Printf("    %sCurrent balance:    %s%s\n", Fmt.Dim, formatBalancePlain(totals.CurrentBalance, totals.Currency), Fmt.Reset)
 }
 
 // AccountJSON is the machine-readable shape of an account row, used by
@@ -1244,6 +1452,7 @@ func AccountOdooPush(slug string, args []string) error {
 
 	dryRun := HasFlag(args, "--dry-run")
 	force := HasFlag(args, "--force")
+	skipReconciliation := HasFlag(args, "--skip-reconciliation")
 	payoutFilter := GetOption(args, "--payout")
 	untilStr := GetOption(args, "--until")
 
@@ -1305,9 +1514,9 @@ func AccountOdooPush(slug string, args []string) error {
 	var syncErr error
 	var summary string
 	if acc.Provider == "stripe" {
-		summary, syncErr = syncStripeToOdoo(acc, creds, uid, monthsLimit, dryRun, force, payoutFilter, untilDate)
+		summary, syncErr = syncStripeToOdoo(acc, creds, uid, monthsLimit, dryRun, force, skipReconciliation, payoutFilter, untilDate)
 	} else {
-		summary, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, untilDate)
+		summary, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, skipReconciliation, untilDate)
 	}
 
 	label := fmt.Sprintf("%s → journal #%d", acc.Slug, acc.OdooJournalID)
@@ -1330,7 +1539,7 @@ func AccountOdooPush(slug string, args []string) error {
 			if currency == "" {
 				currency = "EUR"
 			}
-			fmt.Printf("  %sbalance: %s%s\n", Fmt.Dim, formatBalance(live, currency), Fmt.Reset)
+			fmt.Printf("  %slive %s balance: %s%s\n", Fmt.Dim, accountLiveBalanceLabel(acc), formatBalance(live, currency), Fmt.Reset)
 		}
 	}
 
@@ -1429,6 +1638,22 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 	return live, detail
 }
 
+func accountLiveBalanceLabel(acc *AccountConfig) string {
+	if acc == nil {
+		return "source"
+	}
+	switch {
+	case acc.Provider == "stripe":
+		return "Stripe API"
+	case acc.Provider == "etherscan" && acc.Token != nil:
+		return fmt.Sprintf("on-chain %s/%s", acc.Chain, acc.Token.Symbol)
+	case acc.Provider != "":
+		return acc.Provider
+	default:
+		return "source"
+	}
+}
+
 // odooJournalLineCount returns the number of statement lines on the journal.
 // Returns 0 on error.
 func odooJournalLineCount(creds *OdooCredentials, uid int, journalID int) int {
@@ -1472,7 +1697,7 @@ func odooJournalLineSum(creds *OdooCredentials, uid int, journalID int) (float64
 }
 
 // syncBlockchainToOdoo syncs blockchain/monerium transactions to Odoo (no statements, just lines).
-func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun bool, untilDate time.Time) (string, error) {
+func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun bool, skipReconciliation bool, untilDate time.Time) (string, error) {
 	localTxs := loadAccountTransactionsForOdoo(acc)
 	if monthsLimit > 0 {
 		cutoff := time.Now().AddDate(0, -monthsLimit, 0)
@@ -1584,7 +1809,10 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 			continue
 		}
 		createdIDs := parseOdooCreatedIDs(result)
-		if tx.Type == "INTERNAL" {
+		if skipReconciliation {
+			// Caller requested a fast import only; reconciliation can be run later
+			// with `chb odoo journals <id> reconcile`.
+		} else if tx.Type == "INTERNAL" {
 			markCreatedStatementLinesInternal(creds, uid, createdIDs, false, stats)
 		} else {
 			reconcileCreatedStatementLines(creds, uid, createdIDs, false, stats)
@@ -1683,9 +1911,9 @@ func (s *syncStats) print() {
 // the journal state. untilDate (if set) stops processing at that moment.
 // payoutFilter is rejected with an error (targeted-payout resync is not
 // supported in this model).
-func syncStripeToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun, force bool, payoutFilter string, untilDate time.Time) (string, error) {
+func syncStripeToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun, force bool, skipReconciliation bool, payoutFilter string, untilDate time.Time) (string, error) {
 	_ = monthsLimit
-	return syncStripeChronological(acc, creds, uid, dryRun, force, payoutFilter, untilDate)
+	return syncStripeChronological(acc, creds, uid, dryRun, force, skipReconciliation, payoutFilter, untilDate)
 }
 
 // warnInvalidStatements runs the statement invariant check and prints a warning
@@ -1702,20 +1930,48 @@ func warnInvalidStatements(creds *OdooCredentials, uid int, journalID int) {
 	fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
 }
 
-// batchCreateStatementLines creates multiple statement lines in one Odoo API call.
+// batchCreateStatementLines creates multiple statement lines through Odoo.
 // Returns the number of successfully created lines. Skips duplicates silently.
-// Falls back to one-by-one on batch failure.
+// Falls back to one-by-one on chunk failure.
 func batchCreateStatementLines(creds *OdooCredentials, uid int, lines []map[string]interface{}) (int, error) {
 	ids, err := batchCreateStatementLinesWithIDs(creds, uid, lines)
 	return len(ids), err
 }
 
 func batchCreateStatementLinesWithIDs(creds *OdooCredentials, uid int, lines []map[string]interface{}) ([]int, error) {
+	return batchCreateStatementLinesWithProgress(creds, uid, lines, "")
+}
+
+func batchCreateStatementLinesWithProgress(creds *OdooCredentials, uid int, lines []map[string]interface{}, reason string) ([]int, error) {
 	if len(lines) == 0 {
 		return nil, nil
 	}
 
-	// Convert to []interface{} for Odoo RPC
+	const chunkSize = 100
+	status := newStatusLine()
+	if !quietOdooContext() && len(lines) > chunkSize {
+		status.Update("Creating statement lines in Odoo 0/%d%s", len(lines), formatProgressReason(reason))
+		defer status.Clear()
+	}
+
+	var createdIDs []int
+	for start := 0; start < len(lines); start += chunkSize {
+		end := start + chunkSize
+		if end > len(lines) {
+			end = len(lines)
+		}
+
+		chunkIDs := createStatementLineChunk(creds, uid, lines[start:end])
+		createdIDs = append(createdIDs, chunkIDs...)
+
+		if !quietOdooContext() && len(lines) > chunkSize {
+			status.Update("Creating statement lines in Odoo %d/%d%s", end, len(lines), formatProgressReason(reason))
+		}
+	}
+	return createdIDs, nil
+}
+
+func createStatementLineChunk(creds *OdooCredentials, uid int, lines []map[string]interface{}) []int {
 	records := make([]interface{}, len(lines))
 	for i, l := range lines {
 		records[i] = l
@@ -1725,10 +1981,10 @@ func batchCreateStatementLinesWithIDs(creds *OdooCredentials, uid int, lines []m
 		"account.bank.statement.line", "create",
 		[]interface{}{records}, nil)
 	if err == nil {
-		return parseOdooCreatedIDs(result), nil
+		return parseOdooCreatedIDs(result)
 	}
 
-	// Batch failed (likely duplicate import IDs) — fall back to one-by-one
+	// Chunk failed (likely duplicate import IDs) — fall back to one-by-one.
 	var createdIDs []int
 	for _, l := range lines {
 		result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
@@ -1738,7 +1994,14 @@ func batchCreateStatementLinesWithIDs(creds *OdooCredentials, uid int, lines []m
 			createdIDs = append(createdIDs, parseOdooCreatedIDs(result)...)
 		}
 	}
-	return createdIDs, nil
+	return createdIDs
+}
+
+func formatProgressReason(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return " (" + reason + ")"
 }
 
 // createOrAdoptStatementLine creates a statement line, or if it already exists as an orphan
@@ -1842,6 +2105,10 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 		return fmt.Errorf("cancelled")
 	}
 
+	status := newStatusLine()
+	defer status.Clear()
+	status.Update("Fetching %d statement lines from journal '%s'...", count, journalName)
+
 	// Get statement lines with their moves
 	linesData, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.bank.statement.line", "search_read",
@@ -1863,6 +2130,7 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 	}
 	var lines []stmtLine
 	json.Unmarshal(linesData, &lines)
+	status.Update("Preparing %d statement lines for deletion...", len(lines))
 
 	// Step 1: Unreconcile any reconciled move lines
 	var moveIDs []int
@@ -1873,12 +2141,10 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 	}
 
 	if len(moveIDs) > 0 {
-		// Find reconciled move lines for these moves and remove reconciliation
-		moveIDsIface := make([]interface{}, len(moveIDs))
-		for i, id := range moveIDs {
-			moveIDsIface[i] = id
-		}
+		moveIDsIface := intsToInterfaces(moveIDs)
 
+		// Find reconciled move lines for these moves and remove reconciliation.
+		status.Update("Finding reconciled move lines 0/%d...", len(moveIDs))
 		reconciledLines, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			"account.move.line", "search",
 			[]interface{}{[]interface{}{
@@ -1889,41 +2155,52 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 			var reconIDs []int
 			json.Unmarshal(reconciledLines, &reconIDs)
 			if len(reconIDs) > 0 {
-				reconIDsIface := make([]interface{}, len(reconIDs))
-				for i, id := range reconIDs {
-					reconIDsIface[i] = id
-				}
-				_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-					"account.move.line", "remove_move_reconcile",
-					[]interface{}{reconIDsIface}, nil)
+				err := runOdooIDChunks(status, "Unreconciling move lines", reconIDs, 200, func(chunk []interface{}) error {
+					_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+						"account.move.line", "remove_move_reconcile",
+						[]interface{}{chunk}, nil)
+					return err
+				})
 				if err != nil {
+					status.Clear()
 					Warnf("  %s⚠ Failed to unreconcile some lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
 				}
 			}
 		}
 
 		// Step 2: Reset moves to draft
-		_, err = odooExec(creds.URL, creds.DB, uid, creds.Password,
-			"account.move", "button_draft",
-			[]interface{}{moveIDsIface}, nil)
+		err = runOdooIDChunks(status, "Resetting moves to draft", moveIDs, 200, func(chunk []interface{}) error {
+			_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "button_draft",
+				[]interface{}{chunk}, nil)
+			return err
+		})
 		if err != nil {
+			status.Clear()
 			Warnf("  %s⚠ Failed to reset moves to draft: %v%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 
 		// Step 3: Delete the moves (this cascades to delete statement lines)
-		_, err = odooExec(creds.URL, creds.DB, uid, creds.Password,
-			"account.move", "unlink",
-			[]interface{}{moveIDsIface}, nil)
+		err = runOdooIDChunks(status, "Deleting statement line moves", moveIDs, 200, func(chunk []interface{}) error {
+			_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "unlink",
+				[]interface{}{chunk}, nil)
+			return err
+		})
 		if err != nil {
+			status.Clear()
 			Warnf("  %s⚠ Failed to delete moves: %v%s", Fmt.Yellow, err, Fmt.Reset)
 			// Fall back to trying to delete statement lines directly
-			lineIDs := make([]interface{}, len(lines))
-			for i, l := range lines {
-				lineIDs[i] = l.ID
+			lineIDs := make([]int, 0, len(lines))
+			for _, l := range lines {
+				lineIDs = append(lineIDs, l.ID)
 			}
-			_, err2 := odooExec(creds.URL, creds.DB, uid, creds.Password,
-				"account.bank.statement.line", "unlink",
-				[]interface{}{lineIDs}, nil)
+			err2 := runOdooIDChunks(status, "Deleting statement lines", lineIDs, 200, func(chunk []interface{}) error {
+				_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+					"account.bank.statement.line", "unlink",
+					[]interface{}{chunk}, nil)
+				return err
+			})
 			if err2 != nil {
 				return fmt.Errorf("failed to delete statement lines: %v (move deletion also failed: %v)", err2, err)
 			}
@@ -1940,17 +2217,17 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 		var sids []int
 		json.Unmarshal(stmtIDs, &sids)
 		if len(sids) > 0 {
-			sidsIface := make([]interface{}, len(sids))
-			for i, id := range sids {
-				sidsIface[i] = id
-			}
-			odooExec(creds.URL, creds.DB, uid, creds.Password,
-				"account.bank.statement", "unlink",
-				[]interface{}{sidsIface}, nil)
+			_ = runOdooIDChunks(status, "Deleting empty statements", sids, 200, func(chunk []interface{}) error {
+				_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+					"account.bank.statement", "unlink",
+					[]interface{}{chunk}, nil)
+				return err
+			})
 		}
 	}
 
 	// Verify deletion worked
+	status.Update("Verifying journal '%s' is empty...", journalName)
 	verifyResult, _ := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.bank.statement.line", "search_count",
 		[]interface{}{[]interface{}{
@@ -1963,7 +2240,27 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, journalNam
 		return fmt.Errorf("could not delete all lines: %d of %d remain (may be reconciled or locked)", remaining, count)
 	}
 
+	status.Clear()
 	fmt.Printf("  %s✓ Emptied journal '%s' (%d lines deleted)%s\n\n", Fmt.Green, journalName, count, Fmt.Reset)
+	return nil
+}
+
+func runOdooIDChunks(status *statusLine, label string, ids []int, chunkSize int, fn func([]interface{}) error) error {
+	if chunkSize <= 0 {
+		chunkSize = len(ids)
+	}
+	total := len(ids)
+	for start := 0; start < total; start += chunkSize {
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		status.Update("%s %d/%d...", label, start, total)
+		if err := fn(intsToInterfaces(ids[start:end])); err != nil {
+			return err
+		}
+		status.Update("%s %d/%d...", label, end, total)
+	}
 	return nil
 }
 
@@ -2251,7 +2548,7 @@ func internalTransactionDirectionFromRaw(acc *AccountConfig, tx TransactionEntry
 	if chain == "" || slug == "" || currency == "" {
 		return ""
 	}
-	path := filepath.Join(DataDir(), t.Format("2006"), t.Format("01"), "finance", chain, fmt.Sprintf("%s.%s.json", slug, currency))
+	path := etherscansource.Path(DataDir(), t.Format("2006"), t.Format("01"), chain, etherscansource.FileName(slug, currency))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -2532,6 +2829,7 @@ func printAccountSlugHelp(slug string) {
 	fmt.Printf("%sOPTIONS%s (for sync)\n\n", f.Bold, f.Reset)
 	fmt.Printf("  %s--dry-run%s          Preview what would be synced\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--force%s            Re-sync (delete existing data first)\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--skip-reconciliation%s  Import lines without matching them to invoices/moves\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--until YYYYMMDD%s   Stop processing at this date\n", f.Yellow, f.Reset)
 	fmt.Println()
 

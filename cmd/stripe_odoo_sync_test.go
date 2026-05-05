@@ -76,6 +76,17 @@ func TestUpdateBTStatsUsesGrossCustomerAmounts(t *testing.T) {
 	}
 }
 
+func TestUpdateBTStatsNetsPayoutCancellations(t *testing.T) {
+	stats := &syncStats{}
+
+	updateBTStats(stats, stripesource.Transaction{Type: "payout", Amount: -6000, Net: -6000}, -60)
+	updateBTStats(stats, stripesource.Transaction{Type: "payout_cancel", Amount: 1000, Net: 1000}, 10)
+
+	if stats.PayoutsTotal != -50 {
+		t.Fatalf("PayoutsTotal = %.2f, want -50.00", stats.PayoutsTotal)
+	}
+}
+
 func TestStripeFeeAdjustmentCentsTracksCustomerTransactionFees(t *testing.T) {
 	tests := []struct {
 		name string

@@ -7,12 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	stickertable "github.com/76creates/stickers/table"
+	nostrsource "github.com/CommonsHub/chb/sources/nostr"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nbd-wtf/go-nostr"
 	overlay "github.com/rmhubbert/bubbletea-overlay"
 )
 
@@ -30,6 +33,85 @@ func txAmount(tx TransactionEntry) float64 {
 		return tx.NormalizedAmount
 	}
 	return tx.Amount
+}
+
+func txAmountCell(tx TransactionEntry, styled bool) string {
+	amt := txAmount(tx)
+	absAmt := math.Abs(amt)
+	positive := tx.Type == "CREDIT"
+	if !isEURCurrency(tx.Currency) && tx.Type == "TRANSFER" {
+		positive = true
+	}
+
+	var out string
+	if isEURCurrency(tx.Currency) {
+		if positive {
+			out = fmt.Sprintf("+€%.2f", absAmt)
+		} else {
+			out = fmt.Sprintf("-€%.2f", absAmt)
+		}
+	} else {
+		if positive {
+			out = fmt.Sprintf("+%.2f %s", absAmt, tx.Currency)
+		} else {
+			out = fmt.Sprintf("-%.2f %s", absAmt, tx.Currency)
+		}
+	}
+	if !styled {
+		return out
+	}
+	if positive {
+		return styleGreen.Render(out)
+	}
+	return styleRed.Render(out)
+}
+
+func parseTransactionAmountCell(s string) float64 {
+	sign := 1.0
+	sawSign := false
+	var b strings.Builder
+	started := false
+	inANSI := false
+	inANSICSI := false
+	for _, r := range s {
+		if inANSI {
+			if !inANSICSI && r == '[' {
+				inANSICSI = true
+				continue
+			}
+			if !inANSICSI || r >= '@' && r <= '~' {
+				inANSI = false
+				inANSICSI = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inANSI = true
+			continue
+		}
+		if !started && !sawSign && (r == '+' || r == '-') {
+			sawSign = true
+			if r == '-' {
+				sign = -1
+			}
+			continue
+		}
+		if (r >= '0' && r <= '9') || r == '.' || r == ',' {
+			started = true
+			if r != ',' {
+				b.WriteRune(r)
+			}
+			continue
+		}
+		if started {
+			break
+		}
+	}
+	v, err := strconv.ParseFloat(b.String(), 64)
+	if err != nil {
+		return 0
+	}
+	return sign * v
 }
 
 func txDisplayCounterparty(tx TransactionEntry) string {
@@ -53,6 +135,38 @@ func txDisplayDescription(tx TransactionEntry) string {
 	}
 	if tx.Provider == "stripe" {
 		return tx.Counterparty
+	}
+	return ""
+}
+
+func txDisplayCategory(tx TransactionEntry) string {
+	if tx.Category != "" {
+		return tx.Category
+	}
+	if category := firstTransactionTagValue(tx, "category"); category != "" {
+		return category
+	}
+	if tx.Metadata != nil {
+		if category, ok := tx.Metadata["category"].(string); ok && category != "" {
+			return normalizeTransactionTagSlug(category)
+		}
+	}
+	return ""
+}
+
+func txDisplayCollective(tx TransactionEntry) string {
+	if tx.Collective != "" {
+		return tx.Collective
+	}
+	if collective := firstTransactionTagValue(tx, "collective"); collective != "" {
+		return collective
+	}
+	if tx.Metadata != nil {
+		for _, key := range []string{"collective", "stripe_collective"} {
+			if collective, ok := tx.Metadata[key].(string); ok && collective != "" {
+				return normalizeTransactionTagSlug(collective)
+			}
+		}
 	}
 	return ""
 }
@@ -131,10 +245,92 @@ func loadFilteredTransactionsWithPII(f TxFilter, includePII bool) []TransactionE
 		}
 	}
 
+	all = append(all, virtualSpreadRows(dataDir, f)...)
+
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].Timestamp > all[j].Timestamp
 	})
 	return all
+}
+
+// virtualSpreadRows synthesizes one TransactionEntry per inbound-spread
+// allocation that lands in the filter's date range. They are clearly marked
+// (Metadata["virtualSource"]) so renderers can show them with a ↳ prefix and
+// edit paths can refuse to mutate them. Only emitted when the filter has a
+// bounded Since/Until — otherwise we'd flood the table.
+func virtualSpreadRows(dataDir string, f TxFilter) []TransactionEntry {
+	if f.Since.IsZero() || f.Until.IsZero() {
+		return nil
+	}
+	tz := BrusselsTZ()
+	start := f.Since.In(tz)
+	end := f.Until.In(tz)
+	if end.Before(start) {
+		return nil
+	}
+	var out []TransactionEntry
+	for cur := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, tz); !cur.After(end); cur = cur.AddDate(0, 1, 0) {
+		year := fmt.Sprintf("%04d", cur.Year())
+		month := fmt.Sprintf("%02d", cur.Month())
+		for _, in := range LoadInboundSpreads(dataDir, year, month) {
+			tx := virtualSpreadEntry(in, year, month, tz)
+			if !f.matches(tx) {
+				continue
+			}
+			out = append(out, tx)
+		}
+	}
+	return out
+}
+
+func virtualSpreadEntry(in InboundSpread, year, month string, tz *time.Location) TransactionEntry {
+	y, _ := strconv.Atoi(year)
+	mo, _ := strconv.Atoi(month)
+	ts := time.Date(y, time.Month(mo), 1, 0, 0, 0, 0, tz).Unix()
+
+	amount, _ := strconv.ParseFloat(in.Amount, 64)
+	txType := "CREDIT"
+	if amount < 0 {
+		txType = "DEBIT"
+	}
+	if in.Type != "" && (strings.EqualFold(in.Type, "DEBIT") || strings.EqualFold(in.Type, "CREDIT")) {
+		txType = strings.ToUpper(in.Type)
+	}
+
+	tx := TransactionEntry{
+		ID:               "virtual:" + in.URI + ":" + year + "-" + month,
+		TxHash:           "",
+		Provider:         "spread",
+		Account:          "",
+		AccountSlug:      "",
+		AccountName:      "",
+		Currency:         in.Currency,
+		Amount:           absFloat(amount),
+		NormalizedAmount: amount,
+		GrossAmount:      absFloat(amount),
+		Type:             txType,
+		Counterparty:     in.Counterparty,
+		Timestamp:        ts,
+		Category:         in.Category,
+		Collective:       in.Collective,
+		Metadata: map[string]interface{}{
+			"virtualSource":      true,
+			"sourceURI":          in.URI,
+			"sourceNaturalYM":    in.NaturalYM,
+			"sourceTxID":         in.TxID,
+			"spreadAllocation":   in.Amount,
+			"spreadTotal":        in.Total,
+			"description":        in.Description,
+		},
+	}
+	return tx
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func loadTransactionsFile(dataDir, year, month string, includePII bool) *TransactionsFile {
@@ -187,32 +383,15 @@ func buildStickerRows(txs []TransactionEntry) [][]string {
 	rows := make([][]string, len(txs))
 	for i, tx := range txs {
 		t := time.Unix(tx.Timestamp, 0).In(tz)
-		amt := txAmount(tx)
-		absAmt := math.Abs(amt)
-
-		var amtStr string
-		if isEURCurrency(tx.Currency) {
-			if tx.Type == "CREDIT" {
-				amtStr = styleGreen.Render(fmt.Sprintf("+€%.2f", absAmt))
-			} else {
-				amtStr = styleRed.Render(fmt.Sprintf("-€%.2f", absAmt))
-			}
-		} else {
-			if tx.Type == "CREDIT" || tx.Type == "TRANSFER" {
-				amtStr = styleGreen.Render(fmt.Sprintf("+%.2f %s", absAmt, tx.Currency))
-			} else {
-				amtStr = styleRed.Render(fmt.Sprintf("-%.2f %s", absAmt, tx.Currency))
-			}
-		}
 
 		rows[i] = []string{
 			fmt.Sprintf(" %s", t.Format("02/01")),
 			fmt.Sprintf(" %s", txSource(tx)),
-			fmt.Sprintf(" %s", tx.Collective),
-			fmt.Sprintf(" %s", tx.Category),
+			fmt.Sprintf(" %s", txDisplayCollective(tx)),
+			fmt.Sprintf(" %s", txDisplayCategory(tx)),
 			fmt.Sprintf(" %s", txDisplayCounterparty(tx)),
 			fmt.Sprintf(" %s", txDisplayDescription(tx)),
-			fmt.Sprintf(" %s", amtStr),
+			fmt.Sprintf(" %s", txAmountCell(tx, true)),
 		}
 	}
 	return rows
@@ -220,10 +399,191 @@ func buildStickerRows(txs []TransactionEntry) [][]string {
 
 var columnHeaders = []string{"Date", "Source", "Collective", "Category", "Counterparty", "Description", "Amount"}
 
+const amountColumnIndex = 6
+
+type txTableColumnKind string
+
+const (
+	txColumnSelection    txTableColumnKind = "selection"
+	txColumnDate         txTableColumnKind = "date"
+	txColumnSource       txTableColumnKind = "source"
+	txColumnCollective   txTableColumnKind = "collective"
+	txColumnCategory     txTableColumnKind = "category"
+	txColumnCounterparty txTableColumnKind = "counterparty"
+	txColumnDescription  txTableColumnKind = "description"
+	txColumnAmount       txTableColumnKind = "amount"
+)
+
+type txTableColumn struct {
+	Header   string
+	Kind     txTableColumnKind
+	Ratio    int
+	MinWidth int
+}
+
+func transactionTableColumns(showAccount bool, includeSelection bool) []txTableColumn {
+	cols := make([]txTableColumn, 0, 8)
+	if includeSelection {
+		cols = append(cols, txTableColumn{Header: "Sel", Kind: txColumnSelection, Ratio: 1, MinWidth: 5})
+	}
+	cols = append(cols, txTableColumn{Header: "Date", Kind: txColumnDate, Ratio: 2, MinWidth: 7})
+	if showAccount {
+		cols = append(cols, txTableColumn{Header: "Account", Kind: txColumnSource, Ratio: 3, MinWidth: 8})
+	}
+	cols = append(cols,
+		txTableColumn{Header: "Collective", Kind: txColumnCollective, Ratio: 4, MinWidth: 12},
+		txTableColumn{Header: "Category", Kind: txColumnCategory, Ratio: 4, MinWidth: 10},
+		txTableColumn{Header: "Counterparty", Kind: txColumnCounterparty, Ratio: 5, MinWidth: 12},
+		txTableColumn{Header: "Description", Kind: txColumnDescription, Ratio: 8, MinWidth: 12},
+		txTableColumn{Header: "Amount", Kind: txColumnAmount, Ratio: 4, MinWidth: 9},
+	)
+	return cols
+}
+
+func legacyTransactionTableColumns() []txTableColumn {
+	return transactionTableColumns(true, false)
+}
+
+func txColumnHeaders(cols []txTableColumn) []string {
+	headers := make([]string, len(cols))
+	for i, col := range cols {
+		headers[i] = col.Header
+	}
+	return headers
+}
+
+func txColumnRatios(cols []txTableColumn) []int {
+	ratios := make([]int, len(cols))
+	for i, col := range cols {
+		ratios[i] = col.Ratio
+	}
+	return ratios
+}
+
+func txColumnMinWidths(cols []txTableColumn) []int {
+	widths := make([]int, len(cols))
+	for i, col := range cols {
+		widths[i] = col.MinWidth
+	}
+	return widths
+}
+
+func txColumnIndex(cols []txTableColumn, kind txTableColumnKind) int {
+	for i, col := range cols {
+		if col.Kind == kind {
+			return i
+		}
+	}
+	return -1
+}
+
+func selectedTxMarker(selected map[string]bool, tx TransactionEntry) string {
+	if selected != nil && selected[tx.ID] {
+		return "[x]"
+	}
+	return "[ ]"
+}
+
+func transactionCellValue(tx TransactionEntry, kind txTableColumnKind, selected map[string]bool, styled bool) string {
+	virtual := isVirtualSpreadTx(tx)
+	switch kind {
+	case txColumnSelection:
+		if virtual {
+			return ""
+		}
+		return selectedTxMarker(selected, tx)
+	case txColumnDate:
+		date := time.Unix(tx.Timestamp, 0).In(BrusselsTZ()).Format("02/01")
+		if virtual {
+			return "↳ " + date
+		}
+		return date
+	case txColumnSource:
+		return txSource(tx)
+	case txColumnCollective:
+		return txDisplayCollective(tx)
+	case txColumnCategory:
+		return txDisplayCategory(tx)
+	case txColumnCounterparty:
+		return txDisplayCounterparty(tx)
+	case txColumnDescription:
+		if virtual {
+			ym, _ := tx.Metadata["sourceNaturalYM"].(string)
+			if ym != "" {
+				return "from " + ym
+			}
+			return "spread"
+		}
+		return txDisplayDescription(tx)
+	case txColumnAmount:
+		if virtual {
+			return virtualAmountCell(tx, styled)
+		}
+		return txAmountCell(tx, styled)
+	default:
+		return ""
+	}
+}
+
+func isVirtualSpreadTx(tx TransactionEntry) bool {
+	if tx.Metadata == nil {
+		return false
+	}
+	v, _ := tx.Metadata["virtualSource"].(bool)
+	return v
+}
+
+func virtualAmountCell(tx TransactionEntry, styled bool) string {
+	allocStr, _ := tx.Metadata["spreadAllocation"].(string)
+	totalStr, _ := tx.Metadata["spreadTotal"].(string)
+	alloc, _ := strconv.ParseFloat(allocStr, 64)
+	total, _ := strconv.ParseFloat(totalStr, 64)
+	out := formatVirtualAmount(alloc, tx.Currency) + "/" + formatVirtualAmount(total, tx.Currency)
+	if !styled {
+		return out
+	}
+	style := styleGreen
+	if alloc < 0 {
+		style = styleRed
+	}
+	return style.Render(out)
+}
+
+func formatVirtualAmount(v float64, currency string) string {
+	abs := absFloat(v)
+	sign := "+"
+	if v < 0 {
+		sign = "-"
+	}
+	if v == 0 {
+		sign = ""
+	}
+	if isEURCurrency(currency) {
+		return fmt.Sprintf("%s€%.2f", sign, abs)
+	}
+	return fmt.Sprintf("%s%.2f %s", sign, abs, currency)
+}
+
+func buildStickerRowsForTable(txs []TransactionEntry, cols []txTableColumn, selected map[string]bool) [][]string {
+	rows := make([][]string, len(txs))
+	for i, tx := range txs {
+		row := make([]string, len(cols))
+		for j, col := range cols {
+			row[j] = fmt.Sprintf(" %s", transactionCellValue(tx, col.Kind, selected, true))
+		}
+		rows[i] = row
+	}
+	return rows
+}
+
 func newStickerTable(txs []TransactionEntry, w, h int) *stickertable.Table {
-	t := stickertable.NewTable(w, h, columnHeaders)
-	t.SetRatio([]int{2, 3, 3, 3, 5, 8, 4})
-	t.SetMinWidth([]int{6, 6, 1, 1, 6, 8, 8})
+	return newStickerTableForColumns(txs, w, h, legacyTransactionTableColumns(), nil)
+}
+
+func newStickerTableForColumns(txs []TransactionEntry, w, h int, cols []txTableColumn, selected map[string]bool) *stickertable.Table {
+	t := stickertable.NewTable(w, h, txColumnHeaders(cols))
+	t.SetRatio(txColumnRatios(cols))
+	t.SetMinWidth(txColumnMinWidths(cols))
 	t.SetStylePassing(true)
 
 	t.SetStyles(map[stickertable.StyleKey]lipgloss.Style{
@@ -250,7 +610,7 @@ func newStickerTable(txs []TransactionEntry, w, h int) *stickertable.Table {
 			Height(1),
 	})
 
-	rows := buildStickerRows(txs)
+	rows := buildStickerRowsForTable(txs, cols, selected)
 	for _, row := range rows {
 		anyRow := make([]any, len(row))
 		for j, v := range row {
@@ -262,6 +622,98 @@ func newStickerTable(txs []TransactionEntry, w, h int) *stickertable.Table {
 	return t
 }
 
+func (m *txBrowserModel) rebuildTableRows() {
+	if m.sortCol >= 0 {
+		sortTransactionsForTableColumn(m.txs, m.columns, m.sortCol, m.sortAsc)
+		tableHeight := 0
+		if m.height > 4 {
+			tableHeight = m.height - 4
+		}
+		m.table = newStickerTableForColumns(m.txs, m.width, tableHeight, m.columns, m.selectedTxIDs)
+		if m.filterStr != "" {
+			m.table.SetFilter(m.selectedCol, m.filterStr)
+		}
+		return
+	}
+	m.table.ClearRows()
+	rows := buildStickerRowsForTable(m.txs, m.columns, m.selectedTxIDs)
+	for _, row := range rows {
+		anyRow := make([]any, len(row))
+		for j, v := range row {
+			anyRow[j] = v
+		}
+		m.table.MustAddRows([][]any{anyRow})
+	}
+	if m.filterStr != "" {
+		m.table.SetFilter(m.selectedCol, m.filterStr)
+	}
+}
+
+func sortTransactionsForColumn(txs []TransactionEntry, column int, ascending bool) {
+	sortTransactionsForTableColumn(txs, legacyTransactionTableColumns(), column, ascending)
+}
+
+func sortTransactionsForTableColumn(txs []TransactionEntry, cols []txTableColumn, column int, ascending bool) {
+	if column < 0 || column >= len(cols) || cols[column].Kind == txColumnSelection {
+		return
+	}
+	sort.SliceStable(txs, func(i, j int) bool {
+		if cols[column].Kind == txColumnAmount {
+			left := transactionSortAmountValue(txs[i])
+			right := transactionSortAmountValue(txs[j])
+			if left == right {
+				return txs[i].Timestamp > txs[j].Timestamp
+			}
+			if ascending {
+				return left < right
+			}
+			return left > right
+		}
+		left := transactionSortValueForKind(txs[i], cols[column].Kind)
+		right := transactionSortValueForKind(txs[j], cols[column].Kind)
+		if left == right {
+			return txs[i].Timestamp > txs[j].Timestamp
+		}
+		if ascending {
+			return left < right
+		}
+		return left > right
+	})
+}
+
+func transactionSortValue(tx TransactionEntry, column int) string {
+	cols := legacyTransactionTableColumns()
+	if column < 0 || column >= len(cols) {
+		return ""
+	}
+	return transactionSortValueForKind(tx, cols[column].Kind)
+}
+
+func transactionSortValueForKind(tx TransactionEntry, kind txTableColumnKind) string {
+	switch kind {
+	case txColumnDate:
+		return fmt.Sprintf("%020d", tx.Timestamp)
+	case txColumnSource:
+		return strings.ToLower(txSource(tx))
+	case txColumnCollective:
+		return strings.ToLower(txDisplayCollective(tx))
+	case txColumnCategory:
+		return strings.ToLower(txDisplayCategory(tx))
+	case txColumnCounterparty:
+		return strings.ToLower(txDisplayCounterparty(tx))
+	case txColumnDescription:
+		return strings.ToLower(txDisplayDescription(tx))
+	case txColumnAmount:
+		return fmt.Sprintf("%.8f", transactionSortAmountValue(tx))
+	default:
+		return ""
+	}
+}
+
+func transactionSortAmountValue(tx TransactionEntry) float64 {
+	return parseTransactionAmountCell(txAmountCell(tx, false))
+}
+
 // ── Browser modes and actions ──
 
 type browserMode int
@@ -271,6 +723,7 @@ const (
 	modeDetail
 	modeEditCollective
 	modeEditCategory
+	modeEditAssignment
 	modeEditDate
 )
 
@@ -302,28 +755,131 @@ func (t *tableView) View() string { return t.content }
 // ── Bubbletea model ──
 
 type txBrowserModel struct {
-	table     *stickertable.Table
-	txs       []TransactionEntry
-	currency  string
-	quitting  bool
-	action    browserAction
-	mode      browserMode
-	detailTx  *TransactionEntry
-	detailIdx int
+	table         *stickertable.Table
+	columns       []txTableColumn
+	txs           []TransactionEntry
+	currency      string
+	account       string
+	quitting      bool
+	action        browserAction
+	mode          browserMode
+	detailTx      *TransactionEntry
+	detailIdx     int
+	bulkEdit      bool
+	selectedTxIDs map[string]bool
 	// Inline edit fields
-	editInput   string   // current text input for inline edit
-	editOptions []string // available options for autocomplete
-	editCursor  int      // cursor position in filtered options
+	editInput             string   // current text input for inline edit
+	editOptions           []string // available options for autocomplete
+	editCursor            int      // cursor position in filtered options
+	editCollectiveInput   string
+	editCategoryInput     string
+	editCollectiveOptions []string
+	editCategoryOptions   []string
+	editField             int
+	editCollectiveCursor  int
+	editCategoryCursor    int
 	// Column selection + filter
 	selectedCol int    // which column is highlighted in the header
 	filterStr   string // active filter text (empty = not filtering)
 	filtering   bool   // true = in filter input mode (typing filters)
+	sortCol     int
+	sortAsc     bool
+	statusText  string
+	statusError bool
+	statusSeq   int
 	// Layout
 	width  int
 	height int
 }
 
 func (m txBrowserModel) Init() tea.Cmd { return nil }
+
+type txPublishResultMsg struct {
+	Seq       int
+	Events    int
+	Relays    int
+	Published int
+	Err       error
+}
+
+type txClearStatusMsg struct {
+	Seq int
+}
+
+func clearTxStatusAfter(seq int, d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return txClearStatusMsg{Seq: seq}
+	})
+}
+
+func (m txBrowserModel) selectedCount() int {
+	return len(m.selectedTxIDs)
+}
+
+func (m txBrowserModel) currentFilteredTx() (TransactionEntry, bool) {
+	_, y := m.table.GetCursorLocation()
+	filtered := m.getFilteredTxs()
+	if y < 0 || y >= len(filtered) {
+		return TransactionEntry{}, false
+	}
+	return filtered[y], true
+}
+
+func (m txBrowserModel) selectedTransactions() []TransactionEntry {
+	if len(m.selectedTxIDs) == 0 {
+		return nil
+	}
+	out := make([]TransactionEntry, 0, len(m.selectedTxIDs))
+	for _, tx := range m.txs {
+		if m.selectedTxIDs[tx.ID] {
+			out = append(out, tx)
+		}
+	}
+	return out
+}
+
+func (m *txBrowserModel) toggleCurrentSelection() {
+	tx, ok := m.currentFilteredTx()
+	if !ok {
+		return
+	}
+	if m.selectedTxIDs == nil {
+		m.selectedTxIDs = map[string]bool{}
+	}
+	if m.selectedTxIDs[tx.ID] {
+		delete(m.selectedTxIDs, tx.ID)
+	} else {
+		m.selectedTxIDs[tx.ID] = true
+	}
+	m.rebuildTableRows()
+}
+
+func (m *txBrowserModel) toggleAllFilteredSelection() {
+	filtered := m.getFilteredTxs()
+	if len(filtered) == 0 {
+		return
+	}
+	if m.selectedTxIDs == nil {
+		m.selectedTxIDs = map[string]bool{}
+	}
+	allSelected := true
+	for _, tx := range filtered {
+		if !m.selectedTxIDs[tx.ID] {
+			allSelected = false
+			break
+		}
+	}
+	if allSelected {
+		for _, tx := range filtered {
+			delete(m.selectedTxIDs, tx.ID)
+		}
+	} else {
+		for _, tx := range filtered {
+			m.selectedTxIDs[tx.ID] = true
+		}
+	}
+	m.rebuildTableRows()
+}
 
 func (m txBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -332,6 +888,24 @@ func (m txBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.table.SetWidth(msg.Width)
 		m.table.SetHeight(msg.Height - 4) // title + footer
+	case txPublishResultMsg:
+		if msg.Seq != m.statusSeq {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.statusText = fmt.Sprintf("Nostr publish failed: %v", msg.Err)
+			m.statusError = true
+			return m, clearTxStatusAfter(msg.Seq, 10*time.Second)
+		}
+		m.statusText = fmt.Sprintf("Posted %d Nostr event(s) to %d relay(s)", msg.Published, msg.Relays)
+		m.statusError = false
+		return m, clearTxStatusAfter(msg.Seq, 4*time.Second)
+	case txClearStatusMsg:
+		if msg.Seq == m.statusSeq {
+			m.statusText = ""
+			m.statusError = false
+		}
+		return m, nil
 	}
 
 	switch m.mode {
@@ -339,7 +913,7 @@ func (m txBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateTable(msg)
 	case modeDetail:
 		return m.updateDetail(msg)
-	case modeEditCollective, modeEditCategory, modeEditDate:
+	case modeEditCollective, modeEditCategory, modeEditAssignment, modeEditDate:
 		return m.updateInlineEdit(msg)
 	}
 
@@ -381,7 +955,7 @@ func (m txBrowserModel) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "right":
-				if m.selectedCol < len(columnHeaders)-1 {
+				if m.selectedCol < len(m.columns)-1 {
 					m.selectedCol++
 					if m.filterStr != "" {
 						m.table.SetFilter(m.selectedCol, m.filterStr)
@@ -420,7 +994,7 @@ func (m txBrowserModel) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectedCol--
 			}
 		case "right":
-			if m.selectedCol < len(columnHeaders)-1 {
+			if m.selectedCol < len(m.columns)-1 {
 				m.selectedCol++
 			}
 		case "pgdown":
@@ -449,48 +1023,53 @@ func (m txBrowserModel) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.table.CursorDown()
 			}
 		case "enter":
-			_, y := m.table.GetCursorLocation()
-			filtered := m.getFilteredTxs()
-			if y >= 0 && y < len(filtered) {
-				m.detailTx = &filtered[y]
-				m.detailIdx = y
+			if tx, ok := m.currentFilteredTx(); ok {
+				m.detailTx = &tx
+				_, m.detailIdx = m.table.GetCursorLocation()
 				m.mode = modeDetail
 			}
+		case "x", " ", "space":
+			m.toggleCurrentSelection()
+		case "A":
+			m.toggleAllFilteredSelection()
 		case "C":
-			_, y := m.table.GetCursorLocation()
-			filtered := m.getFilteredTxs()
-			if y >= 0 && y < len(filtered) {
-				m.detailTx = &filtered[y]
-				m.detailIdx = y
+			if len(m.selectedTxIDs) > 0 {
+				m.startEditCollectiveForSelection()
+			} else if tx, ok := m.currentFilteredTx(); ok {
+				m.detailTx = &tx
+				_, m.detailIdx = m.table.GetCursorLocation()
 				m.startEditCollective()
 			}
 		case "c":
-			_, y := m.table.GetCursorLocation()
-			filtered := m.getFilteredTxs()
-			if y >= 0 && y < len(filtered) {
-				m.detailTx = &filtered[y]
-				m.detailIdx = y
+			if len(m.selectedTxIDs) > 0 {
+				m.startEditCategoryForSelection()
+			} else if tx, ok := m.currentFilteredTx(); ok {
+				m.detailTx = &tx
+				_, m.detailIdx = m.table.GetCursorLocation()
 				m.startEditCategory()
 			}
+		case "e":
+			if len(m.selectedTxIDs) > 0 {
+				m.startEditAssignmentForSelection()
+			} else if tx, ok := m.currentFilteredTx(); ok {
+				m.detailTx = &tx
+				_, m.detailIdx = m.table.GetCursorLocation()
+				m.startEditAssignment()
+			}
 		case "d":
-			_, y := m.table.GetCursorLocation()
-			filtered := m.getFilteredTxs()
-			if y >= 0 && y < len(filtered) {
-				m.detailTx = &filtered[y]
-				m.detailIdx = y
+			if tx, ok := m.currentFilteredTx(); ok {
+				m.detailTx = &tx
+				_, m.detailIdx = m.table.GetCursorLocation()
 				m.startEditDate()
 			}
 		case "s":
-			colIdx, phase := m.table.GetOrder()
-			if colIdx == m.selectedCol {
-				if phase == stickertable.SortingOrderAscending {
-					m.table.OrderByDesc(m.selectedCol)
-				} else {
-					m.table.OrderByAsc(m.selectedCol)
-				}
-			} else {
-				m.table.OrderByAsc(m.selectedCol)
+			ascending := true
+			if m.sortCol == m.selectedCol {
+				ascending = !m.sortAsc
 			}
+			m.sortCol = m.selectedCol
+			m.sortAsc = ascending
+			m.rebuildTableRows()
 		case "r":
 			m.action = browserCreateRule
 			return m, tea.Quit
@@ -514,6 +1093,8 @@ func (m txBrowserModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.startEditCollective()
 		case "c":
 			m.startEditCategory()
+		case "e":
+			m.startEditAssignment()
 		case "d":
 			m.startEditDate()
 		}
@@ -537,41 +1118,249 @@ func (m txBrowserModel) filteredEditOptions() []string {
 	return result
 }
 
+func filterEditOptions(options []string, input string) []string {
+	if input == "" {
+		return options
+	}
+	filter := strings.ToLower(input)
+	var result []string
+	for _, option := range options {
+		if strings.Contains(strings.ToLower(option), filter) {
+			result = append(result, option)
+		}
+	}
+	return result
+}
+
+func (m txBrowserModel) filteredCollectiveOptions() []string {
+	return filterEditOptions(m.editCollectiveOptions, m.editCollectiveInput)
+}
+
+func (m txBrowserModel) filteredCategoryOptions() []string {
+	return filterEditOptions(m.editCategoryOptions, m.editCategoryInput)
+}
+
 func (m *txBrowserModel) startEditCollective() {
+	m.bulkEdit = false
 	m.editOptions = CollectiveSlugs()
 	sort.Strings(m.editOptions)
-	m.editInput = m.detailTx.Collective
+	m.editInput = txDisplayCollective(*m.detailTx)
+	m.editCursor = 0
+	m.mode = modeEditCollective
+}
+
+func (m *txBrowserModel) startEditCollectiveForSelection() {
+	m.bulkEdit = true
+	m.detailTx = nil
+	m.editOptions = CollectiveSlugs()
+	sort.Strings(m.editOptions)
+	m.editInput = commonCollectiveValue(m.selectedTransactions())
 	m.editCursor = 0
 	m.mode = modeEditCollective
 }
 
 func (m *txBrowserModel) startEditCategory() {
-	cats := LoadCategories()
-	m.editOptions = make([]string, 0, len(cats))
-	for _, c := range cats {
-		m.editOptions = append(m.editOptions, c.Slug)
-	}
-	sort.Strings(m.editOptions)
-	m.editInput = m.detailTx.Category
+	m.bulkEdit = false
+	m.editOptions = categoryOptionsForTransaction(*m.detailTx, LoadCategories())
+	m.editInput = txDisplayCategory(*m.detailTx)
 	m.editCursor = 0
 	m.mode = modeEditCategory
 }
 
+func (m *txBrowserModel) startEditCategoryForSelection() {
+	m.bulkEdit = true
+	m.detailTx = nil
+	targets := m.selectedTransactions()
+	m.editOptions = categoryOptionsForTransactions(targets, LoadCategories())
+	m.editInput = commonCategoryValue(targets)
+	m.editCursor = 0
+	m.mode = modeEditCategory
+}
+
+func (m *txBrowserModel) startEditAssignment() {
+	m.bulkEdit = false
+	m.editCollectiveOptions = CollectiveSlugs()
+	sort.Strings(m.editCollectiveOptions)
+	m.editCategoryOptions = categoryOptionsForTransaction(*m.detailTx, LoadCategories())
+	m.editCollectiveInput = txDisplayCollective(*m.detailTx)
+	m.editCategoryInput = txDisplayCategory(*m.detailTx)
+	m.editField = 0
+	m.editCollectiveCursor = 0
+	m.editCategoryCursor = 0
+	m.mode = modeEditAssignment
+}
+
+func (m *txBrowserModel) startEditAssignmentForSelection() {
+	m.bulkEdit = true
+	m.detailTx = nil
+	targets := m.selectedTransactions()
+	m.editCollectiveOptions = CollectiveSlugs()
+	sort.Strings(m.editCollectiveOptions)
+	m.editCategoryOptions = categoryOptionsForTransactions(targets, LoadCategories())
+	m.editCollectiveInput = commonCollectiveValue(targets)
+	m.editCategoryInput = commonCategoryValue(targets)
+	m.editField = 0
+	m.editCollectiveCursor = 0
+	m.editCategoryCursor = 0
+	m.mode = modeEditAssignment
+}
+
+func categoryOptionsForTransaction(tx TransactionEntry, cats []CategoryDef) []string {
+	return categoryOptionsForTransactions([]TransactionEntry{tx}, cats)
+}
+
+func categoryOptionsForTransactions(txs []TransactionEntry, cats []CategoryDef) []string {
+	directions := map[string]bool{}
+	for _, tx := range txs {
+		if direction := categoryDirectionForTransaction(tx); direction != "" {
+			directions[direction] = true
+		}
+	}
+	seen := map[string]bool{}
+	options := make([]string, 0, len(cats))
+	for _, cat := range cats {
+		slug := strings.TrimSpace(cat.Slug)
+		if slug == "" {
+			continue
+		}
+		catDirection := strings.ToLower(strings.TrimSpace(cat.Direction))
+		if len(directions) > 0 && !directions[catDirection] {
+			continue
+		}
+		key := strings.ToLower(slug)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		options = append(options, slug)
+	}
+	sort.Strings(options)
+	return options
+}
+
+func commonCollectiveValue(txs []TransactionEntry) string {
+	return commonTransactionAssignmentValue(txs, txDisplayCollective)
+}
+
+func commonCategoryValue(txs []TransactionEntry) string {
+	return commonTransactionAssignmentValue(txs, txDisplayCategory)
+}
+
+func commonTransactionAssignmentValue(txs []TransactionEntry, value func(TransactionEntry) string) string {
+	if len(txs) == 0 {
+		return ""
+	}
+	first := value(txs[0])
+	for _, tx := range txs[1:] {
+		if value(tx) != first {
+			return ""
+		}
+	}
+	return first
+}
+
+func categoryDirectionForTransaction(tx TransactionEntry) string {
+	amount := parseTransactionAmountCell(txAmountCell(tx, false))
+	if amount < 0 {
+		return "expense"
+	}
+	if amount > 0 {
+		return "income"
+	}
+	return ""
+}
+
 func (m *txBrowserModel) startEditDate() {
-	tz := BrusselsTZ()
-	t := time.Unix(m.detailTx.Timestamp, 0).In(tz)
-	m.editInput = fmt.Sprintf("%d-%02d", t.Year(), t.Month())
+	m.bulkEdit = false
+	if existing := compactSpreadInput(m.detailTx.Spread); existing != "" {
+		m.editInput = existing
+	} else {
+		tz := BrusselsTZ()
+		t := time.Unix(m.detailTx.Timestamp, 0).In(tz)
+		m.editInput = fmt.Sprintf("%d-%02d", t.Year(), t.Month())
+	}
 	m.editOptions = nil
 	m.editCursor = 0
 	m.mode = modeEditDate
 }
 
-func (m *txBrowserModel) commitInlineEdit() {
-	if m.detailTx == nil {
-		return
+// compactSpreadInput renders a list of spread entries back as the most compact
+// shorthand the parser accepts, so the editor prefills with what the user
+// previously typed (or close to it).
+func compactSpreadInput(spread []SpreadEntry) string {
+	if len(spread) == 0 {
+		return ""
 	}
+	months := make([]string, len(spread))
+	for i, s := range spread {
+		months[i] = s.Month
+	}
+	return compactMonthList(months)
+}
+
+func compactMonthList(months []string) string {
+	if len(months) == 0 {
+		return ""
+	}
+	if len(months) == 1 {
+		return months[0]
+	}
+	// Detect contiguous range to compress.
+	if isContiguousMonthRange(months) {
+		return months[0] + "-" + months[len(months)-1]
+	}
+	return strings.Join(months, ",")
+}
+
+func isContiguousMonthRange(months []string) bool {
+	if len(months) < 2 {
+		return false
+	}
+	cur, err := time.Parse("2006-01", months[0])
+	if err != nil {
+		return false
+	}
+	for i := 1; i < len(months); i++ {
+		next := cur.AddDate(0, 1, 0)
+		got, err := time.Parse("2006-01", months[i])
+		if err != nil || !got.Equal(next) {
+			return false
+		}
+		cur = got
+	}
+	return true
+}
+
+func (m *txBrowserModel) commitInlineEdit() tea.Cmd {
+	if m.bulkEdit {
+		return m.commitBulkInlineEdit()
+	}
+	if m.detailTx == nil {
+		return nil
+	}
+	if isVirtualSpreadTx(*m.detailTx) {
+		// Virtual rows are projections of real txs in another month — edit
+		// the source there.
+		return nil
+	}
+	shouldPublish := m.mode == modeEditCollective || m.mode == modeEditCategory
 	switch m.mode {
+	case modeEditAssignment:
+		m.editCollectiveInput = normalizeTransactionTagSlug(m.editCollectiveInput)
+		m.editCategoryInput = normalizeTransactionTagSlug(m.editCategoryInput)
+		m.detailTx.Collective = m.editCollectiveInput
+		m.detailTx.Category = m.editCategoryInput
+		for i := range m.txs {
+			if m.txs[i].ID == m.detailTx.ID {
+				m.txs[i].Collective = m.editCollectiveInput
+				m.txs[i].Category = m.editCategoryInput
+				syncTransactionTags(&m.txs[i])
+				break
+			}
+		}
+		shouldPublish = true
 	case modeEditCollective:
+		m.editInput = normalizeTransactionTagSlug(m.editInput)
 		m.detailTx.Collective = m.editInput
 		for i := range m.txs {
 			if m.txs[i].ID == m.detailTx.ID {
@@ -581,6 +1370,7 @@ func (m *txBrowserModel) commitInlineEdit() {
 			}
 		}
 	case modeEditCategory:
+		m.editInput = normalizeTransactionTagSlug(m.editInput)
 		m.detailTx.Category = m.editInput
 		for i := range m.txs {
 			if m.txs[i].ID == m.detailTx.ID {
@@ -590,30 +1380,381 @@ func (m *txBrowserModel) commitInlineEdit() {
 			}
 		}
 	case modeEditDate:
-		// editInput is stored as spread metadata; save handled by saveTransactionUpdate
+		// Parse the date input into a list of months and rebuild the spread.
+		// On parse error, leave the existing spread untouched.
+		months, err := ParseSpreadInput(m.editInput)
+		if err == nil {
+			total := txSpreadTotal(*m.detailTx)
+			m.detailTx.Spread = BuildSpreadEntries(months, total)
+			for i := range m.txs {
+				if m.txs[i].ID == m.detailTx.ID {
+					m.txs[i].Spread = m.detailTx.Spread
+					break
+				}
+			}
+			shouldPublish = true
+		}
 	}
 	syncTransactionTags(m.detailTx)
+	ensureTransactionAssignmentSettings(*m.detailTx)
 	saveTransactionUpdate(m.detailTx)
 	// Rebuild table
-	m.table.ClearRows()
-	rows := buildStickerRows(m.txs)
-	for _, row := range rows {
-		anyRow := make([]any, len(row))
-		for j, v := range row {
-			anyRow[j] = v
+	m.rebuildTableRows()
+	if shouldPublish {
+		return m.startNostrPublish([]TransactionEntry{*m.detailTx})
+	}
+	return nil
+}
+
+// txSpreadTotal returns the signed total amount used as the basis for spread
+// distribution. DEBIT amounts are negated so distribution preserves direction.
+func txSpreadTotal(tx TransactionEntry) float64 {
+	total := firstNonZeroFloat(tx.NormalizedAmount, tx.Amount, tx.GrossAmount, tx.NetAmount)
+	if total < 0 {
+		total = -total
+	}
+	if strings.EqualFold(tx.Type, "DEBIT") {
+		total = -total
+	}
+	return total
+}
+
+// spreadPreviewLines is the live feedback shown under the input while the user
+// is typing in modeEditDate. It tells them how many months will be created and
+// the per-month amount, or surfaces a parse error.
+func (m txBrowserModel) spreadPreviewLines() []string {
+	if m.detailTx == nil {
+		return nil
+	}
+	input := strings.TrimSpace(m.editInput)
+	if input == "" {
+		return []string{"(no spread — natural month)"}
+	}
+	months, err := ParseSpreadInput(input)
+	if err != nil {
+		return []string{"⚠ " + err.Error()}
+	}
+	if len(months) == 0 {
+		return []string{"(no spread)"}
+	}
+	total := txSpreadTotal(*m.detailTx)
+	entries := BuildSpreadEntries(months, total)
+	currency := m.detailTx.Currency
+	if currency == "" {
+		currency = "EUR"
+	}
+	totalLabel := formatSpreadAmount(total, currency)
+	headline := fmt.Sprintf("%d month(s) × %s = %s",
+		len(entries),
+		formatSpreadEntry(entries[0], currency),
+		totalLabel)
+	out := []string{headline}
+
+	monthList := compactMonthList(months)
+	if len(monthList) > 60 {
+		monthList = months[0] + " … " + months[len(months)-1]
+	}
+	out = append(out, monthList)
+	return out
+}
+
+func formatSpreadEntry(s SpreadEntry, currency string) string {
+	v, err := strconv.ParseFloat(s.Amount, 64)
+	if err != nil {
+		return s.Amount + " " + currency
+	}
+	return formatSpreadAmount(v, currency)
+}
+
+func formatSpreadAmount(v float64, currency string) string {
+	if isEURCurrency(currency) {
+		if v < 0 {
+			return "-€" + fmtNumber(-v)
 		}
-		m.table.MustAddRows([][]any{anyRow})
+		return "€" + fmtNumber(v)
+	}
+	return fmt.Sprintf("%.2f %s", v, currency)
+}
+
+func (m *txBrowserModel) commitBulkInlineEdit() tea.Cmd {
+	targets := m.selectedTransactions()
+	if len(targets) == 0 {
+		m.bulkEdit = false
+		return nil
+	}
+	switch m.mode {
+	case modeEditCollective:
+		m.editInput = normalizeTransactionTagSlug(m.editInput)
+	case modeEditCategory:
+		m.editInput = normalizeTransactionTagSlug(m.editInput)
+	case modeEditAssignment:
+		m.editCollectiveInput = normalizeTransactionTagSlug(m.editCollectiveInput)
+		m.editCategoryInput = normalizeTransactionTagSlug(m.editCategoryInput)
+	default:
+		m.bulkEdit = false
+		return nil
+	}
+	if m.mode != modeEditAssignment && m.editInput == "" {
+		m.bulkEdit = false
+		return nil
+	}
+	if m.mode == modeEditAssignment && m.editCollectiveInput == "" && m.editCategoryInput == "" {
+		m.bulkEdit = false
+		return nil
+	}
+
+	changed := make([]TransactionEntry, 0, len(targets))
+	for i := range m.txs {
+		if !m.selectedTxIDs[m.txs[i].ID] {
+			continue
+		}
+		switch m.mode {
+		case modeEditCollective:
+			m.txs[i].Collective = m.editInput
+		case modeEditCategory:
+			m.txs[i].Category = m.editInput
+		case modeEditAssignment:
+			m.txs[i].Collective = m.editCollectiveInput
+			m.txs[i].Category = m.editCategoryInput
+		}
+		syncTransactionTags(&m.txs[i])
+		ensureTransactionAssignmentSettings(m.txs[i])
+		saveTransactionUpdate(&m.txs[i])
+		changed = append(changed, m.txs[i])
+	}
+	m.bulkEdit = false
+	m.rebuildTableRows()
+	return m.startNostrPublish(changed)
+}
+
+func (m *txBrowserModel) startNostrPublish(txs []TransactionEntry) tea.Cmd {
+	events := countPublishableTransactionAnnotations(txs)
+	if events == 0 {
+		return nil
+	}
+	relays := nostrRelayCountForPosting()
+	m.statusSeq++
+	seq := m.statusSeq
+	m.statusText = fmt.Sprintf("Posting %d Nostr event(s) to %d relay(s)...", events, relays)
+	m.statusError = false
+	return publishTransactionAnnotationsCmd(seq, txs)
+}
+
+func ensureTransactionAssignmentSettings(tx TransactionEntry) {
+	if category := txDisplayCategory(tx); category != "" {
+		direction := categoryDirectionForTransaction(tx)
+		AddCategory(CategoryDef{
+			Slug:      category,
+			Label:     labelFromSlug(category),
+			Direction: direction,
+		})
+	}
+	if collective := txDisplayCollective(tx); collective != "" {
+		AddCollective(collective)
 	}
 }
 
+func labelFromSlug(slug string) string {
+	parts := strings.Fields(strings.ReplaceAll(strings.TrimSpace(slug), "-", " "))
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func nostrRelayCountForPosting() int {
+	keys := LoadNostrKeys()
+	if keys == nil {
+		return 0
+	}
+	if len(keys.Relays) > 0 {
+		return len(keys.Relays)
+	}
+	return len(nostrRelays)
+}
+
+func countPublishableTransactionAnnotations(txs []TransactionEntry) int {
+	count := 0
+	for _, tx := range txs {
+		if buildTransactionAnnotationEvent(tx) != nil {
+			count++
+		}
+	}
+	return count
+}
+
+func publishTransactionAnnotationsCmd(seq int, txs []TransactionEntry) tea.Cmd {
+	return func() tea.Msg {
+		events, relays, published, err := publishTransactionAnnotationsFromTUI(txs)
+		return txPublishResultMsg{
+			Seq:       seq,
+			Events:    events,
+			Relays:    relays,
+			Published: published,
+			Err:       err,
+		}
+	}
+}
+
+func publishTransactionAnnotationsFromTUI(txs []TransactionEntry) (events int, relays int, published int, err error) {
+	keys := LoadNostrKeys()
+	if keys != nil {
+		if len(keys.Relays) > 0 {
+			relays = len(keys.Relays)
+		} else {
+			relays = len(nostrRelays)
+		}
+	}
+	if keys == nil {
+		for _, tx := range txs {
+			if buildTransactionAnnotationEvent(tx) == nil {
+				continue
+			}
+			events++
+			persistTransactionAnnotationToNostrSource(tx, "", "")
+		}
+		if events == 0 {
+			return 0, 0, 0, nil
+		}
+		return events, 0, 0, fmt.Errorf("no Nostr identity configured")
+	}
+
+	failures := 0
+	firstFailure := ""
+	for _, tx := range txs {
+		ev := buildTransactionAnnotationEvent(tx)
+		if ev == nil {
+			continue
+		}
+		events++
+		uri := txURI(tx)
+		_, publishErr := publishNostrEventWithOutbox(keys, uri, ev)
+		if publishErr != nil {
+			persistTransactionAnnotationToNostrSource(tx, "", keys.PubHex)
+			failures++
+			if firstFailure == "" {
+				firstFailure = fmt.Sprintf("%s: %v", tx.ID, publishErr)
+			}
+			continue
+		}
+		persistTransactionAnnotationToNostrSource(tx, ev.ID, keys.PubHex)
+		published++
+	}
+	if failures > 0 {
+		return events, relays, published, fmt.Errorf("%d/%d event(s) failed; first error: %s", failures, events, firstFailure)
+	}
+	return events, relays, published, nil
+}
+
+func buildTransactionAnnotationEvent(tx TransactionEntry) *nostr.Event {
+	uri := txURI(tx)
+	if uri == "" {
+		return nil
+	}
+	category := txDisplayCategory(tx)
+	collective := txDisplayCollective(tx)
+	if category == "" && collective == "" && tx.Event == "" && len(tx.Spread) == 0 {
+		return nil
+	}
+
+	tags := nostr.Tags{
+		{"I", uri},
+		{"K", uriKind(uri)},
+		{"i", uri},
+		{"k", uriKind(uri)},
+	}
+	if category != "" {
+		tags = append(tags, nostr.Tag{"category", category})
+	}
+	if collective != "" {
+		tags = append(tags, nostr.Tag{"collective", collective})
+	}
+	if tx.Event != "" {
+		tags = append(tags, nostr.Tag{"event", tx.Event})
+	}
+
+	amount := tx.Amount
+	if tx.NormalizedAmount != 0 {
+		amount = tx.NormalizedAmount
+	}
+	if amount != 0 && tx.Currency != "" {
+		tags = append(tags, nostr.Tag{"amount", fmt.Sprintf("%.2f", amount), tx.Currency})
+	}
+
+	for _, s := range tx.Spread {
+		if s.Month == "" {
+			continue
+		}
+		tags = append(tags, nostr.Tag{"spread", s.Month, s.Amount})
+	}
+
+	return &nostr.Event{
+		Kind:    1111,
+		Tags:    tags,
+		Content: "",
+	}
+}
+
+func persistTransactionAnnotationToNostrSource(tx TransactionEntry, eventID, author string) {
+	uri := txURI(tx)
+	if uri == "" {
+		return
+	}
+	category := txDisplayCategory(tx)
+	collective := txDisplayCollective(tx)
+	if category == "" && collective == "" && tx.Event == "" && len(tx.Tags) == 0 && len(tx.Spread) == 0 {
+		return
+	}
+
+	dataDir := DataDir()
+	t := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
+	year := fmt.Sprintf("%d", t.Year())
+	month := fmt.Sprintf("%02d", t.Month())
+	path := nostrsource.Path(dataDir, year, month, nostrsource.AnnotationsFile)
+
+	cache := NostrAnnotationCache{Annotations: map[string]*TxAnnotation{}}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &cache)
+	}
+	if cache.Annotations == nil {
+		cache.Annotations = map[string]*TxAnnotation{}
+	}
+	cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
+	cache.Annotations[uri] = &TxAnnotation{
+		URI:          uri,
+		Category:     category,
+		Collective:   collective,
+		Event:        tx.Event,
+		Tags:         normalizeTransactionTags(tx.Tags),
+		Spread:       tx.Spread,
+		NostrEventID: eventID,
+		Author:       author,
+		CreatedAt:    time.Now().Unix(),
+	}
+	_ = nostrsource.WriteJSON(dataDir, year, month, cache, nostrsource.AnnotationsFile)
+}
+
 func (m txBrowserModel) updateInlineEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.mode == modeEditAssignment {
+		return m.updateAssignmentEdit(msg)
+	}
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		key := keyMsg.String()
 		switch key {
 		case "esc":
-			m.mode = modeDetail
+			if m.mode == modeEditDate {
+				m.mode = modeDetail
+			} else {
+				m.mode = modeTable
+				m.detailTx = nil
+				m.bulkEdit = false
+			}
 			return m, nil
 		case "enter":
+			editMode := m.mode
 			// If there are filtered options and one is selected, use it
 			if m.mode != modeEditDate {
 				filtered := m.filteredEditOptions()
@@ -621,9 +1762,14 @@ func (m txBrowserModel) updateInlineEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.editInput = filtered[m.editCursor]
 				}
 			}
-			m.commitInlineEdit()
-			m.mode = modeDetail
-			return m, nil
+			cmd := m.commitInlineEdit()
+			if editMode == modeEditDate {
+				m.mode = modeDetail
+			} else {
+				m.mode = modeTable
+				m.detailTx = nil
+			}
+			return m, cmd
 		case "tab":
 			// Autocomplete: fill input with selected option
 			if m.mode != modeEditDate {
@@ -657,6 +1803,88 @@ func (m txBrowserModel) updateInlineEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m txBrowserModel) updateAssignmentEdit(msg tea.Msg) (tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	key := keyMsg.String()
+	activeInput := func() *string {
+		if m.editField == 0 {
+			return &m.editCollectiveInput
+		}
+		return &m.editCategoryInput
+	}
+	activeCursor := func() *int {
+		if m.editField == 0 {
+			return &m.editCollectiveCursor
+		}
+		return &m.editCategoryCursor
+	}
+	activeFiltered := func() []string {
+		if m.editField == 0 {
+			return m.filteredCollectiveOptions()
+		}
+		return m.filteredCategoryOptions()
+	}
+	completeActive := func() {
+		filtered := activeFiltered()
+		cursor := *activeCursor()
+		if len(filtered) > 0 && cursor < len(filtered) {
+			*activeInput() = filtered[cursor]
+		}
+	}
+
+	switch key {
+	case "esc":
+		m.mode = modeTable
+		m.detailTx = nil
+		m.bulkEdit = false
+		return m, nil
+	case "enter":
+		completeActive()
+		cmd := m.commitInlineEdit()
+		m.mode = modeTable
+		m.detailTx = nil
+		return m, cmd
+	case "tab":
+		completeActive()
+		m.editField = (m.editField + 1) % 2
+		return m, nil
+	case "shift+tab":
+		if m.editField == 0 {
+			m.editField = 1
+		} else {
+			m.editField = 0
+		}
+		return m, nil
+	case "up":
+		cursor := activeCursor()
+		if *cursor > 0 {
+			*cursor--
+		}
+	case "down":
+		filtered := activeFiltered()
+		cursor := activeCursor()
+		if *cursor < len(filtered)-1 {
+			*cursor++
+		}
+	case "backspace":
+		input := activeInput()
+		if len(*input) > 0 {
+			*input = (*input)[:len(*input)-1]
+			*activeCursor() = 0
+		}
+	default:
+		if len(key) == 1 && key >= " " && key <= "~" {
+			input := activeInput()
+			*input += key
+			*activeCursor() = 0
+		}
+	}
+	return m, nil
+}
+
 func (m txBrowserModel) View() string {
 	if m.quitting {
 		return ""
@@ -669,9 +1897,13 @@ func (m txBrowserModel) View() string {
 		fg := &detailPanel{content: m.renderDetailBox()}
 		ov := overlay.New(fg, bgView, overlay.Center, overlay.Center, 0, 0)
 		return ov.View()
-	case modeEditCollective, modeEditCategory, modeEditDate:
+	case modeEditCollective, modeEditCategory, modeEditAssignment, modeEditDate:
 		bgView := &tableView{content: m.renderTable()}
-		fg := &detailPanel{content: m.renderInlineEditBox()}
+		content := m.renderInlineEditBox()
+		if m.mode == modeEditAssignment {
+			content = m.renderAssignmentEditBox()
+		}
+		fg := &detailPanel{content: content}
 		ov := overlay.New(fg, bgView, overlay.Center, overlay.Center, 0, 0)
 		return ov.View()
 	default:
@@ -683,10 +1915,16 @@ func (m txBrowserModel) renderTable() string {
 	var b strings.Builder
 
 	title := "💰 Transactions"
+	if m.account != "" {
+		title += " · " + m.account
+	}
 	if m.currency != "" {
 		title += " (" + m.currency + ")"
 	}
-	colName := columnHeaders[m.selectedCol]
+	colName := ""
+	if m.selectedCol >= 0 && m.selectedCol < len(m.columns) {
+		colName = m.columns[m.selectedCol].Header
+	}
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(title))
 
 	// Show selected column + filter info
@@ -750,14 +1988,26 @@ func (m txBrowserModel) renderTable() string {
 		styleGreen.Render(fmtEUR(totalIn)),
 		styleRed.Render(fmtEUR(totalOut)),
 		fmtEURSigned(totalIn-totalOut))
+	if selected := m.selectedCount(); selected > 0 {
+		footerInfo += fmt.Sprintf(" — %d selected", selected)
+	}
 	b.WriteString(lipgloss.NewStyle().Faint(true).Render(footerInfo))
 	b.WriteString("\n")
+
+	if m.statusText != "" {
+		statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+		if m.statusError {
+			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+		}
+		b.WriteString(statusStyle.Render("  " + m.statusText))
+		b.WriteString("\n")
+	}
 
 	var keys string
 	if m.filtering {
 		keys = "  Type to filter  [←→] Column  [Esc] Clear  [Enter] Done  [↑↓] Navigate"
 	} else {
-		keys = "  [←→] Column  [/] Filter  [s] Sort  [c] Category  [C] Collective  [d] Date  [r] Rule  [Enter] Details  [q] Quit"
+		keys = "  [x/Space] Select  [A] All  [e] Edit  [c] Category  [C] Collective  [/] Filter  [s] Sort  [Enter] Details  [q] Quit"
 	}
 	b.WriteString(lipgloss.NewStyle().Faint(true).Render(keys))
 	b.WriteString("\n")
@@ -805,8 +2055,8 @@ func (m txBrowserModel) renderDetailBox() string {
 	}
 	add("Counterparty", txDisplayCounterparty(*tx))
 	add("Description", txDisplayDescription(*tx))
-	add("Category", tx.Category)
-	add("Collective", tx.Collective)
+	add("Category", txDisplayCategory(*tx))
+	add("Collective", txDisplayCollective(*tx))
 	if tx.Event != "" {
 		add("Event", tx.Event)
 	}
@@ -874,7 +2124,7 @@ func (m txBrowserModel) renderDetailBox() string {
 	add("TX Hash", shortAddr(tx.TxHash))
 
 	lines = append(lines, "")
-	lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("[Enter/Esc] Back  [c] Category  [C] Collective  [d] Date"))
+	lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("[Enter/Esc] Back  [e] Edit  [c] Category  [C] Collective  [d] Date"))
 
 	boxWidth := 56
 	if m.width > 20 {
@@ -906,7 +2156,10 @@ func (m txBrowserModel) renderInlineEditBox() string {
 	case modeEditCategory:
 		title = "Assign Category"
 	case modeEditDate:
-		title = "Set Accounting Date (YYYY-MM)"
+		title = "Set Accounting Date / Spread"
+	}
+	if m.bulkEdit {
+		title = fmt.Sprintf("%s (%d txs)", title, m.selectedCount())
 	}
 
 	var lines []string
@@ -951,10 +2204,20 @@ func (m txBrowserModel) renderInlineEditBox() string {
 		if len(filtered) == 0 {
 			lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("   (new: "+m.editInput+")"))
 		}
+	} else {
+		lines = append(lines, "")
+		for _, l := range m.spreadPreviewLines() {
+			lines = append(lines, optionStyle.Render(l))
+		}
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("[Enter] Save  [Tab] Complete  [Esc] Cancel"))
+	if m.mode == modeEditDate {
+		lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("Forms: 2025 · 2024-2025 · 202401-202506 · 2024-12,2025-03"))
+		lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("[Enter] Save  [Esc] Cancel"))
+	} else {
+		lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("[Enter] Save  [Tab] Complete  [Esc] Cancel"))
+	}
 
 	boxWidth := 40
 	if m.width > 20 {
@@ -976,40 +2239,118 @@ func (m txBrowserModel) renderInlineEditBox() string {
 		Render(strings.Join(lines, "\n"))
 }
 
+func (m txBrowserModel) renderAssignmentEditBox() string {
+	bg := lipgloss.Color("235")
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Background(bg)
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(bg).Bold(true)
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(bg)
+	selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("255"))
+	optionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(bg)
+
+	title := "Edit Assignment"
+	if m.bulkEdit {
+		title = fmt.Sprintf("%s (%d txs)", title, m.selectedCount())
+	}
+
+	var lines []string
+	lines = append(lines, lipgloss.NewStyle().Bold(true).Background(bg).Render(title))
+	lines = append(lines, "")
+
+	renderInput := func(index int, label, value string) {
+		style := valueStyle
+		if index == m.editField {
+			style = activeStyle
+		}
+		if value == "" {
+			value = "…"
+		}
+		cursor := ""
+		if index == m.editField {
+			cursor = "▎"
+		}
+		lines = append(lines, labelStyle.Render(label+": ")+style.Render(value+cursor))
+	}
+	renderInput(0, "Collective", m.editCollectiveInput)
+	renderInput(1, "Category", m.editCategoryInput)
+
+	lines = append(lines, "")
+	var filtered []string
+	cursor := 0
+	if m.editField == 0 {
+		filtered = m.filteredCollectiveOptions()
+		cursor = m.editCollectiveCursor
+	} else {
+		filtered = m.filteredCategoryOptions()
+		cursor = m.editCategoryCursor
+	}
+	maxShow := 8
+	if len(filtered) < maxShow {
+		maxShow = len(filtered)
+	}
+	start := 0
+	if cursor >= maxShow {
+		start = cursor - maxShow + 1
+	}
+	end := start + maxShow
+	if end > len(filtered) {
+		end = len(filtered)
+		start = end - maxShow
+		if start < 0 {
+			start = 0
+		}
+	}
+	for i := start; i < end; i++ {
+		if i == cursor {
+			lines = append(lines, selectedStyle.Render(" > "+filtered[i]+" "))
+		} else {
+			lines = append(lines, optionStyle.Render("   "+filtered[i]))
+		}
+	}
+	if len(filtered) == 0 {
+		value := m.editCollectiveInput
+		if m.editField == 1 {
+			value = m.editCategoryInput
+		}
+		lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("   (new: "+value+")"))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, lipgloss.NewStyle().Faint(true).Background(bg).Render("[Enter] Save  [Tab] Switch/Complete  [Esc] Cancel"))
+
+	boxWidth := 46
+	if m.width > 20 {
+		boxWidth = m.width / 3
+		if boxWidth < 46 {
+			boxWidth = 46
+		}
+		if boxWidth > 70 {
+			boxWidth = 70
+		}
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Background(bg).
+		Padding(1, 2).
+		Width(boxWidth).
+		Render(strings.Join(lines, "\n"))
+}
+
 // getFilteredTxs returns the transactions matching the current filter.
 // Mirrors the stickers filter logic (case-insensitive substring on column).
 func (m txBrowserModel) getFilteredTxs() []TransactionEntry {
 	if m.filterStr == "" {
 		return m.txs
 	}
-	tz := BrusselsTZ()
 	filter := strings.ToLower(m.filterStr)
 	var result []TransactionEntry
+	if m.selectedCol < 0 || m.selectedCol >= len(m.columns) {
+		return result
+	}
+	kind := m.columns[m.selectedCol].Kind
 	for _, tx := range m.txs {
-		t := time.Unix(tx.Timestamp, 0).In(tz)
-		// Build the cell value for the selected column (same order as buildStickerRows)
-		var cellValue string
-		switch m.selectedCol {
-		case 0: // Date
-			cellValue = t.Format("02/01")
-		case 1: // Source
-			cellValue = txSource(tx)
-		case 2: // Collective
-			cellValue = tx.Collective
-		case 3: // Category
-			cellValue = tx.Category
-		case 4: // Counterparty
-			cellValue = txDisplayCounterparty(tx)
-		case 5: // Description
-			cellValue = txDisplayDescription(tx)
-		case 6: // Amount
-			amt := txAmount(tx)
-			if tx.Type == "CREDIT" {
-				cellValue = fmt.Sprintf("+%.2f", math.Abs(amt))
-			} else {
-				cellValue = fmt.Sprintf("-%.2f", math.Abs(amt))
-			}
-		}
+		cellValue := transactionCellValue(tx, kind, m.selectedTxIDs, false)
 		if strings.Contains(strings.ToLower(cellValue), filter) {
 			result = append(result, tx)
 		}
@@ -1038,6 +2379,7 @@ func saveTransactionUpdate(tx *TransactionEntry) bool {
 		if txFile.Transactions[i].ID == tx.ID {
 			txFile.Transactions[i].Category = tx.Category
 			txFile.Transactions[i].Collective = tx.Collective
+			txFile.Transactions[i].Spread = tx.Spread
 			syncTransactionTags(&txFile.Transactions[i])
 			out, _ := json.MarshalIndent(txFile, "", "  ")
 			writeMonthFile(dataDir, year, month, filepath.Join("generated", "transactions.json"), out)
@@ -1080,14 +2422,26 @@ func TransactionsBrowser(args []string) {
 
 	fmt.Printf("  Loading transactions...\n")
 	txs := applyOffsetLimit(loadFilteredTransactions(filter), skip, n)
+	showAccountColumn := filter.AccountSlug == ""
+	columns := transactionTableColumns(showAccountColumn, true)
 
 	for {
-		t := newStickerTable(txs, 0, 0)
+		selected := map[string]bool{}
+		t := newStickerTableForColumns(txs, 0, 0, columns, selected)
+		selectedCol := txColumnIndex(columns, txColumnDate)
+		if selectedCol < 0 {
+			selectedCol = 0
+		}
 
 		m := txBrowserModel{
-			table:    t,
-			txs:      txs,
-			currency: filter.Currency,
+			table:         t,
+			columns:       columns,
+			txs:           txs,
+			currency:      filter.Currency,
+			account:       filter.AccountSlug,
+			selectedCol:   selectedCol,
+			sortCol:       -1,
+			selectedTxIDs: selected,
 		}
 
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -1258,10 +2612,13 @@ func printTransactionsBrowserHelp() {
 
 %sINTERACTIVE KEYS%s
   %s↑↓/jk%s       Navigate rows
+  %sx/Space%s     Toggle row selection
+  %sA%s           Toggle all rows in current view
   %s←→%s          Select column (for filter/sort)
   %sPgUp/PgDn%s   Scroll page
   %s/%s           Filter on selected column
   %ss%s           Sort by selected column
+  %se%s           Edit category + collective
   %sc%s           Assign category
   %sC%s           Assign collective
   %sd%s           Set accounting date
@@ -1299,6 +2656,9 @@ func printTransactionsBrowserHelp() {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset, // INTERACTIVE KEYS
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

@@ -70,7 +70,7 @@ func TestStripePayoutSync(t *testing.T) {
 
 	// ── Step 1: Sync payout 1 ──
 	t.Logf("Syncing payout 1: %s", payout1)
-	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, false, payout1, time.Time{})
+	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, false, false, payout1, time.Time{})
 	if err != nil {
 		t.Fatalf("Failed to sync payout 1: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestStripePayoutSync(t *testing.T) {
 
 	// ── Step 2: Sync payout 2 ──
 	t.Logf("Syncing payout 2: %s", payout2)
-	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, false, payout2, time.Time{})
+	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, false, false, payout2, time.Time{})
 	if err != nil {
 		t.Fatalf("Failed to sync payout 2: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestStripePayoutSync(t *testing.T) {
 
 	// ── Step 3: Force re-sync payout 1 only ──
 	t.Logf("Force re-syncing payout 1: %s", payout1)
-	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, true, payout1, time.Time{})
+	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, true, false, payout1, time.Time{})
 	if err != nil {
 		t.Fatalf("Failed to force re-sync payout 1: %v", err)
 	}
@@ -156,7 +156,9 @@ func findOrCreateTestJournal(t *testing.T, creds *OdooCredentials, uid int, name
 		}},
 		map[string]interface{}{"fields": []string{"id"}, "limit": 1})
 	if err == nil {
-		var journals []struct{ ID int `json:"id"` }
+		var journals []struct {
+			ID int `json:"id"`
+		}
 		json.Unmarshal(result, &journals)
 		if len(journals) > 0 {
 			return journals[0].ID
@@ -422,7 +424,7 @@ func TestStripePayoutSyncDryRun(t *testing.T) {
 	}
 
 	// Dry run should not create anything
-	_, err = syncStripeToOdoo(acc, creds, uid, 0, true, false, "po_1OUgT1FAhaWeDyowVcD9E9Hn", time.Time{})
+	_, err = syncStripeToOdoo(acc, creds, uid, 0, true, false, false, "po_1OUgT1FAhaWeDyowVcD9E9Hn", time.Time{})
 	if err != nil {
 		t.Fatalf("Dry run failed: %v", err)
 	}

@@ -73,6 +73,37 @@ func TestSyncTransactionTagsCanonicalizesFieldsAndMetadata(t *testing.T) {
 	}
 }
 
+func TestSyncTransactionTagsEmitsSpreadAndDropsStaleSpread(t *testing.T) {
+	tx := TransactionEntry{
+		Provider: "stripe",
+		Type:     "DEBIT",
+		Tags: [][]string{
+			{"spread", "2024-01", "100.00"}, // stale — should be dropped
+			{"description", "kept"},
+		},
+		Spread: []SpreadEntry{
+			{Month: "2025-01", Amount: "50.00"},
+			{Month: "2025-02", Amount: "50.00"},
+		},
+	}
+	syncTransactionTags(&tx)
+
+	for _, query := range [][]string{
+		{"spread", "2025-01", "50.00"},
+		{"spread", "2025-02", "50.00"},
+		{"description", "kept"},
+	} {
+		if !transactionHasTag(tx, query) {
+			t.Fatalf("expected tag %#v in %#v", query, tx.Tags)
+		}
+	}
+	for _, t2 := range tx.Tags {
+		if len(t2) >= 2 && t2[0] == "spread" && t2[1] == "2024-01" {
+			t.Fatalf("stale spread tag should have been dropped: %#v", tx.Tags)
+		}
+	}
+}
+
 func TestParseTxListFlagsAddsTagAliases(t *testing.T) {
 	f, _, _, err := parseTxListFlags([]string{
 		"--application", "luma",

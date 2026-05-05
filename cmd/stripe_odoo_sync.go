@@ -36,6 +36,7 @@ func syncStripeChronological(
 	uid int,
 	dryRun bool,
 	force bool,
+	skipReconciliation bool,
 	payoutFilter string,
 	untilDate time.Time,
 ) (string, error) {
@@ -66,7 +67,7 @@ func syncStripeChronological(
 	if err != nil {
 		return "", fmt.Errorf("load Stripe source transactions: %v", err)
 	}
-	odooLog("  %s%d new balance transactions%s\n\n", Fmt.Dim, len(bts), Fmt.Reset)
+	odooLog("  %s%d new Stripe balance transaction(s)%s\n\n", Fmt.Dim, len(bts), Fmt.Reset)
 	if len(bts) == 0 {
 		odooLog("  %s✓ Already in sync%s\n\n", Fmt.Green, Fmt.Reset)
 		return "already in sync", nil
@@ -74,6 +75,10 @@ func syncStripeChronological(
 	if force {
 		odooLog("  %sReset rebuild: importing chronologically, skipping per-line reconciliation, using in-memory balances unless Odoo create mismatches occur.%s\n\n",
 			Fmt.Dim, Fmt.Reset)
+	}
+	if skipReconciliation {
+		odooLog("  %sSkipping reconciliation; run `chb odoo journals %d reconcile` later to match imported lines.%s\n\n",
+			Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
 	}
 
 	// Find (or create) the currently-open statement. runningBalance is
@@ -139,17 +144,17 @@ func syncStripeChronological(
 		batchLen := len(batch)
 		start := time.Now()
 		odooLog("    %screating %d statement line(s) in Odoo (%s)...%s\n", Fmt.Dim, batchLen, reason, Fmt.Reset)
-		createdIDs, _ := batchCreateStatementLinesWithIDs(creds, uid, batch)
+		createdIDs, _ := batchCreateStatementLinesWithProgress(creds, uid, batch, reason)
 		odooLog("    %screated %d/%d line(s) in %s%s\n", Fmt.Dim, len(createdIDs), batchLen, time.Since(start).Round(time.Second), Fmt.Reset)
 		stats.LinesCreated += len(createdIDs)
 		stats.LinesSkipped += batchLen - len(createdIDs)
 		if len(createdIDs) != batchLen {
 			createMismatch = true
 		}
-		if force {
+		if force || skipReconciliation {
 			// Reset rebuilds are dominated by Odoo writes. Per-line reconciliation is
 			// better handled with `chb odoo journals <id> reconcile` after the import.
-			odooLog("    %sreset rebuild: skipping per-line reconciliation%s\n", Fmt.Dim, Fmt.Reset)
+			odooLog("    %sskipping per-line reconciliation%s\n", Fmt.Dim, Fmt.Reset)
 		} else {
 			reconcileStart := time.Now()
 			odooLog("    %sreconciling %d new line(s)...%s\n", Fmt.Dim, len(createdIDs), Fmt.Reset)
@@ -159,14 +164,17 @@ func syncStripeChronological(
 		batch = nil
 	}
 
+	prepareStatus := newStatusLine()
 	for i, bt := range bts {
 		if !untilDate.IsZero() && time.Unix(bt.Created, 0).After(untilDate) {
 			break
 		}
 		processedBTs++
 		if processedBTs == 1 || processedBTs%100 == 0 {
-			odooLog("  %spreparing Stripe BT %d/%d (%s)%s\n",
-				Fmt.Dim, processedBTs, len(bts), time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02"), Fmt.Reset)
+			if !quietOdooContext() {
+				prepareStatus.Update("Preparing Stripe balance transaction %d/%d (%s)",
+					processedBTs, len(bts), time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02"))
+			}
 		}
 		importID := fmt.Sprintf("stripe:%s:%s:0", strings.ToLower(acc.AccountID), strings.ToLower(bt.ID))
 		if existingIDs[importID] {
@@ -212,8 +220,9 @@ func syncStripeChronological(
 		// Close the open statement on automatic payout.
 		if bt.Type == "payout" && bt.PayoutAutomatic {
 			payoutsSeen++
+			prepareStatus.Clear()
 			name, ref := payoutStatementLabels(bt)
-			odooLog("  %sPayout %d: %s  (%d/%d BTs)%s\n", Fmt.Dim, payoutsSeen, name, i+1, len(bts), Fmt.Reset)
+			odooLog("  %sPayout %d: %s  (%d/%d Stripe balance transactions)%s\n", Fmt.Dim, payoutsSeen, name, i+1, len(bts), Fmt.Reset)
 			feeKey := bt.PayoutID
 			if feeKey == "" {
 				feeKey = bt.ID
@@ -260,6 +269,7 @@ func syncStripeChronological(
 			}
 		}
 	}
+	prepareStatus.Clear()
 
 	if feeCents != 0 {
 		importID := fmt.Sprintf("stripe:%s:open:%s:%s:fees",
@@ -291,11 +301,10 @@ func syncStripeChronological(
 		}
 	}
 	if skippedBTs > 0 || processedBTs > 0 {
-		odooLog("  %sprocessed %d Stripe BT(s), skipped %d duplicate(s), closed %d statement(s)%s\n",
+		odooLog("  %sprocessed %d Stripe balance transaction(s), skipped %d duplicate(s), closed %d statement(s)%s\n",
 			Fmt.Dim, processedBTs, skippedBTs, stats.Statements, Fmt.Reset)
 	}
 
-	stats.PayoutsTotal = 0 // recomputed from lines already
 	if !quietOdooContext() {
 		stats.print()
 	}
@@ -400,7 +409,7 @@ func updateBTStats(s *syncStats, bt stripesource.Transaction, amount float64) {
 		s.Refunds++
 		s.RefundsTotal += centsToEuros(bt.Amount)
 		s.ChargeFees += centsToEuros(bt.Fee)
-	case "payout":
+	case "payout", "payout_cancel":
 		s.PayoutsTotal += amount
 	case "stripe_fee", "adjustment":
 		s.StripeFees += -amount

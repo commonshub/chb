@@ -13,13 +13,13 @@ type Collective struct {
 }
 
 func collectivesPath() string {
-	return filepath.Join(chbDir(), "collectives.json")
+	return settingsFilePath("collectives.json")
 }
 
-// LoadCollectives reads collectives from APP_DATA_DIR/collectives.json.
+// LoadCollectives reads collectives from APP_DATA_DIR/settings/collectives.json.
 // On first load, migrates from settings.json if collectives.json doesn't exist.
 func LoadCollectives() map[string]Collective {
-	data, err := os.ReadFile(collectivesPath())
+	data, err := os.ReadFile(existingSettingsFilePath("collectives.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Migrate from settings.json
@@ -38,10 +38,13 @@ func LoadCollectives() map[string]Collective {
 	return collectives
 }
 
-// SaveCollectives writes collectives to APP_DATA_DIR/collectives.json.
+// SaveCollectives writes collectives to APP_DATA_DIR/settings/collectives.json.
 func SaveCollectives(collectives map[string]Collective) error {
 	data, err := json.MarshalIndent(collectives, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(collectivesPath()), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(collectivesPath(), data, 0644)

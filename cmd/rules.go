@@ -34,13 +34,13 @@ type Rule struct {
 }
 
 func rulesPath() string {
-	return filepath.Join(AppDataDir(), "rules.json")
+	return settingsFilePath("rules.json")
 }
 
-// LoadRules reads rules from APP_DATA_DIR/rules.json.
+// LoadRules reads rules from APP_DATA_DIR/settings/rules.json.
 // On first load, migrates from settings.json if rules.json doesn't exist.
 func LoadRules() ([]Rule, error) {
-	data, err := os.ReadFile(rulesPath())
+	data, err := os.ReadFile(existingSettingsFilePath("rules.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Try migration from settings.json
@@ -60,7 +60,7 @@ func LoadRules() ([]Rule, error) {
 	return rules, nil
 }
 
-// SaveRules writes rules to APP_DATA_DIR/rules.json.
+// SaveRules writes rules to APP_DATA_DIR/settings/rules.json.
 func SaveRules(rules []Rule) error {
 	data, err := json.MarshalIndent(rules, "", "  ")
 	if err != nil {

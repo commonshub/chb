@@ -901,7 +901,7 @@ func printRulesHelp() {
 %sDESCRIPTION%s
   Rules define how transactions are automatically categorized.
   Each rule has match conditions and category assignments.
-  Rules are stored in %sAPP_DATA_DIR/rules.json%s.
+  Rules are stored in %sAPP_DATA_DIR/settings/rules.json%s.
 
 %sMATCH FIELDS%s
   %ssender%s        Glob on counterparty for incoming tx
