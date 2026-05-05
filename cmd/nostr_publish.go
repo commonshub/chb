@@ -196,6 +196,8 @@ func TransactionsPublish(args []string) error {
 		tags := nostr.Tags{
 			{"I", p.URI},
 			{"K", uriKind(p.URI)},
+			{"i", p.URI},
+			{"k", uriKind(p.URI)},
 			{"category", p.Category},
 		}
 		if p.Collective != "" {
@@ -214,14 +216,13 @@ func TransactionsPublish(args []string) error {
 			Content: "",
 		}
 
-		accepted, err := PublishNostrEvent(keys, ev)
+		accepted, err := publishNostrEventWithOutbox(keys, p.URI, ev)
 		if err != nil {
 			failed++
 			fmt.Printf("  %s✗ %s%s\n", Fmt.Red, p.URI, Fmt.Reset)
 		} else {
 			published++
-			// Save to published log
-			appendPublishedEvent(p.URI, ev.ID, accepted)
+			_ = accepted
 		}
 
 		if (i+1)%10 == 0 {
@@ -264,67 +265,30 @@ func uriKind(uri string) string {
 	return "unknown"
 }
 
-// publishedEventsPath returns the path to the JSONL log of published events.
-func publishedEventsPath() string {
-	return filepath.Join(AppDataDir(), "nostr-events-published.jsonl")
-}
-
-// loadPublishedEventIDs reads the published log and returns a set of URIs.
+// loadPublishedEventIDs reads the durable Nostr queue and returns URIs that
+// are already sent or queued for retry.
 func loadPublishedEventIDs() map[string]bool {
 	ids := map[string]bool{}
-	data, err := os.ReadFile(publishedEventsPath())
-	if err != nil {
-		return ids
+	for uri := range loadQueuedNostrEventURIs() {
+		ids[uri] = true
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var entry struct {
-			URI string `json:"uri"`
-		}
-		if json.Unmarshal([]byte(line), &entry) == nil && entry.URI != "" {
-			ids[entry.URI] = true
-		}
+	for uri := range loadSentNostrEventURIs() {
+		ids[uri] = true
 	}
 	return ids
-}
-
-// appendPublishedEvent appends a published event to the JSONL log.
-func appendPublishedEvent(uri, eventID string, relays []string) {
-	entry := map[string]interface{}{
-		"uri":         uri,
-		"eventId":     eventID,
-		"relays":      relays,
-		"publishedAt": time.Now().UTC().Format(time.RFC3339),
-	}
-	data, _ := json.Marshal(entry)
-
-	path := publishedEventsPath()
-	os.MkdirAll(filepath.Dir(path), 0755)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	f.WriteString(string(data) + "\n")
 }
 
 func printTransactionsPublishHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb transactions publish%s — Publish local categorizations to Nostr
+%schb nostr sync transactions%s — Publish/fetch transaction annotations
 
 %sUSAGE%s
-  %schb transactions publish%s [year[/month]]
+  %schb nostr sync transactions%s [year[/month]]
 
 %sDESCRIPTION%s
-  Previews all locally categorized transactions that don't yet have
-  Nostr annotations, and publishes them as kind 1111 events after
-  explicit confirmation.
-
-  Requires a Nostr identity. Run %schb setup nostr%s first.
+  Flushes the durable Nostr outbox, publishes local transaction annotations,
+  fetches remote annotations back, then regenerates transactions.
 
 %sOPTIONS%s
   %s<year>%s              Publish for a specific year
@@ -332,15 +296,14 @@ func printTransactionsPublishHelp() {
   %s--help, -h%s          Show this help
 
 %sEXAMPLES%s
-  %schb transactions publish%s              Current month
-  %schb transactions publish 2026/04%s      April 2026
-  %schb transactions publish 2026%s         All of 2026
+  %schb nostr sync transactions%s              Current month
+  %schb nostr sync transactions 2026/04%s      April 2026
+  %schb nostr sync transactions 2026%s         All of 2026
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
-		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

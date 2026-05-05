@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	nostrstripeplugin "github.com/CommonsHub/chb/plugins/nostr-stripe"
+	nostrsource "github.com/CommonsHub/chb/sources/nostr"
 	"github.com/charmbracelet/huh"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -122,17 +122,37 @@ func TransactionsSyncNostr(args []string) error {
 
 	// Save pulled annotations per source per month
 	if len(annotations) > 0 {
-		// Group stripe annotations by month
+		// Group annotations by month. Keep the legacy Stripe-specific file,
+		// and also write the source-wide annotations file used by generate.
+		annotationsByMonth := map[string]map[string]*TxAnnotation{}
 		stripeByMonth := map[string]map[string]*TxAnnotation{}
 		for _, t := range allTxs {
 			ann, ok := annotations[t.URI]
-			if !ok || t.Entry.Provider != "stripe" {
+			if !ok {
+				continue
+			}
+			if annotationsByMonth[t.YM] == nil {
+				annotationsByMonth[t.YM] = map[string]*TxAnnotation{}
+			}
+			annotationsByMonth[t.YM][t.URI] = ann
+			if t.Entry.Provider != "stripe" {
 				continue
 			}
 			if stripeByMonth[t.YM] == nil {
 				stripeByMonth[t.YM] = map[string]*TxAnnotation{}
 			}
 			stripeByMonth[t.YM][t.URI] = ann
+		}
+		for ym, monthAnns := range annotationsByMonth {
+			parts := strings.Split(ym, "-")
+			if len(parts) != 2 {
+				continue
+			}
+			cache := NostrAnnotationCache{
+				FetchedAt:   time.Now().UTC().Format(time.RFC3339),
+				Annotations: monthAnns,
+			}
+			_ = nostrsource.WriteJSON(dataDir, parts[0], parts[1], cache, nostrsource.AnnotationsFile)
 		}
 		for ym, monthAnns := range stripeByMonth {
 			parts := strings.Split(ym, "-")
@@ -143,9 +163,9 @@ func TransactionsSyncNostr(args []string) error {
 				FetchedAt:   time.Now().UTC().Format(time.RFC3339),
 				Annotations: monthAnns,
 			}
-			_ = writePluginDataJSON(dataDir, parts[0], parts[1], nostrstripeplugin.Name, cache, nostrstripeplugin.AnnotationsFile)
+			_ = nostrsource.WriteJSON(dataDir, parts[0], parts[1], cache, nostrsource.StripeAnnotationsFile)
 		}
-		fmt.Printf("  %sSaved stripe annotations to disk%s\n", Fmt.Dim, Fmt.Reset)
+		fmt.Printf("  %sSaved annotations to disk%s\n", Fmt.Dim, Fmt.Reset)
 	}
 
 	// Show what Nostr knows that we don't have locally
@@ -268,6 +288,8 @@ func TransactionsSyncNostr(args []string) error {
 		tags := nostr.Tags{
 			{"I", p.URI},
 			{"K", uriKind(p.URI)},
+			{"i", p.URI},
+			{"k", uriKind(p.URI)},
 			{"category", p.Category},
 		}
 		if p.Collective != "" {
@@ -286,13 +308,13 @@ func TransactionsSyncNostr(args []string) error {
 			Content: "",
 		}
 
-		accepted, err := PublishNostrEvent(keys, ev)
+		accepted, err := publishNostrEventWithOutbox(keys, p.URI, ev)
 		if err != nil {
 			failed++
 			fmt.Printf("  %s✗ %s%s\n", Fmt.Red, p.URI, Fmt.Reset)
 		} else {
 			published++
-			appendPublishedEvent(p.URI, ev.ID, accepted)
+			_ = accepted
 		}
 
 		if (i+1)%10 == 0 {
@@ -337,10 +359,10 @@ func txURI(tx TransactionEntry) string {
 func printTransactionsSyncNostrHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb transactions sync nostr%s — Pull & push transaction annotations via Nostr
+%schb nostr sync transactions%s — Pull & push transaction annotations via Nostr
 
 %sUSAGE%s
-  %schb transactions sync nostr%s [year[/month]] [options]
+  %schb nostr sync transactions%s [year[/month]] [options]
 
 %sDESCRIPTION%s
   Two-way sync of transaction categorizations with Nostr relays:
@@ -357,10 +379,10 @@ func printTransactionsSyncNostrHelp() {
   %s--help, -h%s          Show this help
 
 %sEXAMPLES%s
-  %schb transactions sync nostr%s              Current month
-  %schb transactions sync nostr 2026/04%s      April 2026
-  %schb transactions sync nostr 2026%s         All of 2026
-  %schb transactions sync nostr --preview%s    Auto-show preview
+  %schb nostr sync transactions%s              Current month
+  %schb nostr sync transactions 2026/04%s      April 2026
+  %schb nostr sync transactions 2026%s         All of 2026
+  %schb nostr sync transactions --preview%s    Auto-show preview
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,

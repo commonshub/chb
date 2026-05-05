@@ -10,8 +10,7 @@ import (
 )
 
 // InvoicesPublish publishes local invoice annotations to Nostr as NIP-73
-// kind-1111 events. Mirrors TransactionsPublish in shape and re-uses the
-// shared published-event log so the same URI isn't published twice.
+// kind-1111 events. Kept as an internal step behind `chb nostr sync`.
 func InvoicesPublish(args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		printMovesPublishHelp("invoices")
@@ -143,6 +142,8 @@ func publishMoves(kind moveKind, args []string) error {
 		tags := nostr.Tags{
 			{"I", p.URI},
 			{"K", uriKind(p.URI)},
+			{"i", p.URI},
+			{"k", uriKind(p.URI)},
 		}
 		if p.Category != "" {
 			tags = append(tags, nostr.Tag{"category", p.Category})
@@ -158,13 +159,13 @@ func publishMoves(kind moveKind, args []string) error {
 		}
 		ev := &nostr.Event{Kind: 1111, Tags: tags}
 
-		accepted, err := PublishNostrEvent(keys, ev)
+		accepted, err := publishNostrEventWithOutbox(keys, p.URI, ev)
 		if err != nil {
 			failed++
 			fmt.Printf("  %s✗ %s%s\n", Fmt.Red, p.URI, Fmt.Reset)
 		} else {
 			published++
-			appendPublishedEvent(p.URI, ev.ID, accepted)
+			_ = accepted
 		}
 		if (i+1)%10 == 0 {
 			fmt.Printf("  %s... %d/%d%s\n", Fmt.Dim, i+1, len(plan), Fmt.Reset)

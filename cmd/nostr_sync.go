@@ -22,8 +22,12 @@ func NostrSync(args []string) error {
 		scope = strings.ToLower(args[0])
 		args = args[1:]
 	}
+	if scope == "" && HasFlag(args, "--help", "-h", "help") {
+		printNostrSyncHelp()
+		return nil
+	}
 	switch scope {
-	case "", "help", "--help", "-h":
+	case "help", "--help", "-h":
 		printNostrSyncHelp()
 		return nil
 	case "transactions", "tx":
@@ -32,7 +36,7 @@ func NostrSync(args []string) error {
 		return nostrSyncMoves(moveKindInvoice, args)
 	case "bills":
 		return nostrSyncMoves(moveKindBill, args)
-	case "all":
+	case "", "all":
 		if err := nostrSyncTransactions(args); err != nil {
 			fmt.Printf("  %s✗ transactions: %v%s\n", Fmt.Red, err, Fmt.Reset)
 		}
@@ -51,7 +55,14 @@ func NostrSync(args []string) error {
 // nostrSyncTransactions: publish unpublished categorizations, fetch remote
 // annotations, regenerate the unified transactions.json.
 func nostrSyncTransactions(args []string) error {
+	if HasFlag(args, "--help", "-h", "help") {
+		printNostrSyncHelp()
+		return nil
+	}
 	fmt.Printf("\n%s📡 Nostr sync — transactions%s\n", Fmt.Bold, Fmt.Reset)
+	if err := flushNostrOutboxWithStatus(); err != nil {
+		fmt.Printf("  %s⚠ outbox: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	}
 	if err := TransactionsPublish(args); err != nil {
 		return err
 	}
@@ -68,7 +79,14 @@ func nostrSyncTransactions(args []string) error {
 // annotations, then run the priority-merge generate so invoices.json /
 // bills.json reflect the latest state.
 func nostrSyncMoves(kind moveKind, args []string) error {
+	if HasFlag(args, "--help", "-h", "help") {
+		printNostrSyncHelp()
+		return nil
+	}
 	fmt.Printf("\n%s📡 Nostr sync — %s%s\n", Fmt.Bold, kind.labelPl, Fmt.Reset)
+	if err := flushNostrOutboxWithStatus(); err != nil {
+		fmt.Printf("  %s⚠ outbox: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	}
 	if err := publishMoves(kind, args); err != nil {
 		return err
 	}
@@ -84,7 +102,7 @@ func printNostrSyncHelp() {
 %schb nostr sync%s — Publish + fetch Nostr annotations, then merge into outputs
 
 %sUSAGE%s
-  %schb nostr sync <scope>%s [year[/month]]
+  %schb nostr sync%s [scope] [year[/month]]
 
 %sSCOPES%s
   %stransactions%s   Stripe + blockchain txs (alias: tx)
@@ -92,12 +110,15 @@ func printNostrSyncHelp() {
   %sbills%s          Odoo vendor bills
   %sall%s            run all three
 
+  With no scope, runs all scopes.
+
 %sDESCRIPTION%s
   For each scope this command runs three steps in order:
 
-    1. Publish local annotations that don't yet have a Nostr event.
-    2. Fetch remote annotations back onto cached records.
-    3. Run generate: apply the priority chain (Nostr > Odoo analytic >
+    1. Flush any signed events from APP_DATA_DIR/nostr/outbox.
+    2. Publish local annotations that don't yet have a Nostr event.
+    3. Fetch remote annotations back onto cached records.
+    4. Run generate: apply the priority chain (Nostr > Odoo analytic >
        local rules) and rewrite the public files.
 
   Publishing always asks for confirmation before broadcasting.
