@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -40,14 +41,47 @@ func chbDir() string {
 	return AppDataDir()
 }
 
+// AppSettingsDir returns the directory for app configuration files.
+// Defaults to APP_DATA_DIR/settings.
+func AppSettingsDir() string {
+	dir := filepath.Join(AppDataDir(), "settings")
+	_ = os.MkdirAll(dir, 0755)
+	return dir
+}
+
+func settingsFilePath(name string) string {
+	return filepath.Join(AppSettingsDir(), name)
+}
+
+func legacySettingsFilePath(name string) string {
+	return filepath.Join(AppDataDir(), name)
+}
+
+func existingSettingsFilePath(name string) string {
+	path := settingsFilePath(name)
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	legacyPath := legacySettingsFilePath(name)
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath
+	}
+	return path
+}
+
 // settingsDir returns the directory to look for settings files.
 // Downloads from GitHub if missing. Falls back to src/settings/ for monorepo compat.
 func settingsDir() string {
-	dir := chbDir()
+	dir := AppSettingsDir()
 	settingsPath := filepath.Join(dir, "settings.json")
 
 	if _, err := os.Stat(settingsPath); err == nil {
 		return dir
+	}
+
+	legacyPath := legacySettingsFilePath("settings.json")
+	if _, err := os.Stat(legacyPath); err == nil {
+		return AppDataDir()
 	}
 
 	if os.Getenv("APP_DATA_DIR") != "" {
@@ -120,19 +154,42 @@ type ContributionTokenSettings struct {
 	CardManagerInstanceID string `json:"cardManagerInstanceId,omitempty"`
 }
 
+const (
+	CalendarVisibilityAuto    = "auto"
+	CalendarVisibilityPrivate = "private"
+	CalendarVisibilityPublic  = "public"
+	CalendarProviderICS       = "ics"
+)
+
+// CalendarSourceConfig describes one external calendar feed and how its
+// entries should be classified by sync.
+type CalendarSourceConfig struct {
+	Slug       string `json:"slug"`
+	Name       string `json:"name,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	URL        string `json:"url"`
+	Visibility string `json:"visibility"`
+	Room       string `json:"room,omitempty"`
+}
+
+// CalendarSettings holds legacy direct URLs plus normalized source configs.
+type CalendarSettings struct {
+	Google  string                 `json:"google"`
+	Luma    string                 `json:"luma"`
+	Sources []CalendarSourceConfig `json:"-"`
+}
+
 // Settings represents settings.json
 type Settings struct {
 	Luma struct {
 		CalendarID string `json:"calendarId"`
 	} `json:"luma"`
-	Calendars struct {
-		Google string `json:"google"`
-		Luma   string `json:"luma"`
-	} `json:"calendars"`
+	Calendars         CalendarSettings           `json:"calendars"`
 	Discord           DiscordSettings            `json:"discord"`
 	Finance           FinanceSettings            `json:"finance"`
 	Membership        MembershipSettings         `json:"membership"`
 	ContributionToken *ContributionTokenSettings `json:"contributionToken"`
+	Tokens            []TokenConfig              `json:"-"`
 	Accounting        *AccountingSettings        `json:"accounting,omitempty"`
 }
 
@@ -145,7 +202,7 @@ type MembershipSettings struct {
 }
 
 // OdooSettings holds Odoo product configuration.
-// URL and credentials come from env vars in APP_DATA_DIR/config.env.
+// URL and credentials come from env vars in APP_DATA_DIR/settings/config.env.
 // Database is derived from the ODOO_URL hostname.
 type OdooSettings struct {
 	Products []OdooProduct `json:"products"`
@@ -201,6 +258,7 @@ type RoomInfo struct {
 	Features         []string `json:"features"`
 	IdealFor         []string `json:"idealFor"`
 	DiscordChannelID string   `json:"discordChannelId"`
+	Calendar         string   `json:"calendar,omitempty"`
 	GoogleCalendarID *string  `json:"googleCalendarId"`
 	MembershipReq    bool     `json:"membershipRequired,omitempty"`
 }
@@ -221,12 +279,19 @@ func LoadSettings() (*Settings, error) {
 		return nil, err
 	}
 
+	loadCalendarsSettings(&s)
+
 	// Override accounts from accounts.json if it exists
-	if _, err := os.Stat(accountsConfigPath()); err == nil {
+	if _, err := os.Stat(existingSettingsFilePath("accounts.json")); err == nil {
 		configs := LoadAccountConfigs()
 		if len(configs) > 0 {
 			s.Finance.Accounts = ToFinanceAccounts(configs)
 		}
+	}
+	s.Tokens = loadTokenConfigsForSettings(&s)
+	if len(s.Tokens) > 0 {
+		s.Finance.Accounts = filterTokenTrackerFinanceAccounts(s.Finance.Accounts)
+		s.Finance.Accounts = append(s.Finance.Accounts, ToFinanceTokenAccounts(s.Tokens)...)
 	}
 
 	return &s, nil
@@ -262,8 +327,7 @@ func SaveAccountingSettings(acct *AccountingSettings) error {
 }
 
 func LoadRooms() ([]RoomInfo, error) {
-	dir := settingsDir()
-	data, err := os.ReadFile(filepath.Join(dir, "rooms.json"))
+	data, err := os.ReadFile(existingSettingsFilePath("rooms.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +336,196 @@ func LoadRooms() ([]RoomInfo, error) {
 		return nil, err
 	}
 	return rc.Rooms, nil
+}
+
+func loadCalendarsSettings(settings *Settings) {
+	data, err := os.ReadFile(existingSettingsFilePath("calendars.json"))
+	if err != nil {
+		settings.Calendars.Sources = legacyCalendarSources(settings)
+		return
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		settings.Calendars.Sources = legacyCalendarSources(settings)
+		return
+	}
+
+	var sources []CalendarSourceConfig
+	if v, ok := raw["sources"]; ok {
+		var configured []CalendarSourceConfig
+		if json.Unmarshal(v, &configured) == nil {
+			for _, source := range configured {
+				if normalized, ok := normalizeCalendarSource(source); ok {
+					sources = append(sources, normalized)
+				}
+			}
+		}
+	}
+
+	if v, ok := raw["google"]; ok {
+		var google string
+		if json.Unmarshal(v, &google) == nil {
+			settings.Calendars.Google = google
+			if normalized, ok := normalizeCalendarSource(CalendarSourceConfig{
+				Slug:       "google",
+				Name:       "google",
+				Provider:   CalendarProviderICS,
+				URL:        google,
+				Visibility: CalendarVisibilityAuto,
+			}); ok {
+				sources = append(sources, normalized)
+			}
+		} else {
+			var source CalendarSourceConfig
+			if json.Unmarshal(v, &source) == nil {
+				source.Slug = firstNonEmptyStr(source.Slug, "google")
+				source.Name = firstNonEmptyStr(source.Name, source.Slug)
+				if normalized, ok := normalizeCalendarSource(source); ok {
+					settings.Calendars.Google = normalized.URL
+					sources = append(sources, normalized)
+				}
+			}
+		}
+	}
+	if v, ok := raw["luma"]; ok {
+		var lumaICS string
+		if json.Unmarshal(v, &lumaICS) == nil {
+			settings.Calendars.Luma = lumaICS
+			if normalized, ok := normalizeCalendarSource(CalendarSourceConfig{
+				Slug:       "luma",
+				Name:       "luma",
+				Provider:   CalendarProviderICS,
+				URL:        lumaICS,
+				Visibility: CalendarVisibilityAuto,
+			}); ok {
+				sources = append(sources, normalized)
+			}
+		} else {
+			parsedSource := false
+			var source CalendarSourceConfig
+			if json.Unmarshal(v, &source) == nil {
+				source.Slug = firstNonEmptyStr(source.Slug, "luma")
+				source.Name = firstNonEmptyStr(source.Name, source.Slug)
+				if normalized, ok := normalizeCalendarSource(source); ok {
+					settings.Calendars.Luma = normalized.URL
+					sources = append(sources, normalized)
+					parsedSource = true
+				}
+			}
+			if !parsedSource {
+				var legacy struct {
+					CalendarID string `json:"calendarId"`
+				}
+				if json.Unmarshal(v, &legacy) == nil {
+					settings.Luma.CalendarID = legacy.CalendarID
+				}
+			}
+		}
+	}
+	if v, ok := raw["calendars"]; ok {
+		var legacy struct {
+			Google string `json:"google"`
+			Luma   string `json:"luma"`
+		}
+		if json.Unmarshal(v, &legacy) == nil {
+			settings.Calendars.Google = legacy.Google
+			settings.Calendars.Luma = legacy.Luma
+			sources = append(sources, legacyCalendarSources(settings)...)
+		}
+	}
+
+	if len(sources) == 0 {
+		sources = legacyCalendarSources(settings)
+	}
+	settings.Calendars.Sources = dedupeCalendarSources(sources)
+}
+
+func legacyCalendarSources(settings *Settings) []CalendarSourceConfig {
+	var sources []CalendarSourceConfig
+	if settings.Calendars.Luma != "" {
+		sources = append(sources, CalendarSourceConfig{
+			Slug:       "luma",
+			Name:       "luma",
+			Provider:   CalendarProviderICS,
+			URL:        settings.Calendars.Luma,
+			Visibility: CalendarVisibilityAuto,
+		})
+	}
+	if settings.Calendars.Google != "" {
+		sources = append(sources, CalendarSourceConfig{
+			Slug:       "google",
+			Name:       "google",
+			Provider:   CalendarProviderICS,
+			URL:        settings.Calendars.Google,
+			Visibility: CalendarVisibilityAuto,
+		})
+	}
+	return sources
+}
+
+func normalizeCalendarSource(source CalendarSourceConfig) (CalendarSourceConfig, bool) {
+	source.Slug = strings.TrimSpace(source.Slug)
+	source.Name = strings.TrimSpace(source.Name)
+	source.Provider = normalizeCalendarProvider(source.Provider, source.URL)
+	source.URL = strings.TrimSpace(source.URL)
+	source.Room = strings.TrimSpace(source.Room)
+	if source.Slug == "" || source.URL == "" {
+		return CalendarSourceConfig{}, false
+	}
+	if source.Name == "" {
+		source.Name = source.Slug
+	}
+	source.Visibility = normalizeCalendarVisibility(source.Visibility)
+	if source.Room != "" {
+		source.Visibility = CalendarVisibilityAuto
+	}
+	return source, true
+}
+
+func normalizeCalendarProvider(provider, rawURL string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != "" {
+		return provider
+	}
+	if calendarURLLooksICS(rawURL) {
+		return CalendarProviderICS
+	}
+	// Existing calendar configs were all ICS feeds before provider was explicit.
+	return CalendarProviderICS
+}
+
+func calendarURLLooksICS(rawURL string) bool {
+	rawURL = strings.ToLower(strings.TrimSpace(rawURL))
+	return strings.HasPrefix(rawURL, "webcal://") ||
+		strings.HasSuffix(rawURL, ".ics") ||
+		strings.Contains(rawURL, ".ics?") ||
+		strings.Contains(rawURL, "/ical/")
+}
+
+func normalizeCalendarVisibility(visibility string) string {
+	switch strings.ToLower(strings.TrimSpace(visibility)) {
+	case CalendarVisibilityPrivate:
+		return CalendarVisibilityPrivate
+	case CalendarVisibilityPublic:
+		return CalendarVisibilityPublic
+	default:
+		return CalendarVisibilityAuto
+	}
+}
+
+func dedupeCalendarSources(sources []CalendarSourceConfig) []CalendarSourceConfig {
+	seen := map[string]bool{}
+	out := make([]CalendarSourceConfig, 0, len(sources))
+	for _, source := range sources {
+		normalized, ok := normalizeCalendarSource(source)
+		if !ok || seen[normalized.Slug] {
+			continue
+		}
+		seen[normalized.Slug] = true
+		out = append(out, normalized)
+	}
+	return out
 }
 
 // GetDiscordChannelIDs extracts all channel IDs from the Discord channels config

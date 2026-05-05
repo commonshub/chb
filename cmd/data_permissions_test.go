@@ -93,19 +93,19 @@ func TestWriteMonthFileCreatesNestedMessageDirectories(t *testing.T) {
 		DataDir(),
 		"2026",
 		"03",
-		filepath.Join("messages", "discord", "1443322243949137971", "messages.json"),
+		filepath.Join("sources", "discord", "1443322243949137971", "messages.json"),
 		[]byte(`{"messages":[]}`),
 	)
 	if err != nil {
 		t.Fatalf("write month file: %v", err)
 	}
 
-	monthPath := filepath.Join(dataDir, "2026", "03", "messages", "discord", "1443322243949137971", "messages.json")
-	latestPath := filepath.Join(dataDir, "latest", "messages", "discord", "1443322243949137971", "messages.json")
+	monthPath := filepath.Join(dataDir, "2026", "03", "sources", "discord", "1443322243949137971", "messages.json")
+	latestPath := filepath.Join(dataDir, "latest", "sources", "discord", "1443322243949137971", "messages.json")
 
-	assertMode(t, filepath.Dir(monthPath), 0755)
+	assertMode(t, filepath.Dir(monthPath), 0700)
 	assertMode(t, monthPath, 0644)
-	assertMode(t, filepath.Dir(latestPath), 0755)
+	assertMode(t, filepath.Dir(latestPath), 0700)
 	assertMode(t, latestPath, 0644)
 }
 

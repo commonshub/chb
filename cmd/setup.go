@@ -117,7 +117,7 @@ func Setup() error {
 }
 
 func configEnvPath() string {
-	return filepath.Join(AppDataDir(), "config.env")
+	return settingsFilePath("config.env")
 }
 
 func loadConfigEnv(path string) map[string]string {
@@ -172,9 +172,13 @@ func resolveEnvValue(config map[string]string, key string) (value, source string
 	return "", "", false
 }
 
-// LoadEnvFromConfig loads APP_DATA_DIR/config.env into os environment (if not already set)
+// LoadEnvFromConfig loads APP_DATA_DIR/settings/config.env into os environment
+// if not already set. It also accepts the legacy APP_DATA_DIR/config.env path.
 func LoadEnvFromConfig() {
-	env := loadConfigEnv(configEnvPath())
+	env := loadConfigEnv(legacySettingsFilePath("config.env"))
+	for key, val := range loadConfigEnv(configEnvPath()) {
+		env[key] = val
+	}
 	for key, val := range env {
 		if os.Getenv(key) == "" {
 			os.Setenv(key, val)

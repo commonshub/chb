@@ -31,6 +31,16 @@ func Errorf(format string, args ...interface{}) {
 	writeDiagnostic("error", true, format, args...)
 }
 
+func LogErrorf(format string, args ...interface{}) {
+	writeDiagnostic("error", false, format, args...)
+}
+
+func DiagnosticsLogPath() string {
+	diagnosticsMu.Lock()
+	defer diagnosticsMu.Unlock()
+	return diagnosticsPath
+}
+
 func DiagnosticsSummary() string {
 	diagnosticsMu.Lock()
 	defer diagnosticsMu.Unlock()

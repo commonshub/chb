@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -21,14 +22,15 @@ type SyncRunState struct {
 
 // SyncState tracks sync timestamps per source.
 type SyncState struct {
-	Calendars    *SyncSourceState `json:"calendars,omitempty"`
-	Transactions *SyncSourceState `json:"transactions,omitempty"`
-	Invoices     *SyncSourceState `json:"invoices,omitempty"`
-	Bills        *SyncSourceState `json:"bills,omitempty"`
-	Attachments  *SyncSourceState `json:"attachments,omitempty"`
-	Messages     *SyncSourceState `json:"messages,omitempty"`
-	Images       *SyncSourceState `json:"images,omitempty"`
-	Runs         *SyncRunState    `json:"runs,omitempty"`
+	Calendars    *SyncSourceState            `json:"calendars,omitempty"`
+	Transactions *SyncSourceState            `json:"transactions,omitempty"`
+	Invoices     *SyncSourceState            `json:"invoices,omitempty"`
+	Bills        *SyncSourceState            `json:"bills,omitempty"`
+	Attachments  *SyncSourceState            `json:"attachments,omitempty"`
+	Messages     *SyncSourceState            `json:"messages,omitempty"`
+	Images       *SyncSourceState            `json:"images,omitempty"`
+	Accounts     map[string]*SyncSourceState `json:"accounts,omitempty"`
+	Runs         *SyncRunState               `json:"runs,omitempty"`
 }
 
 func syncStatePath() string {
@@ -89,7 +91,19 @@ func UpdateSyncSource(source string, full bool) {
 	case "images":
 		ss = get(&state.Images)
 	default:
-		return
+		if account, ok := strings.CutPrefix(source, "account:"); ok && account != "" {
+			if state.Accounts == nil {
+				state.Accounts = map[string]*SyncSourceState{}
+			}
+			account = strings.ToLower(account)
+			ss = state.Accounts[account]
+			if ss == nil {
+				ss = &SyncSourceState{}
+				state.Accounts[account] = ss
+			}
+		} else {
+			return
+		}
 	}
 
 	ss.LastSync = now
@@ -134,6 +148,10 @@ func LastSyncMonth(source string) string {
 		ss = state.Messages
 	case "images":
 		ss = state.Images
+	default:
+		if account, ok := strings.CutPrefix(source, "account:"); ok && account != "" && state.Accounts != nil {
+			ss = state.Accounts[strings.ToLower(account)]
+		}
 	}
 	if ss == nil || ss.LastSync == "" {
 		return ""
@@ -165,6 +183,10 @@ func LastSyncTime(source string) time.Time {
 		ss = state.Messages
 	case "images":
 		ss = state.Images
+	default:
+		if account, ok := strings.CutPrefix(source, "account:"); ok && account != "" && state.Accounts != nil {
+			ss = state.Accounts[strings.ToLower(account)]
+		}
 	}
 	if ss == nil || ss.LastSync == "" {
 		return time.Time{}

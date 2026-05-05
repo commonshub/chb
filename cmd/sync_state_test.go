@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSaveSyncStateWritesLatestSyncStatus(t *testing.T) {
@@ -40,6 +41,24 @@ func TestUpdateSyncActivityTracksRecentAndHistoryRuns(t *testing.T) {
 	state = LoadSyncState()
 	if state.Runs.LastHistorySync == "" {
 		t.Fatalf("expected history sync timestamp, got %+v", state.Runs)
+	}
+}
+
+func TestUpdateSyncSourceTracksAccounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	UpdateSyncSource("account:Stripe", false)
+
+	state := LoadSyncState()
+	if state.Accounts == nil || state.Accounts["stripe"] == nil || state.Accounts["stripe"].LastSync == "" {
+		t.Fatalf("expected account sync state to be recorded, got %+v", state.Accounts)
+	}
+	if LastSyncTime("account:stripe").IsZero() {
+		t.Fatalf("expected LastSyncTime(account:stripe) to return timestamp")
+	}
+	if got := LastSyncMonth("account:stripe"); got != time.Now().Format("2006-01") {
+		t.Fatalf("LastSyncMonth(account:stripe) = %q, want current month", got)
 	}
 }
 

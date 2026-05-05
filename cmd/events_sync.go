@@ -16,6 +16,7 @@ import (
 
 	"github.com/CommonsHub/chb/ical"
 	"github.com/CommonsHub/chb/og"
+	icssource "github.com/CommonsHub/chb/sources/ics"
 )
 
 var calendarHTTPClient = &http.Client{Timeout: 20 * time.Second}
@@ -95,6 +96,67 @@ type monthResult struct {
 	newEvents   []newEventInfo
 }
 
+type calendarSyncDiagnostics struct {
+	warnings map[string]int
+	errors   map[string]int
+}
+
+func newCalendarSyncDiagnostics() *calendarSyncDiagnostics {
+	return &calendarSyncDiagnostics{
+		warnings: map[string]int{},
+		errors:   map[string]int{},
+	}
+}
+
+func (d *calendarSyncDiagnostics) Warn(kind, format string, args ...interface{}) {
+	if d == nil {
+		return
+	}
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "warning"
+	}
+	d.warnings[kind]++
+	LogWarningf("calendars sync: %s: %s", kind, fmt.Sprintf(format, args...))
+}
+
+func (d *calendarSyncDiagnostics) Error(kind, format string, args ...interface{}) {
+	if d == nil {
+		return
+	}
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "error"
+	}
+	d.errors[kind]++
+	LogErrorf("calendars sync: %s: %s", kind, fmt.Sprintf(format, args...))
+}
+
+func (d *calendarSyncDiagnostics) PrintSummary() {
+	if d == nil || (len(d.warnings) == 0 && len(d.errors) == 0) {
+		return
+	}
+	fmt.Printf("\n%sCalendar sync diagnostics%s\n", Fmt.Bold, Fmt.Reset)
+	for _, kind := range sortedDiagnosticKinds(d.errors) {
+		fmt.Printf("  %s%d error(s)%s: %s\n", Fmt.Red, d.errors[kind], Fmt.Reset, kind)
+	}
+	for _, kind := range sortedDiagnosticKinds(d.warnings) {
+		fmt.Printf("  %s%d warning(s)%s: %s\n", Fmt.Yellow, d.warnings[kind], Fmt.Reset, kind)
+	}
+	if path := DiagnosticsLogPath(); path != "" {
+		fmt.Printf("  %sDetails: %s%s\n", Fmt.Dim, path, Fmt.Reset)
+	}
+}
+
+func sortedDiagnosticKinds(counts map[string]int) []string {
+	kinds := make([]string, 0, len(counts))
+	for kind := range counts {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return kinds
+}
+
 type eventSyncRunCache struct {
 	dataDir string
 	og      *eventOGCache
@@ -145,7 +207,7 @@ var (
 // Returns (newBookings, newEvents, error).
 func CalendarsSync(args []string) (int, int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
-		PrintEventsSyncHelp()
+		PrintCalendarsSyncHelp()
 		return 0, 0, nil
 	}
 
@@ -159,6 +221,7 @@ func CalendarsSync(args []string) (int, int, error) {
 	dataDir := DataDir()
 	runCache := newEventSyncRunCache(dataDir, debug)
 	defer runCache.save()
+	diagnostics := newCalendarSyncDiagnostics()
 
 	rooms, err := LoadRooms()
 	if err != nil {
@@ -169,7 +232,7 @@ func CalendarsSync(args []string) (int, int, error) {
 
 	// Determine time range
 	var sinceMonth, untilMonth string
-	resolvedSince, isSince := ResolveSinceMonth(args, "calendars")
+	resolvedSince, isSince := ResolveSinceMonth(args, icssource.RelPath())
 	isFullSync := false
 
 	if posFound {
@@ -202,50 +265,76 @@ func CalendarsSync(args []string) (int, int, error) {
 
 	fmt.Printf("\n%sDATA_DIR: %s%s\n", Fmt.Dim, dataDir, Fmt.Reset)
 	fmt.Printf("%sMonth range: %s → %s%s\n", Fmt.Dim, sinceMonth, untilMonth, Fmt.Reset)
+	rangeLabel := eventSyncRangeLabel(sinceMonth, untilMonth)
 
-	// Fetch ICS from all room calendars (once)
-	fmt.Printf("\n📅 Fetching room calendars...\n")
+	// Fetch configured calendar resources once. The provider selects the parser;
+	// the optional room reference controls whether entries are room bookings.
+	fmt.Printf("\n📅 Fetching calendars...\n")
 
-	type roomFetch struct {
-		room   RoomInfo
-		events []ical.Event
+	type calendarFetch struct {
+		slug           string
+		name           string
+		visibility     string
+		events         []ical.Event
+		allRoomBooking bool
 	}
-	var fetched []roomFetch
+	var fetched []calendarFetch
 	totalBookings := 0
+	newBookingCount := 0
 
-	for _, room := range rooms {
-		if room.GoogleCalendarID == nil {
+	settings, _ := LoadSettings()
+	var calSources []CalendarSourceConfig
+	if settings != nil {
+		calSources = settings.Calendars.Sources
+	}
+	calSources = append(calSources, legacyRoomCalendarSources(rooms, calSources)...)
+	roomCalendarRefs := roomCalendarSourceSlugs(rooms)
+
+	for _, cs := range calSources {
+		roomSource := strings.TrimSpace(cs.Room) != "" || roomCalendarRefs[cs.Slug]
+		visibility := cs.Visibility
+		if roomSource {
+			visibility = CalendarVisibilityAuto
+		}
+		provider := normalizeCalendarProvider(cs.Provider, cs.URL)
+		if provider != CalendarProviderICS {
+			diagnostics.Warn("unsupported provider", "%s uses provider %q", cs.Slug, cs.Provider)
 			continue
 		}
 
-		calURL := getGoogleCalendarURL(*room.GoogleCalendarID)
-		fmt.Printf("  Fetching %s...\n", room.Slug)
-
-		icsData, err := fetchURL(calURL)
+		fmt.Printf("  Fetching %s calendar...\n", cs.Slug)
+		icsData, err := fetchURL(cs.URL)
 		if err != nil {
-			Warnf("  %sWarning: failed to fetch %s: %v%s", Fmt.Yellow, room.Slug, err, Fmt.Reset)
+			diagnostics.Warn("fetch calendar failed", "%s: %v", cs.Slug, err)
 			continue
 		}
-
 		events, err := ical.ParseICS(icsData)
 		if err != nil {
-			Warnf("  %sWarning: failed to parse %s ICS: %v%s", Fmt.Yellow, room.Slug, err, Fmt.Reset)
+			diagnostics.Warn("parse calendar failed", "%s: %v", cs.Slug, err)
 			continue
 		}
-
-		fetched = append(fetched, roomFetch{room: room, events: events})
-		fmt.Printf("  %s✓%s %s: %d events\n", Fmt.Green, Fmt.Reset, room.Slug, len(events))
+		eventsInRange := countICALEventsInMonthRange(events, sinceMonth, untilMonth)
+		publicInRange := countPublicICALEventsInMonthRange(events, sinceMonth, untilMonth, visibility)
+		bookingInRange := countBookingEventsInMonthRange(events, sinceMonth, untilMonth, visibility, roomSource)
+		fmt.Printf("  %s✓%s %s calendar: %d event(s) %s, %d public, %d private (%s/%s, %d in feed)\n",
+			Fmt.Green, Fmt.Reset, cs.Slug, eventsInRange, rangeLabel, publicInRange, bookingInRange, provider, visibility, len(events))
+		fetched = append(fetched, calendarFetch{
+			slug:           cs.Slug,
+			name:           cs.Name,
+			visibility:     visibility,
+			events:         events,
+			allRoomBooking: roomSource,
+		})
 	}
 
 	if len(fetched) == 0 {
-		fmt.Printf("  %sNo rooms with Google Calendar IDs found.%s\n", Fmt.Yellow, Fmt.Reset)
-		return 0, 0, nil
+		fmt.Printf("  %sNo calendar sources found.%s\n", Fmt.Yellow, Fmt.Reset)
 	}
 
-	// --- Bookings: write {room}.ics per room per month ---
-	newBookingCount := 0
+	// --- Bookings: write private bookings per source per month ---
 	for _, rf := range fetched {
-		byMonth := ical.GroupByMonth(rf.events)
+		bookingEvents := filterBookingEvents(rf.events, rf.visibility, rf.allRoomBooking)
+		byMonth := ical.GroupByMonth(bookingEvents)
 		for ym, monthEvents := range byMonth {
 			if ym < sinceMonth || ym > untilMonth {
 				continue
@@ -253,8 +342,8 @@ func CalendarsSync(args []string) (int, int, error) {
 			parts := strings.SplitN(ym, "-", 2)
 			year, month := parts[0], parts[1]
 
-			relPath := filepath.Join("calendars", "ics", rf.room.Slug+".ics")
-			filePath := filepath.Join(dataDir, year, month, relPath)
+			relPath := icssource.RelPath(icssource.FileName(rf.slug))
+			filePath := icssource.Path(dataDir, year, month, icssource.FileName(rf.slug))
 
 			if !force {
 				if _, err := os.Stat(filePath); err == nil {
@@ -264,55 +353,21 @@ func CalendarsSync(args []string) (int, int, error) {
 				}
 			}
 
-			content := ical.WrapICS(monthEvents, fmt.Sprintf("-//Commons Hub Brussels//%s//EN", rf.room.Name))
+			content := ical.WrapICS(monthEvents, fmt.Sprintf("-//Commons Hub Brussels//%s//EN", rf.name))
 			writeMonthFile(dataDir, year, month, relPath, []byte(content))
 			newBookingCount += len(monthEvents)
 			totalBookings += len(monthEvents)
 		}
 	}
 
-	// --- Fetch event calendars (Luma, Google) from settings ---
-	settings, _ := LoadSettings()
-	type calSource struct {
-		slug string
-		url  string
-	}
-	var calSources []calSource
-	if settings.Calendars.Luma != "" {
-		calSources = append(calSources, calSource{"luma", settings.Calendars.Luma})
-	}
-	if settings.Calendars.Google != "" {
-		calSources = append(calSources, calSource{"google", settings.Calendars.Google})
-	}
-
-	for _, cs := range calSources {
-		fmt.Printf("  Fetching %s calendar...\n", cs.slug)
-		icsData, err := fetchURL(cs.url)
-		if err != nil {
-			Warnf("  %sWarning: failed to fetch %s calendar: %v%s", Fmt.Yellow, cs.slug, err, Fmt.Reset)
-			continue
-		}
-		events, err := ical.ParseICS(icsData)
-		if err != nil {
-			Warnf("  %sWarning: failed to parse %s calendar: %v%s", Fmt.Yellow, cs.slug, err, Fmt.Reset)
-			continue
-		}
-		fmt.Printf("  %s✓%s %s calendar: %d events\n", Fmt.Green, Fmt.Reset, cs.slug, len(events))
-		fetched = append(fetched, roomFetch{
-			room:   RoomInfo{Slug: cs.slug, Name: cs.slug},
-			events: events,
-		})
-	}
-
 	// --- Events: filter bookings with URLs, enrich with og:image ---
 	var allRoomEvents []roomEvent
 	for _, rf := range fetched {
 		for _, ev := range rf.events {
-			eventURL := extractEventURL(ev)
-			if eventURL == "" {
+			if !calendarEventIsPublic(ev, rf.visibility) {
 				continue
 			}
-			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: rf.room.Slug, roomName: rf.room.Name})
+			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: rf.slug, roomName: rf.name})
 		}
 	}
 
@@ -334,7 +389,12 @@ func CalendarsSync(args []string) (int, int, error) {
 	}
 	sort.Strings(sortedMonths)
 
-	fmt.Printf("\n📎 Found %d public event(s) across %d month(s) to process\n", len(allRoomEvents), len(sortedMonths))
+	filteredPublicEvents := 0
+	for _, events := range eventsByMonth {
+		filteredPublicEvents += len(events)
+	}
+	fmt.Printf("\n📎 Found %d public event(s) %s across %d month(s) to process\n",
+		filteredPublicEvents, rangeLabel, len(sortedMonths))
 
 	// Save public.ics per month (events with URLs only)
 	for _, ym := range sortedMonths {
@@ -345,24 +405,22 @@ func CalendarsSync(args []string) (int, int, error) {
 		for _, re := range eventsByMonth[ym] {
 			icsEvents = append(icsEvents, re.event)
 		}
-		content := ical.WrapICS(icsEvents, "-//Commons Hub Brussels//Room Calendars//EN")
-		writeMonthFile(dataDir, year, month, filepath.Join("calendars", "ics", "public.ics"), []byte(content))
+		content := ical.WrapICS(icsEvents, "-//Commons Hub Brussels//Public Calendar Events//EN")
+		writeMonthFile(dataDir, year, month, filepath.Join("generated", "calendars", "public.ics"), []byte(content))
 	}
 
 	// Process each month (og:image scraping, events.json generation)
-	var results []monthResult
 	newEventCount := 0
 	for _, ym := range sortedMonths {
 		parts := strings.SplitN(ym, "-", 2)
 		year, month := parts[0], parts[1]
 
-		r, err := processMonthFromRooms(dataDir, year, month, eventsByMonth[ym], force, runCache)
+		r, err := processMonthFromRooms(dataDir, year, month, eventsByMonth[ym], force, runCache, diagnostics)
 		if err != nil {
-			Warnf("  Warning: error processing %s-%s: %v", year, month, err)
+			diagnostics.Error("generate month failed", "%s-%s: %v", year, month, err)
 			continue
 		}
 		if r != nil {
-			results = append(results, *r)
 			newEventCount += len(r.newEvents)
 		}
 	}
@@ -381,22 +439,21 @@ func CalendarsSync(args []string) (int, int, error) {
 	// Generate markdown files
 	generateMarkdownFiles(dataDir)
 
-	// Print new events detail
-	for _, r := range results {
-		if len(r.newEvents) > 0 {
-			for _, evt := range r.newEvents {
-				t, _ := time.Parse(time.RFC3339, evt.startAt)
-				if t.IsZero() {
-					t, _ = time.Parse("2006-01-02T15:04:05.000Z", evt.startAt)
-				}
-				dateStr := fmt.Sprintf("%02d/%02d", t.Month(), t.Day())
-				fmt.Printf("    + %s%s%s %s %s(via %s)%s\n",
-					Fmt.Dim, dateStr, Fmt.Reset, evt.name, Fmt.Dim, evt.metadataSource, Fmt.Reset)
-			}
-		}
+	// Final summary
+	if posFound {
+		scopedEvents := countCachedEventsInMonthRange(dataDir, sinceMonth, untilMonth)
+		fmt.Printf("\n%s✓ Done!%s %d bookings, %d public events %s\n",
+			Fmt.Green, Fmt.Reset,
+			totalBookings, scopedEvents, rangeLabel)
+		diagnostics.PrintSummary()
+
+		// Update sync state
+		UpdateSyncSource("calendars", isFullSync)
+		UpdateSyncActivity(isFullSync)
+
+		return newBookingCount, newEventCount, nil
 	}
 
-	// Final summary
 	allEvents := loadAllEvents()
 	var futureEvents []EventEntry
 	for _, e := range allEvents {
@@ -421,6 +478,7 @@ func CalendarsSync(args []string) (int, int, error) {
 		Fmt.Green, Fmt.Reset,
 		totalBookings, len(upcomingBookings),
 		len(allEvents), len(futureEvents))
+	diagnostics.PrintSummary()
 
 	// Update sync state
 	UpdateSyncSource("calendars", isFullSync)
@@ -439,13 +497,22 @@ func extractEventURL(ev ical.Event) string {
 		isAllowedPublicEventURL(ev.Location) {
 		return ev.Location
 	}
-	if ev.Description != "" {
-		re := regexp.MustCompile(`https?://[^\s\n<>"']+`)
-		for _, m := range re.FindAllString(ev.Description, -1) {
-			candidate := strings.TrimRight(m, ".,;:!?")
-			if isAllowedPublicEventURL(candidate) {
-				return candidate
-			}
+	return extractPublicURLFromText(ev.Description)
+}
+
+func autoCalendarEventHasPublicURL(ev ical.Event) bool {
+	return isAllowedPublicEventURL(ev.URL) || extractPublicURLFromText(ev.Description) != ""
+}
+
+func extractPublicURLFromText(text string) string {
+	if text == "" {
+		return ""
+	}
+	re := regexp.MustCompile(`https?://[^\s\n<>"']+`)
+	for _, m := range re.FindAllString(text, -1) {
+		candidate := strings.TrimRight(m, ".,;:!?")
+		if isAllowedPublicEventURL(candidate) {
+			return candidate
 		}
 	}
 	return ""
@@ -477,12 +544,6 @@ func isAllowedPublicEventURL(raw string) bool {
 	return true
 }
 
-// EventsSync is an alias for CalendarsSync for backwards compatibility.
-func EventsSync(args []string) error {
-	_, _, err := CalendarsSync(args)
-	return err
-}
-
 func fetchURL(rawURL string) (string, error) {
 	resp, err := calendarHTTPClient.Get(rawURL)
 	if err != nil {
@@ -499,11 +560,154 @@ func fetchURL(rawURL string) (string, error) {
 	return string(data), nil
 }
 
+func legacyRoomCalendarSources(rooms []RoomInfo, configured []CalendarSourceConfig) []CalendarSourceConfig {
+	configuredBySlug := map[string]bool{}
+	configuredByRoom := map[string]bool{}
+	for _, source := range configured {
+		if source.Slug != "" {
+			configuredBySlug[source.Slug] = true
+		}
+		if source.Room != "" {
+			configuredByRoom[source.Room] = true
+		}
+	}
+
+	var out []CalendarSourceConfig
+	for _, room := range rooms {
+		if room.GoogleCalendarID == nil {
+			continue
+		}
+		slug := firstNonEmptyStr(room.Calendar, room.Slug)
+		if configuredByRoom[room.Slug] || configuredBySlug[slug] {
+			continue
+		}
+		source, ok := normalizeCalendarSource(CalendarSourceConfig{
+			Slug:       slug,
+			Name:       room.Name,
+			Provider:   CalendarProviderICS,
+			URL:        getGoogleCalendarURL(*room.GoogleCalendarID),
+			Visibility: CalendarVisibilityAuto,
+			Room:       room.Slug,
+		})
+		if ok {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+func roomCalendarSourceSlugs(rooms []RoomInfo) map[string]bool {
+	out := map[string]bool{}
+	for _, room := range rooms {
+		if room.Calendar != "" {
+			out[room.Calendar] = true
+		} else if room.GoogleCalendarID != nil {
+			out[room.Slug] = true
+		}
+	}
+	return out
+}
+
 // roomEvent pairs an ical event with its room source
 type roomEvent struct {
 	event    ical.Event
 	roomSlug string
 	roomName string
+}
+
+func countICALEventsInMonthRange(events []ical.Event, sinceMonth, untilMonth string) int {
+	count := 0
+	for _, ev := range events {
+		ym := ev.YearMonth()
+		if ym >= sinceMonth && ym <= untilMonth {
+			count++
+		}
+	}
+	return count
+}
+
+func countPublicICALEventsInMonthRange(events []ical.Event, sinceMonth, untilMonth, visibility string) int {
+	count := 0
+	for _, ev := range events {
+		ym := ev.YearMonth()
+		if ym >= sinceMonth && ym <= untilMonth && calendarEventIsPublic(ev, visibility) {
+			count++
+		}
+	}
+	return count
+}
+
+func countBookingEventsInMonthRange(events []ical.Event, sinceMonth, untilMonth, visibility string, allRoomBooking bool) int {
+	count := 0
+	for _, ev := range events {
+		ym := ev.YearMonth()
+		if ym >= sinceMonth && ym <= untilMonth && calendarEventIsBooking(ev, visibility, allRoomBooking) {
+			count++
+		}
+	}
+	return count
+}
+
+func filterBookingEvents(events []ical.Event, visibility string, allRoomBooking bool) []ical.Event {
+	out := make([]ical.Event, 0, len(events))
+	for _, ev := range events {
+		if calendarEventIsBooking(ev, visibility, allRoomBooking) {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func calendarEventIsBooking(ev ical.Event, visibility string, allRoomBooking bool) bool {
+	if allRoomBooking {
+		return true
+	}
+	switch normalizeCalendarVisibility(visibility) {
+	case CalendarVisibilityPrivate:
+		return true
+	case CalendarVisibilityPublic:
+		return false
+	default:
+		return !autoCalendarEventHasPublicURL(ev)
+	}
+}
+
+func calendarEventIsPublic(ev ical.Event, visibility string) bool {
+	switch normalizeCalendarVisibility(visibility) {
+	case CalendarVisibilityPrivate:
+		return false
+	case CalendarVisibilityPublic:
+		return extractEventURL(ev) != ""
+	default:
+		return autoCalendarEventHasPublicURL(ev)
+	}
+}
+
+func countCachedEventsInMonthRange(dataDir, sinceMonth, untilMonth string) int {
+	total := 0
+	for _, ym := range expandMonthRange(sinceMonth, untilMonth) {
+		parts := strings.SplitN(ym, "-", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		path := filepath.Join(dataDir, parts[0], parts[1], "generated", "events.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var ef FullEventsFile
+		if json.Unmarshal(data, &ef) == nil {
+			total += len(ef.Events)
+		}
+	}
+	return total
+}
+
+func eventSyncRangeLabel(sinceMonth, untilMonth string) string {
+	if sinceMonth == untilMonth {
+		return "in " + sinceMonth
+	}
+	return "in " + sinceMonth + " → " + untilMonth
 }
 
 func newEventSyncRunCache(dataDir string, debug bool) *eventSyncRunCache {
@@ -718,7 +922,7 @@ func saveEventOGCache(dataDir string, cache *eventOGCache) error {
 	return writeDataFile(path, data)
 }
 
-func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, force bool, runCache *eventSyncRunCache) (*monthResult, error) {
+func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, force bool, runCache *eventSyncRunCache, diagnostics *calendarSyncDiagnostics) (*monthResult, error) {
 	monthPath := filepath.Join(dataDir, year, month)
 	label := fmt.Sprintf("%s-%s", year, month)
 
@@ -740,7 +944,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 
 	// Check if we can skip (same event count, not forced, and existing records are already enriched)
 	if !force && len(existingIDs) == len(roomEvents) && len(existingIDs) > 0 && !existingEventsNeedRefresh(existingEvents) {
-		fmt.Printf("  ⏭ %s: %d event(s) unchanged, skipping metadata refresh\n", label, len(roomEvents))
+		fmt.Printf("  %s: %d public event(s), unchanged\n", label, len(roomEvents))
 		return nil, nil
 	}
 
@@ -767,8 +971,6 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			needsCoverSync++
 		}
 	}
-	fmt.Printf("  🔎 %s: %d public event(s), %d page fetch(es), %d cover(s) pending images sync\n", label, len(roomEvents), needsOGFetch, needsCoverSync)
-
 	ogResults := map[string]og.FetchResult{}
 	if len(ogTasks) > 0 {
 		ogResults = runCache.prefetchOGResults(label, ogTasks, 4)
@@ -796,9 +998,6 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			continue
 		}
 		processed++
-		if processed == 1 || processed%10 == 0 || processed == len(roomEvents) {
-			fmt.Printf("    · %s %d/%d: %s\n", label, processed, len(roomEvents), name)
-		}
 
 		startAt := icsEv.Start.Format(time.RFC3339)
 		endAt := ""
@@ -826,7 +1025,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 			coverImage = meta.Image
 		}
 		if coverImage == "" {
-			fmt.Printf("      ↳ %s\n", describeOGImageIssue(ogResult))
+			diagnostics.Warn("missing og:image", "%s %s: %s", label, eventID, describeOGImageIssue(ogResult))
 		}
 		description = chooseEventDescription(description, meta.Description)
 		name = chooseEventTitle(name, meta.Title)
@@ -865,7 +1064,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	// record with a cover image and the longest description.
 	fullEvents = dedupeFullEvents(fullEvents)
 
-	runEventPlugins(dataDir, year, month, fullEvents)
+	runEventProcessors(dataDir, year, month, fullEvents)
 
 	// Track new events from dedup survivors so we don't announce a duplicate
 	// that was discarded.
@@ -888,7 +1087,8 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	}
 	data, _ := json.MarshalIndent(ef, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "events.json"), data)
-	fmt.Printf("  ✓ %s: wrote %d event(s)\n", label, len(fullEvents))
+	fmt.Printf("  %s: %d public event(s), %d page fetch(es), %d cover(s) pending, %d new, wrote %d\n",
+		label, len(roomEvents), needsOGFetch, needsCoverSync, len(newEvents), len(fullEvents))
 
 	return &monthResult{
 		yearMonth:   fmt.Sprintf("%s-%s", year, month),
@@ -1016,8 +1216,6 @@ func (c *eventSyncRunCache) prefetchOGResults(label string, tasks []ogFetchTask,
 	for _, domain := range domains {
 		pending += len(grouped[domain])
 	}
-	fmt.Printf("  ↳ %s og fetch: %d uncached URL(s) across %d domain(s), %d worker(s)\n", label, pending, len(domains), workerCount)
-
 	domainCh := make(chan []ogFetchTask)
 	resultCh := make(chan ogFetchResult, pending)
 
@@ -1373,7 +1571,7 @@ func generateRoomsMd(dataDir string) {
 
 		lines = append(lines, fmt.Sprintf("- **Details**: [%s](%s/rooms/%s)", room.Name, baseURL, room.Slug))
 
-		if room.GoogleCalendarID != nil {
+		if room.Calendar != "" || room.GoogleCalendarID != nil {
 			lines = append(lines, fmt.Sprintf("- **Calendar (ICS)**: [%s.ics](%s/rooms/%s.ics)", room.Slug, baseURL, room.Slug))
 		}
 

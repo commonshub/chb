@@ -18,21 +18,22 @@ func PrintHelp(version string) {
 
 %sCOMMANDS%s
   %sevents%s              List upcoming events
-  %sevents sync%s         Fetch events from room calendars
+  %scalendars%s           Show calendar summary
+  %scalendars sync%s      Sync calendar sources
   %sevents stats%s        Show event statistics
   %srooms%s               List all rooms with pricing
   %sbookings%s            List upcoming room bookings
-  %sbookings sync%s       Sync room booking calendars
   %sbookings stats%s      Show booking statistics
   %stransactions sync%s   Fetch blockchain transactions
   %stransactions stats%s  Show transaction statistics
+  %snostr sync%s          Publish/fetch Nostr annotations
   %sinvoices sync%s       Fetch outgoing invoices from Odoo
   %sbills sync%s          Fetch vendor bills from Odoo
   %sattachments sync%s    Download invoice and bill attachments from Odoo
   %smessages sync%s       Fetch Discord messages
   %smessages stats%s      Show message statistics
   %simages sync%s         Download images from Discord and Luma
-  %ssync%s                Sync everything (events, transactions, invoices, bills, attachments, bookings, messages, generate, images)
+  %ssync%s                Sync everything (calendars, transactions, invoices, bills, attachments, messages, generate, images)
   %sgenerate%s            Generate derived data files (contributors, images, etc.)
   %smembers sync%s        Fetch membership data from Stripe/Odoo
   %sreport%s <period>     Generate monthly/yearly report
@@ -50,23 +51,25 @@ func PrintHelp(version string) {
 
 %sEXAMPLES%s
   %s$ chb events                          # next 10 upcoming events
-  $ chb events sync                      # sync events from room calendars
-  $ chb events sync 2025/11              # sync events for Nov 2025
-  $ chb events sync 2025                 # sync events for all of 2025
+  $ chb calendars sync                   # sync calendar sources
+  $ chb calendars sync 2025/11           # sync calendars for Nov 2025
+  $ chb calendars sync 2025              # sync calendars for all of 2025
   $ chb sync 2025/11 --force             # resync everything for Nov 2025
   $ chb sync 2025 --force                # resync everything for all of 2025
   $ chb transactions sync 2025/03        # sync transactions for Mar 2025
+  $ chb nostr sync transactions          # publish/fetch transaction annotations
   $ chb invoices sync                    # sync outgoing invoices from Odoo
   $ chb bills sync                       # sync vendor bills from Odoo
   $ chb attachments sync                 # sync invoice/bill attachments from Odoo
   $ chb messages sync 2025              # sync messages for all of 2025
-  $ chb bookings sync 2025/06            # sync bookings for Jun 2025
+  $ chb calendars sync 2025/06           # sync calendars for Jun 2025
   $ chb tools getUrlMetadata https://example.com/event
   $ chb report 2025/11                   # monthly report
+  $ chb report 202511                    # monthly report
   $ chb report 2025                      # yearly report%s
 
 %sENVIRONMENT%s
-  %sAPP_DATA_DIR%s        App config/state directory (default: ~/.chb)
+  %sAPP_DATA_DIR%s        App state directory; config is in $APP_DATA_DIR/settings (default: ~/.chb)
   %sDATA_DIR%s            Generated data directory (default: $APP_DATA_DIR/data)
 
   %sETHERSCAN_API_KEY%s   Etherscan/Gnosisscan API key
@@ -76,6 +79,8 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
@@ -107,7 +112,6 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset,
 		f.Dim, f.Reset,
 		f.Bold, f.Reset,
-		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
@@ -180,7 +184,7 @@ func PrintDoctorHelp() {
   %schb doctor%s
 
 %sCHECKS%s
-  • Room Discord channel directories exist in latest/messages/discord/
+  • Room Discord channel directories exist in latest/sources/discord/
   • Generated files exist when source archives are present
   • images.json entries use canonical year/month image paths
   • Referenced local image files exist under DATA_DIR
@@ -207,17 +211,16 @@ func PrintSyncAllHelp() {
 	fmt.Printf(`
 %schb sync%s — Sync all data sources
 
-%sSources:%s events (room calendars), transactions (Gnosis/Stripe), invoices/bills/attachments (Odoo),
-bookings (Google Calendar), messages (Discord), members (Stripe/Odoo)
+%sSources:%s calendars (room bookings and public events), transactions (Gnosis/Stripe),
+invoices/bills/attachments (Odoo), messages (Discord), members (Stripe/Odoo)
 
 %sUSAGE%s
   %schb sync%s [year[/month]] [options]
-  %schb events sync%s [year[/month]] [options]
+  %schb calendars sync%s [year[/month]] [options]
   %schb transactions sync%s [year[/month]] [options]
   %schb invoices sync%s [year[/month]] [options]
   %schb bills sync%s [year[/month]] [options]
   %schb attachments sync%s [year[/month]] [options]
-  %schb bookings sync%s [year[/month]] [options]
   %schb messages sync%s [year[/month]] [options]
   %schb members sync%s [options]
 
@@ -239,8 +242,8 @@ bookings (Google Calendar), messages (Discord), members (Stripe/Odoo)
   %schb sync 2025%s                   Sync all of 2025
   %schb sync 2025/11%s                Sync November 2025
   %schb sync 2025/11 --force%s        Resync November 2025 (overwrite cache)
-  %schb events sync%s                 Sync events only (latest)
-  %schb events sync --history%s       Sync event history
+  %schb calendars sync%s              Sync calendars only (latest)
+  %schb calendars sync --history%s    Sync calendar history
   %schb transactions sync --since 202401%s  Sync transactions from Jan 2024
   %schb invoices sync%s               Sync outgoing invoices (latest)
   %schb bills sync%s                  Sync vendor bills (latest)
@@ -249,7 +252,6 @@ bookings (Google Calendar), messages (Discord), members (Stripe/Odoo)
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
-		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
@@ -314,13 +316,42 @@ func PrintEventsHelp() {
 	)
 }
 
-func PrintEventsSyncHelp() {
+func PrintCalendarsHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb events sync%s — Fetch events from room calendars
+%schb calendars%s — Show calendar source summary
 
 %sUSAGE%s
-  %schb events sync%s [year[/month]] [options]
+  %schb calendars%s
+  %schb calendars sync%s [year[/month]] [options]
+
+%sOUTPUT%s
+  Lists each calendar source with total public events and private bookings.
+
+%sOPTIONS%s
+  %s--months, --breakdown%s  Include month-by-month public/private counts.
+  %s--since%s <date>         Only include entries from this date.
+  %s--until%s <date>         Only include entries up to this date.
+`,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
+	)
+}
+
+func PrintCalendarsSyncHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb calendars sync%s — Sync calendar sources
+
+%sUSAGE%s
+  %schb calendars sync%s [year[/month]] [options]
 
 %sOPTIONS%s
   %s<year>%s               Sync all months of the given year (e.g. 2025)
@@ -332,8 +363,10 @@ func PrintEventsSyncHelp() {
   %s--help, -h%s           Show this help
 
 %sSOURCES%s
-  • Room Google Calendar ICS feeds (events with a URL/website are included)
-  • OpenGraph scraping for cover images
+  • Configured calendar sources from calendars.json
+  • ICS sources use provider: "ics"
+  • Room feeds reference rooms via the source room field
+  • Public events are derived later by 'chb generate events'
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
@@ -437,35 +470,6 @@ func PrintMessagesStatsHelp() {
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-	)
-}
-
-func PrintBookingsSyncHelp() {
-	f := Fmt
-	fmt.Printf(`
-%schb bookings sync%s — Sync room booking calendars from Google Calendar
-
-%sUSAGE%s
-  %schb bookings sync%s [year[/month]] [options]
-
-%sOPTIONS%s
-  %s<year>%s               Sync all months of the given year (e.g. 2025)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/06)
-  %s--room%s <slug>        Only sync a specific room (e.g. satoshi)
-  %s--force%s              Re-fetch even if cached data exists
-  %s--since%s <YYYYMMDD>   Start syncing from this date
-  %s--help, -h%s           Show this help
-`,
-		f.Bold, f.Reset,
-		f.Bold, f.Reset,
-		f.Cyan, f.Reset,
-		f.Bold, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 	)

@@ -182,7 +182,7 @@ func EventsList(args []string) {
 		fmt.Printf("\n%sNo events found.%s\n", Fmt.Dim, Fmt.Reset)
 		if _, err := os.Stat(DataDir()); os.IsNotExist(err) {
 			fmt.Printf("%sDATA_DIR not found:%s %s\n", Fmt.Yellow, Fmt.Reset, DataDir())
-			fmt.Printf("%sRun 'chb events sync' to fetch events.%s\n", Fmt.Dim, Fmt.Reset)
+			fmt.Printf("%sRun 'chb calendars sync' to fetch calendar data, then `chb generate events` if needed.%s\n", Fmt.Dim, Fmt.Reset)
 		}
 		fmt.Println()
 		return

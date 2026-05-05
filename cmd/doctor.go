@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	discordsource "github.com/CommonsHub/chb/sources/discord"
 )
 
 type doctorFinding struct {
@@ -33,7 +35,7 @@ type doctorScope struct {
 }
 
 var unicodeEscapePattern = regexp.MustCompile(`\\u[0-9a-fA-F]{4}`)
-var canonicalImagePathPattern = regexp.MustCompile(`^\d{4}/\d{2}/messages/discord/images/`)
+var canonicalImagePathPattern = regexp.MustCompile(`^\d{4}/\d{2}/sources/discord/images/`)
 var missingLocalFilePattern = regexp.MustCompile(`^image ([^ ]+) references missing local file "([^"]+)"$`)
 
 func Doctor(args []string) error {
@@ -287,7 +289,7 @@ func checkRoomChannelDirs(dataDir string, report *doctorReport) {
 			Severity: "warning",
 			Scope:    "config",
 			Message:  "could not load rooms.json; room Discord channel checks skipped",
-			Fix:      "Ensure APP_DATA_DIR/rooms.json exists and is valid JSON",
+			Fix:      "Ensure APP_DATA_DIR/settings/rooms.json exists and is valid JSON",
 		})
 		return
 	}
@@ -296,7 +298,7 @@ func checkRoomChannelDirs(dataDir string, report *doctorReport) {
 		if room.DiscordChannelID == "" {
 			continue
 		}
-		dir := filepath.Join(dataDir, "latest", "messages", "discord", room.DiscordChannelID)
+		dir := filepath.Join(dataDir, "latest", discordsource.RelPath(room.DiscordChannelID))
 		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 			name := room.Slug
 			if name == "" {
@@ -313,21 +315,25 @@ func checkRoomChannelDirs(dataDir string, report *doctorReport) {
 }
 
 func checkGeneratedFiles(scope doctorScope, report *doctorReport) {
-	messagesDir := filepath.Join(scope.Path, "messages", "discord")
+	messagesDir := filepath.Join(scope.Path, "sources", "discord")
 	generatedDir := filepath.Join(scope.Path, "generated")
-	financeDir := filepath.Join(scope.Path, "finance")
-	calendarsDir := filepath.Join(scope.Path, "calendars")
-	eventsDir := filepath.Join(scope.Path, "events")
+	transactionSourceDirs := []string{
+		filepath.Join(scope.Path, "sources", "stripe"),
+		filepath.Join(scope.Path, "sources", "etherscan"),
+		filepath.Join(scope.Path, "sources", "monerium"),
+	}
+	publicICS := filepath.Join(generatedDir, "calendars", "public.ics")
 
 	if hasChannelMessages(messagesDir) {
 		requireFile(scope, filepath.Join(generatedDir, "images.json"), "messages present but generated/images.json is missing", "Run: chb generate", report)
 	}
-	if hasMaterialData(financeDir) {
-		requireFile(scope, filepath.Join(generatedDir, "transactions.json"), "finance data present but generated/transactions.json is missing", "Run: chb generate", report)
-		requireFile(scope, filepath.Join(generatedDir, "counterparties.json"), "finance data present but generated/counterparties.json is missing", "Run: chb generate", report)
+	if hasAnyMaterialData(transactionSourceDirs...) {
+		requireFile(scope, filepath.Join(generatedDir, "transactions.json"), "transaction sources present but generated/transactions.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "counterparties.json"), "transaction sources present but generated/counterparties.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "report.json"), "transaction sources present but generated/report.json is missing", "Run: chb generate", report)
 	}
-	if hasPublicEventSourceData(calendarsDir, eventsDir) {
-		requireFile(scope, filepath.Join(generatedDir, "events.json"), "calendar/event data present but generated/events.json is missing", "Run: chb events sync --history", report)
+	if hasPublicEventSourceData(publicICS) {
+		requireFile(scope, filepath.Join(generatedDir, "events.json"), "calendar/event data present but generated/events.json is missing", "Run: chb calendars sync --history && chb generate events", report)
 	}
 }
 
@@ -352,7 +358,7 @@ func hasChannelMessages(messagesDir string) bool {
 		if !entry.IsDir() {
 			continue
 		}
-		msgPath := filepath.Join(messagesDir, entry.Name(), "messages.json")
+		msgPath := filepath.Join(messagesDir, entry.Name(), discordsource.MessagesFile)
 		data, err := os.ReadFile(msgPath)
 		if err != nil {
 			continue
@@ -379,12 +385,20 @@ func hasMaterialData(dir string) bool {
 	return false
 }
 
-func hasPublicEventSourceData(calendarsDir, eventsDir string) bool {
-	publicICS := filepath.Join(calendarsDir, "ics", "public.ics")
+func hasAnyMaterialData(dirs ...string) bool {
+	for _, dir := range dirs {
+		if hasMaterialData(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPublicEventSourceData(publicICS string) bool {
 	if st, err := os.Stat(publicICS); err == nil && !st.IsDir() && st.Size() > 0 {
 		return true
 	}
-	return hasMaterialData(eventsDir)
+	return false
 }
 
 func checkImagesFile(dataDir string, scope doctorScope, report *doctorReport) int {
@@ -535,7 +549,7 @@ func checkLatestHomepageEvents(dataDir string, report *doctorReport) {
 				Severity: "error",
 				Scope:    "latest",
 				Message:  fmt.Sprintf("homepage event %s is missing title", label),
-				Fix:      "Run: chb events sync --history && chb generate",
+				Fix:      "Run: chb calendars sync --history && chb generate",
 			})
 		}
 		if strings.TrimSpace(ev.CoverImage) == "" {
@@ -543,7 +557,7 @@ func checkLatestHomepageEvents(dataDir string, report *doctorReport) {
 				Severity: "error",
 				Scope:    "latest",
 				Message:  fmt.Sprintf("homepage event %s is missing coverImage", label),
-				Fix:      "Run: chb events sync --history",
+				Fix:      "Run: chb calendars sync --history",
 			})
 		}
 		if strings.TrimSpace(ev.CoverImageLocal) == "" {
@@ -569,7 +583,7 @@ func checkLatestHomepageEvents(dataDir string, report *doctorReport) {
 				Severity: "error",
 				Scope:    "latest",
 				Message:  fmt.Sprintf("homepage event %s has a thin description", label),
-				Fix:      "Run: chb events sync --history",
+				Fix:      "Run: chb calendars sync --history",
 			})
 		}
 	}

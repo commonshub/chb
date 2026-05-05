@@ -37,13 +37,13 @@ func (a *AccountConfig) IsSafe() bool {
 }
 
 func accountsConfigPath() string {
-	return filepath.Join(chbDir(), "accounts.json")
+	return settingsFilePath("accounts.json")
 }
 
-// LoadAccountConfigs reads accounts from APP_DATA_DIR/accounts.json.
+// LoadAccountConfigs reads accounts from APP_DATA_DIR/settings/accounts.json.
 // On first load, migrates from settings.json if accounts.json doesn't exist.
 func LoadAccountConfigs() []AccountConfig {
-	data, err := os.ReadFile(accountsConfigPath())
+	data, err := os.ReadFile(existingSettingsFilePath("accounts.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			accounts := migrateAccountsFromSettings()
@@ -61,10 +61,13 @@ func LoadAccountConfigs() []AccountConfig {
 	return accounts
 }
 
-// SaveAccountConfigs writes accounts to APP_DATA_DIR/accounts.json.
+// SaveAccountConfigs writes accounts to APP_DATA_DIR/settings/accounts.json.
 func SaveAccountConfigs(accounts []AccountConfig) error {
 	data, err := json.MarshalIndent(accounts, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(accountsConfigPath()), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(accountsConfigPath(), data, 0644)

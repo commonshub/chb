@@ -165,7 +165,7 @@ func ParseSinceMonth(s string) (year string, month string, ok bool) {
 
 // ResolveSinceMonth determines the start month for syncing.
 // Priority: --since flag > --history (scan cache) > caller-defined default window.
-// sourceSubdir is the subdirectory to look for within each month (e.g. "calendars", "finance", "messages")
+// sourceSubdir is the subdirectory to look for within each month (e.g. "sources/ics", "sources/etherscan", "sources/discord")
 func ResolveSinceMonth(args []string, sourceSubdir string) (startMonth string, isHistory bool) {
 	// Check --since flag
 	sinceStr := GetOption(args, "--since")

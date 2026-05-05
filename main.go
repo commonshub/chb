@@ -67,11 +67,20 @@ func main() {
 		if err := cmd.Update(yes); err != nil {
 			exitWithError(err)
 		}
-	case "events":
+	case "calendars":
 		if len(args) > 1 && args[1] == "sync" {
-			if err := cmd.EventsSync(args[2:]); err != nil {
+			_, _, err := cmd.CalendarsSync(args[2:])
+			if err != nil {
 				exitWithError(err)
 			}
+		} else if len(args) > 1 && (args[1] == "help" || args[1] == "--help" || args[1] == "-h") {
+			cmd.PrintCalendarsHelp()
+		} else {
+			cmd.Calendars(args[1:])
+		}
+	case "events":
+		if len(args) > 1 && args[1] == "sync" {
+			exitWithUsage("%s`chb events sync` was removed. Use `chb calendars sync`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		} else if len(args) > 1 && args[1] == "stats" {
 			cmd.EventsStats(args[2:])
 		} else {
@@ -81,9 +90,7 @@ func main() {
 		cmd.Rooms(args[1:])
 	case "bookings":
 		if len(args) > 1 && args[1] == "sync" {
-			if err := cmd.BookingsSync(args[2:]); err != nil {
-				exitWithError(err)
-			}
+			exitWithUsage("%s`chb bookings sync` was removed. Use `chb calendars sync`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		} else if len(args) > 1 && args[1] == "stats" {
 			cmd.BookingsStats(args[2:])
 		} else {
@@ -96,8 +103,10 @@ func main() {
 		txSubcmd := ""
 		for _, a := range txArgs {
 			switch strings.ToLower(a) {
-			case "sync", "categorize", "publish", "stats":
+			case "sync", "categorize", "stats":
 				txSubcmd = strings.ToLower(a)
+			case "publish":
+				exitWithUsage("%s`chb transactions publish` was removed. Use `chb nostr sync transactions`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			}
 		}
 		// Check for "sync nostr" compound subcommand
@@ -105,19 +114,13 @@ func main() {
 
 		switch {
 		case hasSyncNostr:
-			if err := cmd.TransactionsSyncNostr(txArgs); err != nil {
-				exitWithError(err)
-			}
+			exitWithUsage("%s`chb transactions sync nostr` was removed. Use `chb nostr sync transactions`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		case txSubcmd == "sync":
 			if _, err := cmd.TransactionsSync(txArgs); err != nil {
 				exitWithError(err)
 			}
 		case txSubcmd == "categorize":
 			cmd.TransactionsCategorize(txArgs)
-		case txSubcmd == "publish":
-			if err := cmd.TransactionsPublish(txArgs); err != nil {
-				exitWithError(err)
-			}
 		case txSubcmd == "stats":
 			cmd.TransactionsStats(txArgs)
 		default:
@@ -131,10 +134,7 @@ func main() {
 		switch invSub {
 		case "sync", "help", "--help", "-h":
 			if len(args) > 2 && args[2] == "nostr" {
-				if err := cmd.InvoicesSyncNostr(args[3:]); err != nil {
-					exitWithError(err)
-				}
-				return
+				exitWithUsage("%s`chb invoices sync nostr` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			}
 			if _, err := cmd.InvoicesSync(args[1:]); err != nil {
 				exitWithError(err)
@@ -144,11 +144,9 @@ func main() {
 				exitWithError(err)
 			}
 		case "publish":
-			if err := cmd.InvoicesPublish(args[2:]); err != nil {
-				exitWithError(err)
-			}
+			exitWithUsage("%s`chb invoices publish` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:
-			exitWithUsage("%sUsage: chb invoices [sync|categorize|publish] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			exitWithUsage("%sUsage: chb invoices [sync|categorize] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "bills":
 		billSub := ""
@@ -158,10 +156,7 @@ func main() {
 		switch billSub {
 		case "sync", "help", "--help", "-h":
 			if len(args) > 2 && args[2] == "nostr" {
-				if err := cmd.BillsSyncNostr(args[3:]); err != nil {
-					exitWithError(err)
-				}
-				return
+				exitWithUsage("%s`chb bills sync nostr` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			}
 			if _, err := cmd.BillsSync(args[1:]); err != nil {
 				exitWithError(err)
@@ -171,11 +166,9 @@ func main() {
 				exitWithError(err)
 			}
 		case "publish":
-			if err := cmd.BillsPublish(args[2:]); err != nil {
-				exitWithError(err)
-			}
+			exitWithUsage("%s`chb bills publish` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:
-			exitWithUsage("%sUsage: chb bills [sync|categorize|publish] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			exitWithUsage("%sUsage: chb bills [sync|categorize] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "messages":
 		if len(args) > 1 && args[1] == "sync" {
@@ -286,7 +279,7 @@ func main() {
 				exitWithError(err)
 			}
 		} else {
-			exitWithUsage("%sUsage: chb nostr sync <scope> [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			exitWithUsage("%sUsage: chb nostr sync [scope] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "rules":
 		cmd.RulesCommand(args[1:])
@@ -334,7 +327,7 @@ func needsWritableDataDir(args []string) bool {
 	switch args[0] {
 	case "setup", "sync":
 		return true
-	case "events", "bookings", "invoices", "bills", "messages", "images", "attachments", "members", "odoo":
+	case "calendars", "invoices", "bills", "messages", "images", "attachments", "members", "odoo":
 		return len(args) > 1 && strings.EqualFold(args[1], "sync")
 	case "transactions":
 		return hasArg(args[1:], "sync")
