@@ -1,0 +1,46 @@
+{
+  "discord": {
+    "guildId": "1280532848604086365",
+    "roles": {
+      "member": "1280559675292778617"
+    },
+    "channels": {
+      "general": "1280532849287495726",
+      "introductions": "1380592679364329522",
+      "requests": "1443603372967198883",
+      "contributions": "1297965144579637248",
+      "activities": {
+        "potluck": "1443604342077919313",
+        "heartbeat": "1443604524307583099",
+        "parkCleaning": "1443603954142548192",
+        "tokens": "1280924924625682484",
+        "shifts": "1443604838255427584",
+        "contributions": "1297965144579637248"
+      }
+    }
+  },
+  "membership": {
+    "stripe": {
+      "productId": "prod_QaSChjphKYLoVs"
+    },
+    "odoo": {
+      "products": [
+        {
+          "id": 94,
+          "name": "Monthly Individual Membership",
+          "interval": "month"
+        },
+        {
+          "id": 111,
+          "name": "Yearly Individual Membership",
+          "interval": "year"
+        },
+        {
+          "id": 104,
+          "name": "Yearly Non-Profit Membership",
+          "interval": "year"
+        }
+      ]
+    }
+  }
+}

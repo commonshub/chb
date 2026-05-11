@@ -213,11 +213,18 @@ func BillsSync(args []string) (int, error) {
 	}
 
 	if quietOdooContext() {
-		status := fmt.Sprintf("%d new bill(s) downloaded", savedBills)
-		if startMonth != endMonth {
-			status = fmt.Sprintf("%s (%s..%s)", status, startMonth, endMonth)
+		totalBills := 0
+		for _, monthBills := range byMonth {
+			totalBills += len(monthBills)
 		}
-		odooSyncLine("bills", status)
+		newCount := len(rawBills)
+		var detail string
+		if newCount == 0 {
+			detail = "already in sync"
+		} else {
+			detail = fmt.Sprintf("%d new", newCount)
+		}
+		odooSyncLine("bills", fmt.Sprintf("%d bills (%s)", totalBills, detail))
 	} else {
 		fmt.Printf("\n%s✓ Done!%s %d bill(s) synced\n\n", Fmt.Green, Fmt.Reset, savedBills)
 	}

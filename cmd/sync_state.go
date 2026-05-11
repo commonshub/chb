@@ -166,6 +166,32 @@ func LastSyncMonth(source string) string {
 // LastSyncTime returns the last sync timestamp for the given source,
 // or the zero time if never synced or malformed.
 func LastSyncTime(source string) time.Time {
+	ss := SyncSourceStateFor(source)
+	if ss == nil || ss.LastSync == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, ss.LastSync)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// LastFullSyncTime returns the last full/history sync timestamp for the given
+// source, or the zero time if never synced or malformed.
+func LastFullSyncTime(source string) time.Time {
+	ss := SyncSourceStateFor(source)
+	if ss == nil || ss.LastFullSync == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, ss.LastFullSync)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func SyncSourceStateFor(source string) *SyncSourceState {
 	state := LoadSyncState()
 	var ss *SyncSourceState
 	switch source {
@@ -188,12 +214,5 @@ func LastSyncTime(source string) time.Time {
 			ss = state.Accounts[strings.ToLower(account)]
 		}
 	}
-	if ss == nil || ss.LastSync == "" {
-		return time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339, ss.LastSync)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
+	return ss
 }

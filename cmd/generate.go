@@ -688,7 +688,43 @@ func GenerateTransactions(args []string) error {
 		return nil
 	}
 	scopes := collectGenerateScopes(dataDir, years, posYear, posMonth, posFound, startMonth)
+	return generateTransactionScopes(dataDir, scopes, startedAt)
+}
 
+func GenerateTransactionsForMonths(months []string) error {
+	startedAt := time.Now()
+	dataDir := DataDir()
+	seen := map[string]bool{}
+	var scopes []generateScope
+	for _, month := range months {
+		year, m, ok := parseGenerateMonth(month)
+		if !ok {
+			continue
+		}
+		key := year + "-" + m
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		scopes = append(scopes, generateScope{Year: year, Month: m})
+	}
+	sort.Slice(scopes, func(i, j int) bool {
+		return scopes[i].Year+scopes[i].Month < scopes[j].Year+scopes[j].Month
+	})
+	return generateTransactionScopes(dataDir, scopes, startedAt)
+}
+
+func parseGenerateMonth(month string) (string, string, bool) {
+	if y, m, ok := ParseSinceMonth(month); ok {
+		return y, m, true
+	}
+	if len(month) == 7 && month[4] == '/' {
+		return ParseSinceMonth(strings.ReplaceAll(month, "/", "-"))
+	}
+	return "", "", false
+}
+
+func generateTransactionScopes(dataDir string, scopes []generateScope, startedAt time.Time) error {
 	settings, _ := LoadSettings()
 	latestDir := filepath.Join(dataDir, "latest")
 
@@ -1074,7 +1110,7 @@ func contributorsOutputPath(dataDir, year, month string) string {
 func contributorInputPaths(dataDir, year, month string) []string {
 	var inputs []string
 
-	settingsPath := filepath.Join(settingsDir(), "settings.json")
+	settingsPath := settingsFilePath("settings.json")
 	if _, err := os.Stat(settingsPath); err == nil {
 		inputs = append(inputs, settingsPath)
 	}
@@ -1873,9 +1909,13 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			}
 		}
 	}
+	for _, acc := range LoadAccountConfigs() {
+		if acc.Address != "" {
+			trackedAddresses[strings.ToLower(acc.Address)] = acc.Slug
+		}
+	}
 
 	var transactions []TransactionEntry
-	seenTxHash := map[string]bool{} // track blockchain tx hashes to dedup internal transfers
 
 	// Process Stripe transactions
 	if len(stripePaths) > 0 {
@@ -2052,6 +2092,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		if err != nil {
 			return
 		}
+		internalHashes := internalTransferHashesFromChainDir(chainDir)
 
 		// Load Nostr metadata: per-month snapshot first, then merge with the
 		// timeless `latest/` registry so addresses labeled after this month
@@ -2124,6 +2165,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				_, fromTracked := trackedAddresses[strings.ToLower(tx.From)]
 				_, toTracked := trackedAddresses[strings.ToLower(tx.To)]
 				isInternal := fromTracked && toTracked
+				if internalHashes[strings.ToLower(tx.Hash)] {
+					isInternal = true
+				}
 
 				// EURb accounts (fridge, coffee) are like Stripe: withdrawals are internal
 				if txType == "DEBIT" && strings.EqualFold(tokenSymbol, "EURb") {
@@ -2133,12 +2177,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				internalDirection := ""
 				if isInternal {
 					internalDirection = txType
-					// Only keep one side of internal transfers (skip if we already saw this tx)
-					if seenTxHash[strings.ToLower(tx.Hash)] {
-						continue
-					}
-					seenTxHash[strings.ToLower(tx.Hash)] = true
-					// Mark as internal — neither in nor out for reporting
+					// Keep one row per tracked account side. The tx hash is the
+					// same, but the account-relative direction differs and is
+					// needed for per-account balances.
 					txType = "INTERNAL"
 				}
 
@@ -2501,6 +2542,49 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	}
 
 	return len(transactions)
+}
+
+func internalTransferHashesFromChainDir(chainDir string) map[string]bool {
+	type seenAccount struct {
+		account string
+		count   int
+	}
+	seen := map[string]map[string]bool{}
+	entries, err := os.ReadDir(chainDir)
+	if err != nil {
+		return map[string]bool{}
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(chainDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var txFile etherscansource.CacheFile
+		if json.Unmarshal(data, &txFile) != nil || txFile.Account == "" {
+			continue
+		}
+		account := strings.ToLower(txFile.Account)
+		for _, tx := range txFile.Transactions {
+			hash := strings.ToLower(tx.Hash)
+			if hash == "" {
+				continue
+			}
+			if seen[hash] == nil {
+				seen[hash] = map[string]bool{}
+			}
+			seen[hash][account] = true
+		}
+	}
+	internal := map[string]bool{}
+	for hash, accounts := range seen {
+		if len(accounts) > 1 {
+			internal[hash] = true
+		}
+	}
+	return internal
 }
 
 func chainIDForSourceChain(settings *Settings, chain string) int {

@@ -26,6 +26,7 @@ func exitAfterDiagnostics() {
 
 func main() {
 	cmd.Version = cmd.ResolveVersion(VERSION)
+	cmd.EnsureSettingsBootstrapped()
 	cmd.LoadEnvFromConfig()
 	defer cmd.CloseDiagnosticsLog()
 	defer cmd.PrintDiagnosticsSummary()
@@ -62,6 +63,10 @@ func main() {
 				exitWithError(err)
 			}
 		}
+	case "settings":
+		cmd.PrintSettings()
+	case "tokens":
+		cmd.Tokens(args[1:])
 	case "update":
 		yes := cmd.HasFlag(args[1:], "--yes", "-y")
 		if err := cmd.Update(yes); err != nil {

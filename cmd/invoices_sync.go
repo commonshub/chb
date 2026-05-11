@@ -438,11 +438,18 @@ func InvoicesSync(args []string) (int, error) {
 	}
 
 	if quietOdooContext() {
-		status := fmt.Sprintf("%d new invoice(s) downloaded", savedInvoices)
-		if startMonth != endMonth {
-			status = fmt.Sprintf("%s (%s..%s)", status, startMonth, endMonth)
+		totalInvoices := 0
+		for _, monthInvoices := range byMonth {
+			totalInvoices += len(monthInvoices)
 		}
-		odooSyncLine("invoices", status)
+		newCount := len(rawInvoices)
+		var detail string
+		if newCount == 0 {
+			detail = "already in sync"
+		} else {
+			detail = fmt.Sprintf("%d new", newCount)
+		}
+		odooSyncLine("invoices", fmt.Sprintf("%d invoices (%s)", totalInvoices, detail))
 	} else {
 		fmt.Printf("\n%s✓ Done!%s %d invoice(s) synced\n\n", Fmt.Green, Fmt.Reset, savedInvoices)
 	}
@@ -501,6 +508,13 @@ func fetchOutgoingInvoicesFromOdoo(creds *OdooCredentials, uid int, startDate, e
 }
 
 func odooSearchReadAllMaps(creds *OdooCredentials, uid int, model string, domain []interface{}, fields []string, order string) ([]map[string]interface{}, error) {
+	return odooSearchReadAllMapsLabeled(creds, uid, model, domain, fields, order, "")
+}
+
+// odooSearchReadAllMapsLabeled is like odooSearchReadAllMaps but lets the
+// caller specify a human-readable label for the progress indicator, e.g.
+// "transactions from journal #48". When empty, the Odoo model name is used.
+func odooSearchReadAllMapsLabeled(creds *OdooCredentials, uid int, model string, domain []interface{}, fields []string, order string, progressLabel string) ([]map[string]interface{}, error) {
 	fields, err := odooFilterReadableFields(creds, uid, model, fields)
 	if err != nil {
 		return nil, err
@@ -537,7 +551,11 @@ func odooSearchReadAllMaps(creds *OdooCredentials, uid int, model string, domain
 			break
 		}
 		offset += pageSize
-		status.Update("%s: %d fetched", model, len(all))
+		label := progressLabel
+		if label == "" {
+			label = model
+		}
+		status.Update("Fetching %s... %d so far", label, len(all))
 	}
 	return all, nil
 }

@@ -45,7 +45,7 @@ func syncStripeChronological(
 	}
 
 	if force && !dryRun {
-		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID, acc.OdooJournalName); err != nil {
+		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID); err != nil {
 			return "", err
 		}
 	}
@@ -100,8 +100,6 @@ func syncStripeChronological(
 	feeBTs := 0
 	feeStartDate := ""
 	feeEndDate := ""
-	feeFirstBTID := ""
-	feeLastBTID := ""
 	processedBTs := 0
 	skippedBTs := 0
 	payoutsSeen := 0
@@ -112,8 +110,6 @@ func syncStripeChronological(
 		feeBTs = 0
 		feeStartDate = ""
 		feeEndDate = ""
-		feeFirstBTID = ""
-		feeLastBTID = ""
 	}
 	appendAggregateFeeLine := func(paymentRef, importID, date string) {
 		if feeCents == 0 {
@@ -211,10 +207,6 @@ func syncStripeChronological(
 				feeStartDate = date
 			}
 			feeEndDate = date
-			if feeFirstBTID == "" {
-				feeFirstBTID = bt.ID
-			}
-			feeLastBTID = bt.ID
 		}
 
 		// Close the open statement on automatic payout.
@@ -272,16 +264,38 @@ func syncStripeChronological(
 	prepareStatus.Clear()
 
 	if feeCents != 0 {
-		importID := fmt.Sprintf("stripe:%s:open:%s:%s:fees",
-			strings.ToLower(acc.AccountID),
-			strings.ToLower(feeFirstBTID),
-			strings.ToLower(feeLastBTID),
-		)
+		// Stable importID per open statement: the same statement persists
+		// across sync runs until an automatic payout closes it, so we want
+		// a single rolling fee line that we update in place rather than a
+		// new line per run. See openStatementFeeImportID.
+		importID := openStatementFeeImportID(acc.AccountID, openStmtID)
 		date := feeEndDate
 		if date == "" {
 			date = time.Now().In(BrusselsTZ()).Format("2006-01-02")
 		}
-		appendAggregateFeeLine("Stripe fees for open statement", importID, date)
+		paymentRef := "Stripe fees for open statement"
+		addAmount := stripeAggregateFeeLineAmount(feeCents)
+
+		if dryRun {
+			runningBalance += addAmount
+			resetFeeAccumulator()
+		} else if existingID, existingAmount, err := fetchOdooLineByImportID(creds, uid, acc.OdooJournalID, importID); err == nil && existingID > 0 {
+			newAmount := existingAmount + addAmount
+			runningBalance += addAmount
+			if werr := updateStatementLineFields(creds, uid, existingID, map[string]interface{}{
+				"amount":      newAmount,
+				"payment_ref": paymentRef,
+				"date":        date,
+			}); werr != nil {
+				Warnf("  %s⚠ Failed to update open-statement fee line #%d: %v%s", Fmt.Yellow, existingID, werr, Fmt.Reset)
+			} else {
+				odooLog("    %supdated open-statement fee line #%d  %s → %s%s\n",
+					Fmt.Dim, existingID, fmtEURSigned(existingAmount), fmtEURSigned(newAmount), Fmt.Reset)
+			}
+			resetFeeAccumulator()
+		} else {
+			appendAggregateFeeLine(paymentRef, importID, date)
+		}
 	}
 	flush("final open statement")
 
@@ -309,9 +323,14 @@ func syncStripeChronological(
 		stats.print()
 	}
 	warnInvalidStatements(creds, uid, acc.OdooJournalID)
-	summary := fmt.Sprintf("%d new transactions uploaded", stats.LinesCreated)
-	if stats.Statements > 0 {
-		summary = fmt.Sprintf("%d new transactions uploaded, %d statements closed", stats.LinesCreated, stats.Statements)
+	var summary string
+	switch {
+	case stats.LinesCreated == 0 && stats.Statements == 0:
+		summary = "already in sync"
+	case stats.Statements > 0:
+		summary = fmt.Sprintf("%d new, %d statements closed", stats.LinesCreated, stats.Statements)
+	default:
+		summary = fmt.Sprintf("%d new", stats.LinesCreated)
 	}
 	return summary, nil
 }
@@ -553,6 +572,50 @@ func closeOpenStatement(creds *OdooCredentials, uid int, stmtID int, name, ref s
 			"reference":        ref,
 			"balance_end_real": runningBalance,
 		}}, nil)
+	return err
+}
+
+// openStatementFeeImportID returns the stable unique_import_id for the
+// rolling "Stripe fees for open statement" line. Tied to the open statement's
+// Odoo ID so the same line is updated across sync runs (instead of a new
+// duplicate line being created on each run, as happened with the prior
+// BT-range-based key).
+func openStatementFeeImportID(accountID string, openStmtID int) string {
+	return fmt.Sprintf("stripe:%s:open:%d:fees", strings.ToLower(accountID), openStmtID)
+}
+
+// fetchOdooLineByImportID looks up a single statement line by its unique
+// import id. Returns (0, 0, nil) when no line matches.
+func fetchOdooLineByImportID(creds *OdooCredentials, uid int, journalID int, importID string) (int, float64, error) {
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+			[]interface{}{"unique_import_id", "=", importID},
+		}},
+		map[string]interface{}{"fields": []string{"id", "amount"}, "limit": 1})
+	if err != nil {
+		return 0, 0, err
+	}
+	var rows []struct {
+		ID     int     `json:"id"`
+		Amount float64 `json:"amount"`
+	}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		return 0, 0, err
+	}
+	if len(rows) == 0 {
+		return 0, 0, nil
+	}
+	return rows[0].ID, rows[0].Amount, nil
+}
+
+// updateStatementLineFields writes arbitrary fields onto an existing
+// statement line.
+func updateStatementLineFields(creds *OdooCredentials, uid int, lineID int, vals map[string]interface{}) error {
+	_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "write",
+		[]interface{}{[]interface{}{lineID}, vals}, nil)
 	return err
 }
 

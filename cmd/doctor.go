@@ -123,7 +123,7 @@ func checkOdooJournalBalances(report *doctorReport) {
 			report.Findings = append(report.Findings, doctorFinding{
 				Severity: "warning",
 				Scope:    fmt.Sprintf("odoo/journal-%d", acc.OdooJournalID),
-				Message:  fmt.Sprintf("could not check journal %q: %v", acc.OdooJournalName, err),
+				Message:  fmt.Sprintf("could not check journal %q: %v", OdooJournalName(acc.OdooJournalID), err),
 				Fix:      fmt.Sprintf("Run: chb odoo journals %d check", acc.OdooJournalID),
 			})
 			continue

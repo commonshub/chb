@@ -87,13 +87,13 @@ func TestStripe2024Balance(t *testing.T) {
 	}
 
 	realAccountID := "acct_1Nn0FaFAhaWeDyow"
+	CacheOdooJournalName(journalID, journalName)
 	acc := &AccountConfig{
-		Name:            "Test Stripe 2024",
-		Slug:            "stripe",
-		Provider:        "stripe",
-		AccountID:       realAccountID,
-		OdooJournalID:   journalID,
-		OdooJournalName: journalName,
+		Name:          "Test Stripe 2024",
+		Slug:          "stripe",
+		Provider:      "stripe",
+		AccountID:     realAccountID,
+		OdooJournalID: journalID,
 	}
 
 	// Compute expected values from local data

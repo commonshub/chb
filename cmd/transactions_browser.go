@@ -1469,9 +1469,9 @@ func formatSpreadEntry(s SpreadEntry, currency string) string {
 func formatSpreadAmount(v float64, currency string) string {
 	if isEURCurrency(currency) {
 		if v < 0 {
-			return "-€" + fmtNumber(-v)
+			return "-" + fmtNumber(-v) + " EUR"
 		}
-		return "€" + fmtNumber(v)
+		return fmtNumber(v) + " EUR"
 	}
 	return fmt.Sprintf("%.2f %s", v, currency)
 }

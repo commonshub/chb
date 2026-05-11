@@ -20,6 +20,26 @@ type TokenConfig struct {
 	Burnable  bool   `json:"burnable,omitempty"`
 	RpcUrl    string `json:"rpcUrl,omitempty"`
 	WalletURL string `json:"walletUrl,omitempty"`
+
+	// ExplorerUrl is a public block-explorer base URL (e.g. https://celoscan.io).
+	ExplorerUrl string `json:"explorerUrl,omitempty"`
+
+	// Contribution flags the token used for community contributions / wallet
+	// resolution. At most one token should have this set; helpers like
+	// ContributionToken(settings) return it.
+	Contribution bool `json:"contribution,omitempty"`
+
+	// WalletManager selects how Discord user IDs map to wallet addresses for
+	// this contribution token. Either "citizenwallet" (CardManager contract)
+	// or "opencollective" (Safe owners). Inferred from the chain if blank.
+	WalletManager string `json:"walletManager,omitempty"`
+
+	// CardManagerAddress and CardManagerInstanceID configure the
+	// CitizenWallet CardManager contract for wallet resolution. Only used
+	// when WalletManager is "citizenwallet"; default values are baked into
+	// wallet.go for the common Celo deployment.
+	CardManagerAddress    string `json:"cardManagerAddress,omitempty"`
+	CardManagerInstanceID string `json:"cardManagerInstanceId,omitempty"`
 }
 
 func tokensConfigPath() string {
@@ -46,20 +66,13 @@ func SaveTokenConfigs(tokens []TokenConfig) error {
 	return os.WriteFile(tokensConfigPath(), data, 0644)
 }
 
-func loadTokenConfigsForSettings(settings *Settings) []TokenConfig {
-	if tokens, ok := readTokenConfigs(); ok {
-		return tokens
-	}
-	tokens := migrateTokenConfigs(settings)
-	if len(tokens) > 0 {
-		_ = SaveTokenConfigs(tokens)
-		stripTokenTrackersFromAccountsJSON()
-	}
+func loadTokenConfigsForSettings(_ *Settings) []TokenConfig {
+	tokens, _ := readTokenConfigs()
 	return tokens
 }
 
 func readTokenConfigs() ([]TokenConfig, bool) {
-	data, err := os.ReadFile(existingSettingsFilePath("tokens.json"))
+	data, err := os.ReadFile(tokensConfigPath())
 	if err != nil {
 		return nil, false
 	}
@@ -70,57 +83,39 @@ func readTokenConfigs() ([]TokenConfig, bool) {
 	return dedupeTokenConfigs(tokens), true
 }
 
-func migrateTokenConfigs(settings *Settings) []TokenConfig {
-	var tokens []TokenConfig
-	for _, acc := range settings.Finance.Accounts {
-		if !financeAccountIsTokenTracker(acc) {
-			continue
+// ContributionTokenConfig returns the token marked Contribution=true, or nil
+// when no token is flagged. tokens.json is the source of truth for the
+// contribution token; the Settings.ContributionToken field is a derived view.
+func ContributionTokenConfig(tokens []TokenConfig) *TokenConfig {
+	for i := range tokens {
+		if tokens[i].Contribution {
+			return &tokens[i]
 		}
-		tokens = append(tokens, tokenConfigFromFinanceAccount(acc))
 	}
-	if settings.ContributionToken != nil {
-		tokens = append(tokens, tokenConfigFromContributionToken(*settings.ContributionToken))
-	}
-	return dedupeTokenConfigs(tokens)
+	return nil
 }
 
-func tokenConfigFromFinanceAccount(acc FinanceAccount) TokenConfig {
-	token := TokenConfig{
-		Name:     acc.Name,
-		Slug:     acc.Slug,
-		Provider: firstNonEmptyStr(acc.Provider, "etherscan"),
-		Chain:    acc.Chain,
-		ChainID:  acc.ChainID,
-		Symbol:   acc.Currency,
-		Mintable: true,
-		Burnable: true,
+// contributionTokenSettingsFromTokens projects a TokenConfig back into the
+// ContributionTokenSettings shape that the rest of the CLI reads. Returns
+// nil when no contribution token is configured.
+func contributionTokenSettingsFromTokens(tokens []TokenConfig) *ContributionTokenSettings {
+	t := ContributionTokenConfig(tokens)
+	if t == nil {
+		return nil
 	}
-	if acc.Token != nil {
-		token.Address = acc.Token.Address
-		token.Name = firstNonEmptyStr(token.Name, acc.Token.Name)
-		token.Symbol = firstNonEmptyStr(acc.Token.Symbol, token.Symbol)
-		token.Decimals = acc.Token.Decimals
+	return &ContributionTokenSettings{
+		Chain:                 t.Chain,
+		ChainID:               t.ChainID,
+		RpcUrl:                t.RpcUrl,
+		ExplorerUrl:           t.ExplorerUrl,
+		Address:               t.Address,
+		Name:                  t.Name,
+		Symbol:                t.Symbol,
+		Decimals:              t.Decimals,
+		WalletManager:         t.WalletManager,
+		CardManagerAddress:    t.CardManagerAddress,
+		CardManagerInstanceID: t.CardManagerInstanceID,
 	}
-	if token.Slug == "" {
-		token.Slug = strings.ToLower(token.Symbol)
-	}
-	return normalizeTokenConfig(token)
-}
-
-func tokenConfigFromContributionToken(ct ContributionTokenSettings) TokenConfig {
-	return normalizeTokenConfig(TokenConfig{
-		Name:     ct.Name,
-		Slug:     strings.ToLower(ct.Symbol),
-		Provider: "etherscan",
-		Chain:    ct.Chain,
-		ChainID:  ct.ChainID,
-		Address:  ct.Address,
-		Symbol:   ct.Symbol,
-		Decimals: ct.Decimals,
-		Mintable: true,
-		Burnable: true,
-		RpcUrl:   ct.RpcUrl,
-	})
 }
 
 func normalizeTokenConfig(token TokenConfig) TokenConfig {
@@ -202,10 +197,6 @@ func financeAccountIsTokenTracker(acc FinanceAccount) bool {
 	return acc.Provider == "etherscan" && acc.Token != nil && strings.TrimSpace(acc.Address) == ""
 }
 
-func accountConfigIsTokenTracker(acc AccountConfig) bool {
-	return acc.Provider == "etherscan" && acc.Token != nil && strings.TrimSpace(acc.Address) == ""
-}
-
 func filterTokenTrackerFinanceAccounts(accounts []FinanceAccount) []FinanceAccount {
 	out := make([]FinanceAccount, 0, len(accounts))
 	for _, acc := range accounts {
@@ -217,25 +208,3 @@ func filterTokenTrackerFinanceAccounts(accounts []FinanceAccount) []FinanceAccou
 	return out
 }
 
-func stripTokenTrackersFromAccountsJSON() {
-	data, err := os.ReadFile(existingSettingsFilePath("accounts.json"))
-	if err != nil {
-		return
-	}
-	var accounts []AccountConfig
-	if json.Unmarshal(data, &accounts) != nil {
-		return
-	}
-	filtered := make([]AccountConfig, 0, len(accounts))
-	changed := false
-	for _, acc := range accounts {
-		if accountConfigIsTokenTracker(acc) {
-			changed = true
-			continue
-		}
-		filtered = append(filtered, acc)
-	}
-	if changed {
-		_ = SaveAccountConfigs(filtered)
-	}
-}

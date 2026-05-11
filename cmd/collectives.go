@@ -17,18 +17,11 @@ func collectivesPath() string {
 }
 
 // LoadCollectives reads collectives from APP_DATA_DIR/settings/collectives.json.
-// On first load, migrates from settings.json if collectives.json doesn't exist.
+// The file is seeded from the embedded defaults on first run and kept in
+// sync by EnsureSettingsBootstrapped when the user hasn't edited it locally.
 func LoadCollectives() map[string]Collective {
-	data, err := os.ReadFile(existingSettingsFilePath("collectives.json"))
+	data, err := os.ReadFile(collectivesPath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Migrate from settings.json
-			collectives := migrateCollectivesFromSettings()
-			if len(collectives) > 0 {
-				SaveCollectives(collectives)
-			}
-			return collectives
-		}
 		return map[string]Collective{}
 	}
 	var collectives map[string]Collective
@@ -69,20 +62,3 @@ func CollectiveSlugs() []string {
 	return slugs
 }
 
-func migrateCollectivesFromSettings() map[string]Collective {
-	settings, err := LoadSettings()
-	if err != nil {
-		return map[string]Collective{}
-	}
-
-	result := map[string]Collective{}
-	for slug, raw := range settings.Finance.Collectives {
-		var c Collective
-		if json.Unmarshal(raw, &c) == nil {
-			result[slug] = c
-		} else {
-			result[slug] = Collective{Name: slug}
-		}
-	}
-	return result
-}

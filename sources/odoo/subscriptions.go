@@ -340,10 +340,19 @@ func rpc(odooURL, service, method string, args []interface{}) (json.RawMessage, 
 	if rpcResp.Error != nil {
 		msg := rpcResp.Error.Message
 		if rpcResp.Error.Data.Debug != "" {
+			// The debug field is a Python traceback. The most informative
+			// line is the last non-empty one (the actual exception
+			// message). Walk back to skip trailing blanks.
 			lines := strings.Split(rpcResp.Error.Data.Debug, "\n")
-			if len(lines) > 0 {
-				msg = lines[len(lines)-1]
+			for i := len(lines) - 1; i >= 0; i-- {
+				if s := strings.TrimSpace(lines[i]); s != "" {
+					msg = s
+					break
+				}
 			}
+		}
+		if msg == "" {
+			msg = "(empty error response)"
 		}
 		return nil, fmt.Errorf("odoo error: %s", msg)
 	}

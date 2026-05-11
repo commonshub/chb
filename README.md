@@ -25,7 +25,7 @@ chb update
 Quick example for Linux `amd64`:
 
 ```bash
-VERSION=v2.3.3
+VERSION=v3.0.0
 curl -L -o /tmp/chb.tar.gz "https://github.com/CommonsHub/chb/releases/download/${VERSION}/chb_${VERSION#v}_linux_amd64.tar.gz"
 tar -xzf /tmp/chb.tar.gz -C /tmp
 install /tmp/chb_${VERSION#v}_linux_amd64 /usr/local/bin/chb

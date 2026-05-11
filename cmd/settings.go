@@ -1,19 +1,30 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-	"time"
 )
 
-const settingsRepo = "https://raw.githubusercontent.com/CommonsHub/commonshub.brussels/main/src/settings"
+// defaultSettingsFS holds the public, shipped-with-the-binary defaults that
+// seed APP_DATA_DIR/settings/ on first run. Each file behaves like a Debian
+// conffile: unedited locals auto-track upstream changes; edited locals are
+// left alone and surface as pending updates in `chb settings`.
+//
+//go:embed all:defaults
+var defaultSettingsFS embed.FS
 
-var settingsFiles = []string{"settings.json", "rooms.json"}
+const (
+	defaultSettingsRoot     = "defaults"
+	installedDefaultsRecord = ".installed-defaults.json"
+)
 
 // AppDataDir returns the directory for app configuration/state files.
 // Defaults to ~/.chb and can be overridden with APP_DATA_DIR.
@@ -53,90 +64,194 @@ func settingsFilePath(name string) string {
 	return filepath.Join(AppSettingsDir(), name)
 }
 
-func legacySettingsFilePath(name string) string {
-	return filepath.Join(AppDataDir(), name)
+// readDefaultSettingsFile returns the bytes of an embedded default by name
+// (e.g. "settings.json"). Returns (nil, error) if the file isn't shipped.
+func readDefaultSettingsFile(name string) ([]byte, error) {
+	return defaultSettingsFS.ReadFile(filepath.Join(defaultSettingsRoot, name))
 }
 
-func existingSettingsFilePath(name string) string {
-	path := settingsFilePath(name)
-	if _, err := os.Stat(path); err == nil {
-		return path
+// listDefaultSettingsFiles returns the basenames of every shipped default.
+func listDefaultSettingsFiles() ([]string, error) {
+	entries, err := defaultSettingsFS.ReadDir(defaultSettingsRoot)
+	if err != nil {
+		return nil, err
 	}
-	legacyPath := legacySettingsFilePath(name)
-	if _, err := os.Stat(legacyPath); err == nil {
-		return legacyPath
-	}
-	return path
-}
-
-// settingsDir returns the directory to look for settings files.
-// Downloads from GitHub if missing. Falls back to src/settings/ for monorepo compat.
-func settingsDir() string {
-	dir := AppSettingsDir()
-	settingsPath := filepath.Join(dir, "settings.json")
-
-	if _, err := os.Stat(settingsPath); err == nil {
-		return dir
-	}
-
-	legacyPath := legacySettingsFilePath("settings.json")
-	if _, err := os.Stat(legacyPath); err == nil {
-		return AppDataDir()
-	}
-
-	if os.Getenv("APP_DATA_DIR") != "" {
-		fmt.Printf("%sDownloading settings...%s\n", Fmt.Dim, Fmt.Reset)
-		if err := DownloadSettings(dir); err != nil {
-			fmt.Printf("%sCould not download settings:%s %v\n", Fmt.Yellow, Fmt.Reset, err)
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
 		}
-		return dir
+		out = append(out, e.Name())
 	}
+	return out, nil
+}
 
-	// Try src/settings/ (monorepo compat)
-	if _, err := os.Stat(filepath.Join("src", "settings", "settings.json")); err == nil {
-		return filepath.Join("src", "settings")
+// PendingDefaultUpdate describes an embedded default whose content has
+// changed compared to what we last installed AND whose local copy has been
+// edited by the user. `chb settings` shows the diff so the user can decide
+// whether to adopt the new defaults.
+type PendingDefaultUpdate struct {
+	Name          string
+	LocalContent  []byte
+	UpstreamBytes []byte
+}
+
+// pendingDefaultUpdates is populated by EnsureSettingsBootstrapped on every
+// run. Read by `chb settings`.
+var pendingDefaultUpdates []PendingDefaultUpdate
+
+// EnsureSettingsBootstrapped reconciles APP_DATA_DIR/settings/ with the
+// embedded defaults. Per file:
+//
+//   - missing locally       → install from embed, record its hash.
+//   - identical to embed    → no-op (refresh tracker just in case).
+//   - tracked-hash matches  → user hasn't edited; auto-update to new embed.
+//   - tracked-hash differs  → user edited; surface as a pending update.
+//
+// Pending updates are stored in pendingDefaultUpdates for `chb settings`.
+func EnsureSettingsBootstrapped() string {
+	dir := AppSettingsDir()
+	// Drain any legacy-schema fields out of on-disk files BEFORE the
+	// embedded defaults overwrite an unedited local copy. The migration
+	// is a no-op on already-migrated files.
+	migrateLegacySettingsSchemas(dir)
+	if err := reconcileDefaultSettings(dir); err != nil {
+		fmt.Printf("%sCould not reconcile default settings:%s %v\n", Fmt.Yellow, Fmt.Reset, err)
 	}
-
-	// Download from GitHub
-	fmt.Printf("%sDownloading settings...%s\n", Fmt.Dim, Fmt.Reset)
-	if err := DownloadSettings(dir); err != nil {
-		fmt.Printf("%sCould not download settings:%s %v\n", Fmt.Yellow, Fmt.Reset, err)
-		return dir
-	}
-
 	return dir
 }
 
-// DownloadSettings fetches settings files from the commonshub.brussels repo
-func DownloadSettings(dir string) error {
-	client := &http.Client{Timeout: 10 * time.Second}
-	os.MkdirAll(dir, 0755)
-
-	for _, file := range settingsFiles {
-		url := settingsRepo + "/" + file
-		resp, err := client.Get(url)
-		if err != nil {
-			return fmt.Errorf("failed to download %s: %w", file, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			return fmt.Errorf("failed to download %s: HTTP %d", file, resp.StatusCode)
-		}
-
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", file, err)
-		}
-
-		path := filepath.Join(dir, file)
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", file, err)
-		}
-
-		fmt.Printf("  %s✓%s %s\n", Fmt.Green, Fmt.Reset, file)
+// migrateLegacySettingsSchemas runs one-shot schema cleanups against files
+// in APP_DATA_DIR/settings/ before the bootstrap reconciler runs. Each
+// helper is idempotent.
+func migrateLegacySettingsSchemas(dir string) {
+	accountsPath := filepath.Join(dir, "accounts.json")
+	if data, err := os.ReadFile(accountsPath); err == nil {
+		migrateLegacyOdooJournalNames(data)
 	}
+}
+
+func reconcileDefaultSettings(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	tracker := loadInstalledDefaultsRecord(dir)
+	pending := pendingDefaultUpdates[:0]
+	trackerDirty := false
+
+	err := fs.WalkDir(defaultSettingsFS, defaultSettingsRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		rel, err := filepath.Rel(defaultSettingsRoot, path)
+		if err != nil {
+			return err
+		}
+		embedBytes, err := defaultSettingsFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		embedHash := sha256Hex(embedBytes)
+		target := filepath.Join(dir, rel)
+
+		localBytes, statErr := os.ReadFile(target)
+		switch {
+		case os.IsNotExist(statErr):
+			if err := writeDefaultFile(target, embedBytes); err != nil {
+				return err
+			}
+			tracker[rel] = embedHash
+			trackerDirty = true
+			fmt.Printf("  %s✓%s installed default %s\n", Fmt.Green, Fmt.Reset, rel)
+			return nil
+		case statErr != nil:
+			return statErr
+		}
+
+		localHash := sha256Hex(localBytes)
+		trackedHash, hadTracker := tracker[rel]
+
+		if localHash == embedHash {
+			if tracker[rel] != embedHash {
+				tracker[rel] = embedHash
+				trackerDirty = true
+			}
+			return nil
+		}
+
+		// local != embed
+		userEdited := hadTracker && trackedHash != localHash
+		if !userEdited {
+			if err := writeDefaultFile(target, embedBytes); err != nil {
+				return err
+			}
+			tracker[rel] = embedHash
+			trackerDirty = true
+			fmt.Printf("  %s↑%s updated %s from new embedded default\n", Fmt.Green, Fmt.Reset, rel)
+			return nil
+		}
+
+		// User edited locally AND embed differs from local → pending update.
+		pending = append(pending, PendingDefaultUpdate{
+			Name:          rel,
+			LocalContent:  localBytes,
+			UpstreamBytes: embedBytes,
+		})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if trackerDirty {
+		_ = saveInstalledDefaultsRecord(dir, tracker)
+	}
+	pendingDefaultUpdates = pending
 	return nil
+}
+
+// PendingSettingsUpdates returns the latest list collected by
+// EnsureSettingsBootstrapped. Safe to call before/after bootstrap.
+func PendingSettingsUpdates() []PendingDefaultUpdate {
+	out := make([]PendingDefaultUpdate, len(pendingDefaultUpdates))
+	copy(out, pendingDefaultUpdates)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func writeDefaultFile(target string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, content, 0644)
+}
+
+func sha256Hex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+func installedDefaultsRecordPath(dir string) string {
+	return filepath.Join(dir, installedDefaultsRecord)
+}
+
+func loadInstalledDefaultsRecord(dir string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(installedDefaultsRecordPath(dir))
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+func saveInstalledDefaultsRecord(dir string, record map[string]string) error {
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(installedDefaultsRecordPath(dir), data, 0644)
 }
 
 // ContributionTokenSettings holds the contribution token config from settings.json
@@ -179,18 +294,23 @@ type CalendarSettings struct {
 	Sources []CalendarSourceConfig `json:"-"`
 }
 
-// Settings represents settings.json
+// Settings represents settings.json. Several fields are populated from
+// dedicated files (accounts.json, tokens.json, calendars.json, …) rather
+// than from settings.json directly — see LoadSettings.
 type Settings struct {
-	Luma struct {
-		CalendarID string `json:"calendarId"`
-	} `json:"luma"`
-	Calendars         CalendarSettings           `json:"calendars"`
-	Discord           DiscordSettings            `json:"discord"`
-	Finance           FinanceSettings            `json:"finance"`
-	Membership        MembershipSettings         `json:"membership"`
-	ContributionToken *ContributionTokenSettings `json:"contributionToken"`
-	Tokens            []TokenConfig              `json:"-"`
-	Accounting        *AccountingSettings        `json:"accounting,omitempty"`
+	Calendars  CalendarSettings   `json:"calendars"`
+	Discord    DiscordSettings    `json:"discord"`
+	Finance    FinanceSettings    `json:"finance"`
+	Membership MembershipSettings `json:"membership"`
+	Accounting *AccountingSettings `json:"accounting,omitempty"`
+
+	// ContributionToken is derived from tokens.json (the entry marked
+	// contribution=true) at load time; settings.json no longer stores it.
+	ContributionToken *ContributionTokenSettings `json:"-"`
+
+	// Tokens is loaded from tokens.json (with finance-account token
+	// trackers folded in).
+	Tokens []TokenConfig `json:"-"`
 }
 
 // MembershipSettings holds membership provider configuration
@@ -269,7 +389,7 @@ type RoomsConfig struct {
 }
 
 func LoadSettings() (*Settings, error) {
-	dir := settingsDir()
+	dir := EnsureSettingsBootstrapped()
 	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load settings: %w", err)
@@ -281,12 +401,8 @@ func LoadSettings() (*Settings, error) {
 
 	loadCalendarsSettings(&s)
 
-	// Override accounts from accounts.json if it exists
-	if _, err := os.Stat(existingSettingsFilePath("accounts.json")); err == nil {
-		configs := LoadAccountConfigs()
-		if len(configs) > 0 {
-			s.Finance.Accounts = ToFinanceAccounts(configs)
-		}
+	if configs := LoadAccountConfigs(); len(configs) > 0 {
+		s.Finance.Accounts = ToFinanceAccounts(configs)
 	}
 	s.Tokens = loadTokenConfigsForSettings(&s)
 	if len(s.Tokens) > 0 {
@@ -294,14 +410,17 @@ func LoadSettings() (*Settings, error) {
 		s.Finance.Accounts = append(s.Finance.Accounts, ToFinanceTokenAccounts(s.Tokens)...)
 	}
 
+	// tokens.json is the source of truth for the contribution token; project
+	// it back into the legacy field shape that the rest of the CLI reads.
+	s.ContributionToken = contributionTokenSettingsFromTokens(s.Tokens)
+
 	return &s, nil
 }
 
 // SaveAccountingSettings updates only the "accounting" key in settings.json,
 // preserving all other fields.
 func SaveAccountingSettings(acct *AccountingSettings) error {
-	dir := settingsDir()
-	path := filepath.Join(dir, "settings.json")
+	path := settingsFilePath("settings.json")
 
 	// Load raw JSON to preserve unknown fields
 	data, err := os.ReadFile(path)
@@ -327,7 +446,7 @@ func SaveAccountingSettings(acct *AccountingSettings) error {
 }
 
 func LoadRooms() ([]RoomInfo, error) {
-	data, err := os.ReadFile(existingSettingsFilePath("rooms.json"))
+	data, err := os.ReadFile(settingsFilePath("rooms.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +458,7 @@ func LoadRooms() ([]RoomInfo, error) {
 }
 
 func loadCalendarsSettings(settings *Settings) {
-	data, err := os.ReadFile(existingSettingsFilePath("calendars.json"))
+	data, err := os.ReadFile(settingsFilePath("calendars.json"))
 	if err != nil {
 		settings.Calendars.Sources = legacyCalendarSources(settings)
 		return
@@ -402,7 +521,6 @@ func loadCalendarsSettings(settings *Settings) {
 				sources = append(sources, normalized)
 			}
 		} else {
-			parsedSource := false
 			var source CalendarSourceConfig
 			if json.Unmarshal(v, &source) == nil {
 				source.Slug = firstNonEmptyStr(source.Slug, "luma")
@@ -410,15 +528,6 @@ func loadCalendarsSettings(settings *Settings) {
 				if normalized, ok := normalizeCalendarSource(source); ok {
 					settings.Calendars.Luma = normalized.URL
 					sources = append(sources, normalized)
-					parsedSource = true
-				}
-			}
-			if !parsedSource {
-				var legacy struct {
-					CalendarID string `json:"calendarId"`
-				}
-				if json.Unmarshal(v, &legacy) == nil {
-					settings.Luma.CalendarID = legacy.CalendarID
 				}
 			}
 		}

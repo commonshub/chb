@@ -1,0 +1,10 @@
+2026-05-11T12:07:57+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3RvZWvFAhaWeDyow1sFCEyIA failed: luma redirect for evt-KFTKk1iDWynrUgq returned no Location header
+2026-05-11T12:07:57+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3RvZWvFAhaWeDyow1eoQA34S failed: luma redirect for evt-KFTKk1iDWynrUgq returned no Location header
+2026-05-11T12:07:58+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3SuUchFAhaWeDyow2VliqtRF failed: luma redirect for evt-P3W20IrEsqQej58 returned no Location header
+2026-05-11T12:07:59+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3StnLnFAhaWeDyow29aNagL1 failed: luma redirect for evt-P3W20IrEsqQej58 returned no Location header
+2026-05-11T12:07:59+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3SnFAoFAhaWeDyow2xoctwKs failed: luma redirect for evt-DqihEuDMI5Oz4BA returned no Location header
+2026-05-11T12:07:59+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3SnFAoFAhaWeDyow21I95wEh failed: luma redirect for evt-DqihEuDMI5Oz4BA returned no Location header
+2026-05-11T12:08:00+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3SxLvZFAhaWeDyow2wbPzlaI failed: luma redirect for evt-Lc1oSUrPBk6znxi returned no Location header
+2026-05-11T12:08:00+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3TD7SqFAhaWeDyow0nbb0ZDS failed: luma redirect for evt-P3W20IrEsqQej58 returned no Location header
+2026-05-11T12:08:01+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3T9Te1FAhaWeDyow09jqyP97 failed: luma redirect for evt-VfP8AcZ1kOz9yJc returned no Location header
+2026-05-11T12:08:01+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3SxLvZFAhaWeDyow2safR9BD failed: luma redirect for evt-Lc1oSUrPBk6znxi returned no Location header

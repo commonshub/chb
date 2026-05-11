@@ -59,7 +59,7 @@ func TestDataDirEnvOverridesAppDataDir(t *testing.T) {
 	assertMode(t, dataDir, 0755)
 }
 
-func TestSettingsDirUsesAppDataDirOverride(t *testing.T) {
+func TestEnsureSettingsBootstrappedUsesAppDataDirOverride(t *testing.T) {
 	appDir := filepath.Join(t.TempDir(), "app")
 	t.Setenv("APP_DATA_DIR", appDir)
 	settingsPath := filepath.Join(appDir, "settings")
@@ -71,26 +71,9 @@ func TestSettingsDirUsesAppDataDirOverride(t *testing.T) {
 		t.Fatalf("write settings.json: %v", err)
 	}
 
-	got := settingsDir()
+	got := EnsureSettingsBootstrapped()
 	if got != settingsPath {
-		t.Fatalf("settingsDir() = %q, want %q", got, settingsPath)
-	}
-}
-
-func TestSettingsDirFallsBackToLegacyAppDataDir(t *testing.T) {
-	appDir := filepath.Join(t.TempDir(), "app")
-	t.Setenv("APP_DATA_DIR", appDir)
-
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		t.Fatalf("mkdir app dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(appDir, "settings.json"), []byte(`{}`), 0644); err != nil {
-		t.Fatalf("write legacy settings.json: %v", err)
-	}
-
-	got := settingsDir()
-	if got != appDir {
-		t.Fatalf("settingsDir() = %q, want legacy %q", got, appDir)
+		t.Fatalf("EnsureSettingsBootstrapped() = %q, want %q", got, settingsPath)
 	}
 }
 

@@ -66,9 +66,9 @@ func TestReportMonthlyUsesGeneratedReportJSON(t *testing.T) {
 		"🪙 Tokens",
 		"CHT      minted 42 CHT  burnt 3 CHT  txs 2  supply 1000 CHT  holders 12  active 4",
 		"💶 Currencies",
-		"EUR      total in €20.00  out €4.00  net €15.00",
+		"EUR      total in 20.00 EUR  out 4.00 EUR  net 15.00 EUR",
 		"🏦 Accounts",
-		"Stripe  in €20.00  out €0.00  net €19.00  start n/a  end n/a",
+		"Stripe  in 20.00 EUR  out 0.00 EUR  net 19.00 EUR  start n/a  end n/a",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("report output missing %q:\n%s", want, out)

@@ -1,0 +1,24 @@
+{
+  "commonshub": {
+    "name": "Commons Hub",
+    "icon": "/favicon.png"
+  },
+  "genesis": {
+    "name": "Genesis",
+    "icon": "/images/collectives/genesis.png"
+  },
+  "openletter": {
+    "name": "Open Letter",
+    "icon": "/images/collectives/openletter.png"
+  },
+  "opensourcevillage": {
+    "name": "opensourcevillage"
+  },
+  "regensunite": {
+    "name": "Regens Unite",
+    "icon": "/images/partners/regensunite.avif"
+  },
+  "wisecrowds": {
+    "name": "wisecrowds"
+  }
+}

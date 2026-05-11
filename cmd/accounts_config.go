@@ -4,23 +4,29 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // AccountConfig represents a finance account in accounts.json.
 // Extends FinanceAccount with additional fields.
+//
+// The display name for the linked Odoo journal is intentionally NOT stored
+// here — Odoo journal names typically embed the IBAN (e.g. "IBAN EE72 7777
+// …"), which we don't want to leak via the public default accounts.json.
+// Display callers should use OdooJournalName(id) which reads from a local
+// cache populated by sync runs.
 type AccountConfig struct {
-	Name            string `json:"name"`
-	Slug            string `json:"slug"`
-	Provider        string `json:"provider"`        // stripe, etherscan, monerium
-	Chain           string `json:"chain,omitempty"` // gnosis, celo, ethereum
-	ChainID         int    `json:"chainId,omitempty"`
-	Address         string `json:"address,omitempty"`         // wallet address
-	AccountID       string `json:"accountId,omitempty"`       // stripe account ID
-	Currency        string `json:"currency,omitempty"`        // EUR, EURe, etc.
-	WalletType      string `json:"walletType,omitempty"`      // "eoa" or "safe" (default: "safe")
-	OdooJournalID   int    `json:"odooJournalId,omitempty"`   // linked Odoo bank journal ID
-	OdooJournalName string `json:"odooJournalName,omitempty"` // journal display name
-	Token           *struct {
+	Name          string `json:"name"`
+	Slug          string `json:"slug"`
+	Provider      string `json:"provider"`        // stripe, etherscan, monerium
+	Chain         string `json:"chain,omitempty"` // gnosis, celo, ethereum
+	ChainID       int    `json:"chainId,omitempty"`
+	Address       string `json:"address,omitempty"`       // wallet address
+	AccountID     string `json:"accountId,omitempty"`     // stripe account ID
+	Currency      string `json:"currency,omitempty"`      // EUR, EURe, etc.
+	WalletType    string `json:"walletType,omitempty"`    // "eoa" or "safe"
+	OdooJournalID int    `json:"odooJournalId,omitempty"` // linked Odoo bank journal ID
+	Token         *struct {
 		Address  string `json:"address"`
 		Name     string `json:"name"`
 		Symbol   string `json:"symbol"`
@@ -28,12 +34,12 @@ type AccountConfig struct {
 	} `json:"token,omitempty"`
 }
 
-// IsSafe returns true if this is a Safe (multisig) wallet. Defaults to true for crypto accounts.
+// IsSafe returns true only when this is explicitly configured as a Safe wallet.
 func (a *AccountConfig) IsSafe() bool {
-	if a.WalletType == "eoa" {
+	if a == nil {
 		return false
 	}
-	return a.Address != "" // crypto accounts default to safe
+	return strings.EqualFold(a.WalletType, "safe")
 }
 
 func accountsConfigPath() string {
@@ -41,24 +47,58 @@ func accountsConfigPath() string {
 }
 
 // LoadAccountConfigs reads accounts from APP_DATA_DIR/settings/accounts.json.
-// On first load, migrates from settings.json if accounts.json doesn't exist.
+//
+// If the file still has the legacy "odooJournalName" field (pre-cache
+// schema), the value is drained into the journal-name cache and the file is
+// rewritten without the field. This avoids re-leaking IBANs through public
+// settings exports.
 func LoadAccountConfigs() []AccountConfig {
-	data, err := os.ReadFile(existingSettingsFilePath("accounts.json"))
+	data, err := os.ReadFile(accountsConfigPath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			accounts := migrateAccountsFromSettings()
-			if len(accounts) > 0 {
-				SaveAccountConfigs(accounts)
-			}
-			return accounts
-		}
 		return nil
 	}
 	var accounts []AccountConfig
 	if json.Unmarshal(data, &accounts) != nil {
 		return nil
 	}
+	migrateLegacyOdooJournalNames(data)
 	return accounts
+}
+
+// migrateLegacyOdooJournalNames pulls any "odooJournalName" entries out of
+// raw accounts.json bytes and copies them into the cache, then rewrites the
+// file without the field. Idempotent: silent no-op once the field is gone.
+func migrateLegacyOdooJournalNames(data []byte) {
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	dirty := false
+	for _, entry := range raw {
+		nameRaw, ok := entry["odooJournalName"]
+		if !ok {
+			continue
+		}
+		var name string
+		_ = json.Unmarshal(nameRaw, &name)
+		var id int
+		if idRaw, ok := entry["odooJournalId"]; ok {
+			_ = json.Unmarshal(idRaw, &id)
+		}
+		if id > 0 && name != "" {
+			CacheOdooJournalName(id, name)
+		}
+		delete(entry, "odooJournalName")
+		dirty = true
+	}
+	if !dirty {
+		return
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(accountsConfigPath(), out, 0644)
 }
 
 // SaveAccountConfigs writes accounts to APP_DATA_DIR/settings/accounts.json.
@@ -103,45 +143,4 @@ func ToFinanceAccounts(configs []AccountConfig) []FinanceAccount {
 		accounts = append(accounts, fa)
 	}
 	return accounts
-}
-
-func migrateAccountsFromSettings() []AccountConfig {
-	settings, err := LoadSettings()
-	if err != nil {
-		return nil
-	}
-
-	var configs []AccountConfig
-	for _, fa := range settings.Finance.Accounts {
-		ac := AccountConfig{
-			Name:       fa.Name,
-			Slug:       fa.Slug,
-			Provider:   fa.Provider,
-			Chain:      fa.Chain,
-			ChainID:    fa.ChainID,
-			Address:    fa.Address,
-			AccountID:  fa.AccountID,
-			Currency:   fa.Currency,
-			WalletType: "safe", // default for crypto
-		}
-		if fa.Token != nil {
-			ac.Token = &struct {
-				Address  string `json:"address"`
-				Name     string `json:"name"`
-				Symbol   string `json:"symbol"`
-				Decimals int    `json:"decimals"`
-			}{
-				Address:  fa.Token.Address,
-				Name:     fa.Token.Name,
-				Symbol:   fa.Token.Symbol,
-				Decimals: fa.Token.Decimals,
-			}
-		}
-		// Stripe accounts don't have a wallet type
-		if fa.Provider == "stripe" {
-			ac.WalletType = ""
-		}
-		configs = append(configs, ac)
-	}
-	return configs
 }

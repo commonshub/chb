@@ -157,6 +157,122 @@ func TestGenerateTransactionsGoUsesStripeEtherscanAndMoneriumSources(t *testing.
 	}
 }
 
+func TestGenerateTransactionsGoKeepsBothSidesOfInternalAccountTransfer(t *testing.T) {
+	dataDir := t.TempDir()
+	hash := "0xinternal1234567890abcdef1234567890abcdef1234567890abcdef123456"
+	savings := "0xaaa0000000000000000000000000000000000000"
+	checking := "0xbbb0000000000000000000000000000000000000"
+	txJSON := `{
+	  "hash": "` + hash + `",
+	  "from": "` + savings + `",
+	  "to": "` + checking + `",
+	  "value": "10000000000000000000000",
+	  "timeStamp": "1776427300",
+	  "tokenDecimal": "18",
+	  "tokenSymbol": "EURe"
+	}`
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "sources", "etherscan", "gnosis", "savings.EURe.json"), `{
+	  "cachedAt": "2026-04-01T00:00:00Z",
+	  "account": "`+savings+`",
+	  "chain": "gnosis",
+	  "token": "EURe",
+	  "transactions": [`+txJSON+`]
+	}`)
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "sources", "etherscan", "gnosis", "checking.EURe.json"), `{
+	  "cachedAt": "2026-04-01T00:00:00Z",
+	  "account": "`+checking+`",
+	  "chain": "gnosis",
+	  "token": "EURe",
+	  "transactions": [`+txJSON+`]
+	}`)
+
+	settings := &Settings{}
+	settings.Finance.Accounts = []FinanceAccount{
+		{Slug: "savings", Provider: "etherscan", Chain: "gnosis", Address: savings},
+		{Slug: "checking", Provider: "etherscan", Chain: "gnosis", Address: checking},
+	}
+
+	if n := generateTransactionsGo(dataDir, "2026", "04", settings); n != 2 {
+		t.Fatalf("generateTransactionsGo() = %d, want 2", n)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"))
+	if err != nil {
+		t.Fatalf("read transactions.json: %v", err)
+	}
+	var out TransactionsFile
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal transactions.json: %v", err)
+	}
+	bySlug := map[string]TransactionEntry{}
+	for _, tx := range out.Transactions {
+		bySlug[tx.AccountSlug] = tx
+	}
+	if bySlug["savings"].Type != "INTERNAL" || stringMetadata(bySlug["savings"].Metadata, "direction") != "DEBIT" {
+		t.Fatalf("savings side = %#v, want INTERNAL DEBIT", bySlug["savings"])
+	}
+	if bySlug["checking"].Type != "INTERNAL" || stringMetadata(bySlug["checking"].Metadata, "direction") != "CREDIT" {
+		t.Fatalf("checking side = %#v, want INTERNAL CREDIT", bySlug["checking"])
+	}
+}
+
+func TestGenerateTransactionsGoDetectsInternalAccountsFromAccountsConfig(t *testing.T) {
+	dataDir := t.TempDir()
+	appDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	t.Setenv("APP_DATA_DIR", appDir)
+
+	hash := "0xinternal2234567890abcdef1234567890abcdef1234567890abcdef123456"
+	savings := "0xaaa0000000000000000000000000000000000000"
+	checking := "0xbbb0000000000000000000000000000000000000"
+	txJSON := `{
+	  "hash": "` + hash + `",
+	  "from": "` + savings + `",
+	  "to": "` + checking + `",
+	  "value": "10000000000000000000000",
+	  "timeStamp": "1776427300",
+	  "tokenDecimal": "18",
+	  "tokenSymbol": "EURe"
+	}`
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "sources", "etherscan", "gnosis", "savings.EURe.json"), `{
+	  "cachedAt": "2026-04-01T00:00:00Z",
+	  "account": "`+savings+`",
+	  "chain": "gnosis",
+	  "token": "EURe",
+	  "transactions": [`+txJSON+`]
+	}`)
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "sources", "etherscan", "gnosis", "checking.EURe.json"), `{
+	  "cachedAt": "2026-04-01T00:00:00Z",
+	  "account": "`+checking+`",
+	  "chain": "gnosis",
+	  "token": "EURe",
+	  "transactions": [`+txJSON+`]
+	}`)
+	if err := SaveAccountConfigs([]AccountConfig{
+		{Slug: "savings", Provider: "etherscan", Chain: "gnosis", Address: savings},
+		{Slug: "checking", Provider: "etherscan", Chain: "gnosis", Address: checking},
+	}); err != nil {
+		t.Fatalf("SaveAccountConfigs: %v", err)
+	}
+
+	if n := generateTransactionsGo(dataDir, "2026", "04", &Settings{}); n != 2 {
+		t.Fatalf("generateTransactionsGo() = %d, want 2", n)
+	}
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"))
+	if err != nil {
+		t.Fatalf("read transactions.json: %v", err)
+	}
+	var out TransactionsFile
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal transactions.json: %v", err)
+	}
+	for _, tx := range out.Transactions {
+		if tx.Type != "INTERNAL" {
+			t.Fatalf("tx %s type = %s, want INTERNAL", tx.AccountSlug, tx.Type)
+		}
+	}
+}
+
 func TestGenerateMonthlyReportGoSummarizesGeneratedFilesAndSources(t *testing.T) {
 	dataDir := t.TempDir()
 	hash := "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -34,7 +35,7 @@ func Setup() error {
 	for {
 		fmt.Printf("\n%sCommons Hub CLI Setup%s\n", Fmt.Bold, Fmt.Reset)
 		fmt.Println("─────────────────────")
-		fmt.Println()
+		fmt.Printf("%sRun `chb settings` to inspect or diff your configuration files.%s\n\n", Fmt.Dim, Fmt.Reset)
 
 		for i, k := range envKeys {
 			status := fmt.Sprintf("%s☐%s", Fmt.Dim, Fmt.Reset)
@@ -173,13 +174,9 @@ func resolveEnvValue(config map[string]string, key string) (value, source string
 }
 
 // LoadEnvFromConfig loads APP_DATA_DIR/settings/config.env into os environment
-// if not already set. It also accepts the legacy APP_DATA_DIR/config.env path.
+// if not already set.
 func LoadEnvFromConfig() {
-	env := loadConfigEnv(legacySettingsFilePath("config.env"))
 	for key, val := range loadConfigEnv(configEnvPath()) {
-		env[key] = val
-	}
-	for key, val := range env {
 		if os.Getenv(key) == "" {
 			os.Setenv(key, val)
 		}
@@ -191,4 +188,145 @@ func maskValue(val string) string {
 		return "***"
 	}
 	return "***" + val[len(val)-4:]
+}
+
+// summarizeSettingsFile returns a one-line summary of the contents of a
+// known settings file. Returns "" for unknown filenames.
+func summarizeSettingsFile(name string, settings *Settings) string {
+	switch name {
+	case "config.env":
+		env := loadConfigEnv(configEnvPath())
+		if len(env) == 0 {
+			return "(empty)"
+		}
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return fmt.Sprintf("%d keys: %s", len(keys), strings.Join(keys, ", "))
+
+	case "settings.json":
+		if settings == nil {
+			return "(unable to load)"
+		}
+		var parts []string
+		if settings.Discord.GuildID != "" {
+			parts = append(parts, "discord")
+		}
+		if settings.ContributionToken != nil && settings.ContributionToken.Symbol != "" {
+			parts = append(parts, fmt.Sprintf("token %s", settings.ContributionToken.Symbol))
+		}
+		if settings.Membership.Stripe.ProductID != "" {
+			parts = append(parts, "stripe membership")
+		}
+		if len(settings.Membership.Odoo.Products) > 0 {
+			parts = append(parts, fmt.Sprintf("%d odoo products", len(settings.Membership.Odoo.Products)))
+		}
+		if settings.Accounting != nil && settings.Accounting.Odoo != nil && len(settings.Accounting.Odoo.CategoryMapping) > 0 {
+			parts = append(parts, fmt.Sprintf("%d odoo→category mappings", len(settings.Accounting.Odoo.CategoryMapping)))
+		}
+		if len(parts) == 0 {
+			return "(no recognized keys)"
+		}
+		return strings.Join(parts, ", ")
+
+	case "accounts.json":
+		configs := LoadAccountConfigs()
+		if len(configs) == 0 {
+			return "(empty)"
+		}
+		byProvider := map[string]int{}
+		for _, c := range configs {
+			p := c.Provider
+			if p == "" {
+				p = "unknown"
+			}
+			byProvider[p]++
+		}
+		providers := make([]string, 0, len(byProvider))
+		for p := range byProvider {
+			providers = append(providers, p)
+		}
+		sort.Strings(providers)
+		details := make([]string, 0, len(providers))
+		for _, p := range providers {
+			details = append(details, fmt.Sprintf("%d %s", byProvider[p], p))
+		}
+		return fmt.Sprintf("%d accounts (%s)", len(configs), strings.Join(details, ", "))
+
+	case "calendars.json":
+		if settings == nil {
+			return "(unable to load)"
+		}
+		sources := settings.Calendars.Sources
+		if len(sources) == 0 {
+			return "(empty)"
+		}
+		slugs := make([]string, 0, len(sources))
+		for _, s := range sources {
+			slugs = append(slugs, s.Slug)
+		}
+		return fmt.Sprintf("%d sources: %s", len(sources), strings.Join(slugs, ", "))
+
+	case "categories.json":
+		cats := LoadCategories()
+		income, expense := 0, 0
+		for _, c := range cats {
+			switch c.Direction {
+			case "income":
+				income++
+			case "expense":
+				expense++
+			}
+		}
+		return fmt.Sprintf("%d categories (%d income, %d expense)", len(cats), income, expense)
+
+	case "collectives.json":
+		c := LoadCollectives()
+		if len(c) == 0 {
+			return "(empty)"
+		}
+		slugs := make([]string, 0, len(c))
+		for k := range c {
+			slugs = append(slugs, k)
+		}
+		sort.Strings(slugs)
+		return fmt.Sprintf("%d collectives: %s", len(slugs), strings.Join(slugs, ", "))
+
+	case "nostr.json":
+		keys := LoadNostrKeys()
+		if keys == nil {
+			return "(not configured)"
+		}
+		npub := keys.Npub
+		if len(npub) > 24 {
+			npub = npub[:20] + "…"
+		}
+		name := ""
+		if keys.Name != "" {
+			name = fmt.Sprintf(" (%s)", keys.Name)
+		}
+		return fmt.Sprintf("%s%s, %d relay(s)", npub, name, len(keys.Relays))
+
+	case "rooms.json":
+		rooms, _ := LoadRooms()
+		return fmt.Sprintf("%d rooms", len(rooms))
+
+	case "rules.json":
+		rules, _ := LoadRules()
+		return fmt.Sprintf("%d rules", len(rules))
+
+	case "tokens.json":
+		tokens := LoadTokenConfigs()
+		if len(tokens) == 0 {
+			return "(empty)"
+		}
+		symbols := make([]string, 0, len(tokens))
+		for _, t := range tokens {
+			symbols = append(symbols, t.Symbol)
+		}
+		return fmt.Sprintf("%d tokens: %s", len(tokens), strings.Join(symbols, ", "))
+	}
+	return ""
 }

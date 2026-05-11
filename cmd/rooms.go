@@ -38,7 +38,7 @@ func Rooms(args []string) {
 	for _, r := range rooms {
 		var eur string
 		if r.PricePerHour > 0 {
-			eur = fmt.Sprintf("€%.0f", r.PricePerHour)
+			eur = fmt.Sprintf("%.0f EUR", r.PricePerHour)
 		} else {
 			eur = fmt.Sprintf("%sfree%s", Fmt.Dim, Fmt.Reset)
 		}

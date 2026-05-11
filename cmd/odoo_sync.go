@@ -53,9 +53,119 @@ func odooLog(format string, args ...interface{}) {
 // odooSyncLine prints the single-line summary for a sync step when running
 // under the aggregate `chb odoo sync` command. Format:
 //
-//	syncing <label>: <status>
+//	<label>: <status>
 func odooSyncLine(label, status string) {
 	fmt.Printf("  %s%s%s: %s\n", Fmt.Bold, label, Fmt.Reset, status)
+}
+
+// odooSyncHeader prints a parent label (e.g. "journals:") for a group of
+// nested items rendered with odooSyncSubLine.
+func odooSyncHeader(label string) {
+	fmt.Printf("  %s%s:%s\n", Fmt.Bold, label, Fmt.Reset)
+}
+
+// odooSyncSubLine prints a summary line nested one level under a header
+// printed by odooSyncHeader.
+func odooSyncSubLine(label, status string) {
+	fmt.Printf("    %s%s%s: %s\n", Fmt.Bold, label, Fmt.Reset, status)
+}
+
+// journalSyncRow is one row in the journals summary table.
+type journalSyncRow struct {
+	JournalID int
+	Slug      string
+	TxCount   int
+	Balance   string // pre-formatted (e.g. "1,234.56 EUR")
+	Status    string // "already in sync", "5 new", "✗ <error>", ...
+	Mismatch  string // optional multi-line detail to print after the row
+	HasError  bool
+}
+
+// journalRowLayout holds the pre-computed prefix column widths used by the
+// incremental row renderer. Set while odooJournalsSyncAll is iterating, so
+// each per-journal sync can finalize its own row.
+type journalRowLayout struct {
+	JIDWidth  int
+	SlugWidth int
+	IsTTY     bool
+}
+
+var journalRowLayoutActive *journalRowLayout
+
+// printJournalRowPrefix prints the "    #48  stripe" prefix of a journal row,
+// followed by a newline so it stays visible while the per-journal sync prints
+// its progress messages on the line below.
+func printJournalRowPrefix(journalID int, slug string) {
+	if journalRowLayoutActive == nil {
+		return
+	}
+	w := journalRowLayoutActive
+	fmt.Printf("    %s%-*s  %-*s%s\n",
+		Fmt.Bold, w.JIDWidth, fmt.Sprintf("#%d", journalID),
+		w.SlugWidth, slug, Fmt.Reset)
+}
+
+// finalizeJournalRow completes a row previously started with
+// printJournalRowPrefix: on a TTY it walks the cursor back up to the prefix
+// line and rewrites it with the full row (txs, balance, status). On non-TTY
+// streams it just emits the full row as a new line. Returns true when it
+// handled the output, false to signal the caller should fall back to the
+// regular sub-line printer.
+func finalizeJournalRow(row journalSyncRow) bool {
+	w := journalRowLayoutActive
+	if w == nil {
+		return false
+	}
+	idStr := fmt.Sprintf("#%d", row.JournalID)
+	txsStr := formatThousands(row.TxCount)
+	status := row.Status
+	if row.HasError {
+		status = fmt.Sprintf("%s%s%s", Fmt.Red, status, Fmt.Reset)
+	}
+	if w.IsTTY {
+		fmt.Print("\033[A\r\033[K")
+	}
+	fmt.Printf("    %s%-*s  %-*s%s  %10s txs  balance: %15s  (%s)\n",
+		Fmt.Bold, w.JIDWidth, idStr, w.SlugWidth, row.Slug, Fmt.Reset,
+		txsStr, row.Balance, status)
+	if row.Mismatch != "" {
+		fmt.Print(row.Mismatch)
+	}
+	return true
+}
+
+// formatThousands renders an integer with thousands separators (1234 → "1,234").
+func formatThousands(n int) string {
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		if neg {
+			return "-" + s
+		}
+		return s
+	}
+	var b strings.Builder
+	pre := len(s) % 3
+	if pre > 0 {
+		b.WriteString(s[:pre])
+		if len(s) > pre {
+			b.WriteByte(',')
+		}
+	}
+	for i := pre; i < len(s); i += 3 {
+		b.WriteString(s[i : i+3])
+		if i+3 < len(s) {
+			b.WriteByte(',')
+		}
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
 // OdooAnalyticEnrichment is saved per month.
@@ -199,13 +309,17 @@ func OdooAnalyticSync(args []string) (int, error) {
 	}
 	odooLog("  %sFetched %d payment transactions with Stripe references%s\n", Fmt.Dim, len(paymentTxs), Fmt.Reset)
 
-	// Fetch bank statement lines (for blockchain tx matching via ref)
+	// Fetch bank statement lines whose ref looks like the odoo-web3 format
+	// "{chain}:{account}:{txHash}:{logIndex}". Filtering server-side avoids
+	// pulling every statement line in the database (the previous client-side
+	// 5000-row cap silently truncated journals with more lines than that).
 	bslResult, err := odooExec(odooURL, db, uid, odooPassword,
 		"account.bank.statement.line", "search_read",
-		[]interface{}{[]interface{}{}},
+		[]interface{}{[]interface{}{
+			[]interface{}{"ref", "ilike", "%:%:%:%"},
+		}},
 		map[string]interface{}{
 			"fields": []string{"id", "name", "ref", "amount", "date", "move_id"},
-			"limit":  5000,
 		})
 
 	type bankStmtLine struct {
@@ -318,12 +432,11 @@ func OdooAnalyticSync(args []string) (int, error) {
 	}
 
 	if quietOdooContext() {
-		odooSyncLine("categories", fmt.Sprintf("%d mappings (%d accounts, %d lines, %d payment refs, %d bank refs)",
-			totalMapped, len(analyticAccounts), len(lines), len(paymentTxs), len(bslLines)))
+		odooSyncLine("categories", fmt.Sprintf("%d categories", len(analyticAccounts)))
 	} else {
 		fmt.Printf("\n  %s✓ %d mappings, saved %d months%s\n", Fmt.Green, totalMapped, saved, Fmt.Reset)
-		fmt.Printf("  %s%d analytic accounts, %d analytic lines, %d payment refs, %d bank refs%s\n\n",
-			Fmt.Dim, len(analyticAccounts), len(lines), len(paymentTxs), len(bslLines), Fmt.Reset)
+		fmt.Printf("  %s%d categories (%d with code-based slug), %d analytic lines, %d payment refs, %d bank refs%s\n\n",
+			Fmt.Dim, len(analyticAccounts), len(categoryMapping), len(lines), len(paymentTxs), len(bslLines), Fmt.Reset)
 	}
 
 	return totalMapped, nil
@@ -442,7 +555,11 @@ func OdooJournals(args []string) error {
 		var reconciledCount int
 		json.Unmarshal(reconciledResult, &reconciledCount)
 
-		fmt.Printf("  %s%s%s  %s#%d%s\n", Fmt.Bold, acc.OdooJournalName, Fmt.Reset, Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
+		journalName := OdooJournalName(acc.OdooJournalID)
+		if journalName == "" {
+			journalName = fmt.Sprintf("journal #%d", acc.OdooJournalID)
+		}
+		fmt.Printf("  %s%s%s  %s#%d%s\n", Fmt.Bold, journalName, Fmt.Reset, Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
 		fmt.Printf("    %sAccount: %s (%s)%s\n", Fmt.Dim, acc.Name, acc.Slug, Fmt.Reset)
 		fmt.Printf("    %s%d statement lines, %d reconciled, %d statements%s\n", Fmt.Dim, lineCount, reconciledCount, stmtCount, Fmt.Reset)
 		fmt.Println()
@@ -728,7 +845,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	PrintStatementIssues(issues)
 
 	if !assumeYes && !dryRun {
-		fmt.Printf("  %sRepair journal? This rewrites balance_start and balance_end_real on affected statements.%s [y/N] ",
+		fmt.Printf("  %sRepair journal? This rewrites balance_start and balance_end_real on affected statements, and collapses duplicate \"Stripe fees for open statement\" lines.%s [y/N] ",
 			Fmt.Bold, Fmt.Reset)
 		var resp string
 		fmt.Scanln(&resp)
@@ -738,6 +855,26 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 	}
 
+	edits := 0
+	errs := 0
+
+	// Step 1: collapse duplicate "Stripe fees for open statement" lines.
+	// Sums are preserved (we keep one line whose amount = Σ duplicates),
+	// so the running-balance walk that follows sees correct line totals.
+	for _, issue := range issues {
+		if issue.Kind != "duplicate_open_fee_lines" {
+			continue
+		}
+		applied, err := mergeDuplicateOpenFeeLines(creds, uid, issue, dryRun)
+		if err != nil {
+			fmt.Printf("  %s✗ #%d %s: merge fee duplicates: %v%s\n",
+				Fmt.Red, issue.StatementID, issue.StatementName, err, Fmt.Reset)
+			errs++
+			continue
+		}
+		edits += applied
+	}
+
 	stmts, err := fetchJournalStatementsOrdered(creds, uid, journalID)
 	if err != nil {
 		return err
@@ -745,8 +882,6 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 
 	var prevEnd float64
 	hasPrev := false
-	edits := 0
-	errs := 0
 	for _, s := range stmts {
 		// The open (trailing) statement mirrors live Stripe state. Leave
 		// both its balance_start and balance_end_real alone — they are
@@ -865,6 +1000,157 @@ type journalStatement struct {
 	BalanceEndReal float64
 }
 
+// mergeDuplicateOpenFeeLines collapses the duplicate "Stripe fees for open
+// statement" lines on a single statement into one. The earliest line (by
+// date asc, id asc — which is the order the issue's slice already uses) is
+// retained; its amount is rewritten to the sum of all duplicates and its
+// unique_import_id is normalized to the current canonical form
+// (stripe:<accountID>:open:<stmtID>:fees) so future sync runs match it.
+// The other lines are deleted.
+//
+// Returns the number of edits applied (or that would be applied in dry-run).
+func mergeDuplicateOpenFeeLines(creds *OdooCredentials, uid int, issue StatementBalanceIssue, dryRun bool) (int, error) {
+	if len(issue.DuplicateLines) < 2 {
+		return 0, nil
+	}
+	keeper := issue.DuplicateLines[0]
+	var sum float64
+	deleteIDs := make([]int, 0, len(issue.DuplicateLines)-1)
+	for i, d := range issue.DuplicateLines {
+		sum += d.Amount
+		if i > 0 {
+			deleteIDs = append(deleteIDs, d.ID)
+		}
+	}
+	canonicalImport := keeper.ImportID
+	if accountID := parseStripeAccountIDFromOpenFeeImportID(keeper.ImportID); accountID != "" {
+		canonicalImport = openStatementFeeImportID(accountID, issue.StatementID)
+	}
+
+	if dryRun {
+		fmt.Printf("  %s(dry-run)%s #%d %s  collapse %d fee line(s) → 1 line of %s (keep #%d, delete %v)\n",
+			Fmt.Dim, Fmt.Reset, issue.StatementID, issue.StatementName,
+			len(issue.DuplicateLines), fmtEURSigned(sum), keeper.ID, deleteIDs)
+		return len(issue.DuplicateLines), nil
+	}
+
+	// Delete the duplicates first so the keeper's importID rename doesn't
+	// hit a uniqueness constraint with one of them.
+	if len(deleteIDs) > 0 {
+		if err := deleteStatementLines(creds, uid, deleteIDs); err != nil {
+			return 0, fmt.Errorf("delete duplicates: %v", err)
+		}
+	}
+	if err := updateStatementLineFields(creds, uid, keeper.ID, map[string]interface{}{
+		"amount":           sum,
+		"unique_import_id": canonicalImport,
+	}); err != nil {
+		return len(deleteIDs), fmt.Errorf("update keeper #%d: %v", keeper.ID, err)
+	}
+	fmt.Printf("  %s✓%s #%d %s  collapsed %d fee line(s) into #%d (%s, importID=%s)\n",
+		Fmt.Green, Fmt.Reset, issue.StatementID, issue.StatementName,
+		len(issue.DuplicateLines), keeper.ID, fmtEURSigned(sum), canonicalImport)
+	return len(issue.DuplicateLines), nil
+}
+
+// parseStripeAccountIDFromOpenFeeImportID extracts the Stripe account id
+// segment from either the canonical importID
+// (stripe:<accountID>:open:<stmtID>:fees) or the legacy buggy form
+// (stripe:<accountID>:open:<bt1>:<bt2>:fees). Returns "" if the importID
+// isn't recognizable.
+func parseStripeAccountIDFromOpenFeeImportID(importID string) string {
+	parts := strings.Split(importID, ":")
+	if len(parts) < 4 || parts[0] != "stripe" || parts[2] != "open" {
+		return ""
+	}
+	return parts[1]
+}
+
+// deleteStatementLines removes the given statement lines. Each statement
+// line auto-creates a journal entry (account.move) when its statement is
+// validated; that entry is what actually persists. Direct unlink of the
+// statement line therefore fails if the move is posted or reconciled. The
+// supported recipe (same one used by emptyOdooJournal) is:
+//
+//  1. Unreconcile any reconciled move lines.
+//  2. Reset the moves to draft.
+//  3. Unlink the moves — this cascades to the statement lines.
+//
+// Lines whose move_id is unset (rare — only if Odoo hasn't yet generated
+// the move) are unlinked directly as a fallback.
+func deleteStatementLines(creds *OdooCredentials, uid int, ids []int) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	idsAny := intsToInterfaces(ids)
+
+	linesData, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "read",
+		[]interface{}{idsAny, []string{"move_id"}}, nil)
+	if err != nil {
+		return fmt.Errorf("read lines: %v", err)
+	}
+	var rows []struct {
+		ID     int         `json:"id"`
+		MoveID interface{} `json:"move_id"`
+	}
+	if err := json.Unmarshal(linesData, &rows); err != nil {
+		return fmt.Errorf("parse lines: %v", err)
+	}
+	var moveIDs []int
+	var lineIDsWithoutMove []int
+	for _, r := range rows {
+		if mid := odooFieldID(r.MoveID); mid > 0 {
+			moveIDs = append(moveIDs, mid)
+		} else {
+			lineIDsWithoutMove = append(lineIDsWithoutMove, r.ID)
+		}
+	}
+
+	if len(moveIDs) > 0 {
+		movesIface := intsToInterfaces(moveIDs)
+
+		reconRaw, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move.line", "search",
+			[]interface{}{[]interface{}{
+				[]interface{}{"move_id", "in", movesIface},
+				[]interface{}{"reconciled", "=", true},
+			}}, nil)
+		if err == nil {
+			var reconIDs []int
+			json.Unmarshal(reconRaw, &reconIDs)
+			if len(reconIDs) > 0 {
+				if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+					"account.move.line", "remove_move_reconcile",
+					[]interface{}{intsToInterfaces(reconIDs)}, nil); err != nil {
+					return fmt.Errorf("unreconcile move lines: %v", err)
+				}
+			}
+		}
+
+		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move", "button_draft",
+			[]interface{}{movesIface}, nil); err != nil {
+			return fmt.Errorf("reset moves to draft: %v", err)
+		}
+
+		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move", "unlink",
+			[]interface{}{movesIface}, nil); err != nil {
+			return fmt.Errorf("delete moves: %v", err)
+		}
+	}
+
+	if len(lineIDsWithoutMove) > 0 {
+		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.bank.statement.line", "unlink",
+			[]interface{}{intsToInterfaces(lineIDsWithoutMove)}, nil); err != nil {
+			return fmt.Errorf("unlink lines without moves: %v", err)
+		}
+	}
+	return nil
+}
+
 // setStatementBalanceStart overwrites the balance_start of an existing statement.
 func setStatementBalanceStart(creds *OdooCredentials, uid int, stmtID int, value float64) error {
 	_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
@@ -946,10 +1232,31 @@ func odooJournalsSyncAll(args []string) error {
 		return nil
 	}
 
+	odooSyncHeader("journals")
+
+	// Pre-compute prefix widths so each row's "#<id>  <slug>" column lines
+	// up. Each per-journal sync prints its prefix immediately, runs (with
+	// progress shown on the line below), and on completion rewrites its
+	// prefix line with the full row (txs, balance, status).
+	wJID, wSlug := 0, 0
+	for _, t := range targets {
+		if n := len(fmt.Sprintf("#%d", t.journalID)); n > wJID {
+			wJID = n
+		}
+		if n := len(t.slug); n > wSlug {
+			wSlug = n
+		}
+	}
+	info, _ := os.Stdout.Stat()
+	isTTY := info != nil && (info.Mode()&os.ModeCharDevice) != 0
+	journalRowLayoutActive = &journalRowLayout{JIDWidth: wJID, SlugWidth: wSlug, IsTTY: isTTY}
+	defer func() { journalRowLayoutActive = nil }()
+
 	failed := 0
 	if wasQuiet {
 		// Serial: preserve one-line-per-item ordering, avoid interleaving.
 		for _, t := range targets {
+			printJournalRowPrefix(t.journalID, t.slug)
 			if err := AccountOdooPush(t.slug, args); err != nil {
 				failed++
 			}
@@ -1007,7 +1314,8 @@ func odooJournalReset(creds *OdooCredentials, uid int, journalID int) error {
 		return fmt.Errorf("journal #%d not found", journalID)
 	}
 
-	return emptyOdooJournal(creds, uid, journalID, journals[0].Name)
+	CacheOdooJournalName(journalID, journals[0].Name)
+	return emptyOdooJournal(creds, uid, journalID)
 }
 
 func printOdooTargetLine(creds *OdooCredentials) {
@@ -1030,6 +1338,7 @@ func PrintOdooHelp() {
 	fmt.Printf("    %sShow journal details (statements, line counts)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> sync%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n", f.Dim, f.Reset)
+	fmt.Printf("    %sBy default starts after the latest Odoo import; use --history for a full duplicate check%s\n", f.Dim, f.Reset)
 	fmt.Printf("    %sUse --skip-reconciliation for fast imports; reconcile later with `chb odoo journals <id> reconcile`%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> check%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", f.Dim, f.Reset)

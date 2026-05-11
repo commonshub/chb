@@ -11,18 +11,12 @@ func categoriesPath() string {
 	return settingsFilePath("categories.json")
 }
 
-// LoadCategories reads categories from APP_DATA_DIR/settings/categories.json.
-// On first load, migrates from settings.json if categories.json doesn't exist.
+// LoadCategories reads categories from APP_DATA_DIR/settings/categories.json,
+// falling back to DefaultAccountingSettings when the file is absent or
+// malformed.
 func LoadCategories() []CategoryDef {
-	data, err := os.ReadFile(existingSettingsFilePath("categories.json"))
+	data, err := os.ReadFile(categoriesPath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			cats := migrateCategoriesFromSettings()
-			if len(cats) > 0 {
-				SaveCategories(cats)
-			}
-			return dedupeCategories(cats)
-		}
 		return DefaultAccountingSettings().Categories
 	}
 	var cats []CategoryDef
@@ -84,13 +78,3 @@ func categoryKey(cat CategoryDef) string {
 	return slug + "\x00" + direction
 }
 
-func migrateCategoriesFromSettings() []CategoryDef {
-	settings, err := LoadSettings()
-	if err != nil || settings.Accounting == nil {
-		return DefaultAccountingSettings().Categories
-	}
-	if len(settings.Accounting.Categories) > 0 {
-		return settings.Accounting.Categories
-	}
-	return DefaultAccountingSettings().Categories
-}

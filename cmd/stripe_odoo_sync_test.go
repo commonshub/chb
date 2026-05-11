@@ -126,6 +126,52 @@ func TestStripeFeeAdjustmentCentsTracksCustomerTransactionFees(t *testing.T) {
 	}
 }
 
+func TestOpenStatementFeeImportIDIsStableAcrossRuns(t *testing.T) {
+	// Regression: the rolling "Stripe fees for open statement" line must
+	// have an importID that does not change between sync runs, so that
+	// successive runs update the same line instead of accumulating
+	// duplicates. Tying the key to the open statement's Odoo ID is the
+	// invariant we rely on.
+	const accountID = "acct_1ABC"
+	const stmtID = 48
+	first := openStatementFeeImportID(accountID, stmtID)
+	second := openStatementFeeImportID(accountID, stmtID)
+	if first != second {
+		t.Fatalf("importID is non-deterministic: %q vs %q", first, second)
+	}
+	if got, want := first, "stripe:acct_1abc:open:48:fees"; got != want {
+		t.Fatalf("importID = %q, want %q", got, want)
+	}
+
+	// Different statements (e.g. after a payout closes one and opens
+	// another) must produce different IDs.
+	if openStatementFeeImportID(accountID, stmtID) == openStatementFeeImportID(accountID, stmtID+1) {
+		t.Fatalf("importID must differ across open statements")
+	}
+}
+
+func TestParseStripeAccountIDFromOpenFeeImportID(t *testing.T) {
+	tests := []struct {
+		name     string
+		importID string
+		want     string
+	}{
+		{"canonical", "stripe:acct_1abc:open:48:fees", "acct_1abc"},
+		{"legacy bt range", "stripe:acct_1abc:open:bt_aaa:bt_zzz:fees", "acct_1abc"},
+		{"non-stripe", "manual:acct_1abc:open:48:fees", ""},
+		{"closed payout", "stripe:acct_1abc:po_123:fees", ""},
+		{"too short", "stripe:acct_1abc:open", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseStripeAccountIDFromOpenFeeImportID(tt.importID); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStripeGrossCustomerRowsPlusAggregateFeeLineEqualNet(t *testing.T) {
 	var feeCents int64
 	var grossTotal float64

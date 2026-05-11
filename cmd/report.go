@@ -554,7 +554,7 @@ func colorNetReportAmount(v float64, currency string) string {
 
 func formatReportAmount(v float64, currency string) string {
 	if strings.EqualFold(currency, "EUR") || strings.EqualFold(currency, "EURe") || strings.EqualFold(currency, "EURb") {
-		return fmt.Sprintf("€%.2f", v)
+		return fmt.Sprintf("%.2f EUR", v)
 	}
 	if currency == "" {
 		return fmt.Sprintf("%.2f", v)
@@ -1079,7 +1079,7 @@ func formatEuro(v float64) string {
 	if v == 0 {
 		return "—"
 	}
-	return fmt.Sprintf("€%.0f", v)
+	return fmt.Sprintf("%.0f EUR", v)
 }
 
 func printReportHelp() {

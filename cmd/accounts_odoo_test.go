@@ -56,13 +56,13 @@ func TestStripePayoutSync(t *testing.T) {
 	assertLineCount(t, creds, uid, journalID, 0, "after cleanup")
 
 	// Build a temporary AccountConfig for testing
+	CacheOdooJournalName(journalID, journalName)
 	acc := &AccountConfig{
-		Name:            "Test Stripe",
-		Slug:            "test-stripe",
-		Provider:        "stripe",
-		AccountID:       "test_acct",
-		OdooJournalID:   journalID,
-		OdooJournalName: journalName,
+		Name:          "Test Stripe",
+		Slug:          "test-stripe",
+		Provider:      "stripe",
+		AccountID:     "test_acct",
+		OdooJournalID: journalID,
 	}
 
 	// Clean up any orphan lines with our test import IDs from previous runs
@@ -414,13 +414,13 @@ func TestStripePayoutSyncDryRun(t *testing.T) {
 	journalID := findOrCreateTestJournal(t, creds, uid, "test_stripe")
 	deleteAllJournalStatements(t, creds, uid, journalID)
 
+	CacheOdooJournalName(journalID, "test_stripe")
 	acc := &AccountConfig{
-		Name:            "Test Stripe",
-		Slug:            "test-stripe",
-		Provider:        "stripe",
-		AccountID:       "test_acct",
-		OdooJournalID:   journalID,
-		OdooJournalName: "test_stripe",
+		Name:          "Test Stripe",
+		Slug:          "test-stripe",
+		Provider:      "stripe",
+		AccountID:     "test_acct",
+		OdooJournalID: journalID,
 	}
 
 	// Dry run should not create anything

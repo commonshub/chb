@@ -120,7 +120,7 @@ func TransactionsSync(args []string) (int, error) {
 					break
 				}
 			}
-			if !found {
+			if !found && (slugFilter == "" || strings.EqualFold(slugFilter, ct.Symbol)) {
 				etherscanAccounts = append(etherscanAccounts, FinanceAccount{
 					Name:     "🪙 " + ct.Name,
 					Slug:     strings.ToLower(ct.Symbol),

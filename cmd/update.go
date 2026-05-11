@@ -163,16 +163,9 @@ func Update(yes bool) error {
 	}
 
 	fmt.Printf("\n%s✓ Updated to %s%s\n", f.Green, latest.TagName, f.Reset)
-	refreshSettings()
+	// Shared defaults travel with the binary now (see cmd/defaults/) — no
+	// separate refresh step needed.
 	return nil
-}
-
-func refreshSettings() {
-	f := Fmt
-	fmt.Printf("\n%sRefreshing settings...%s\n", f.Dim, f.Reset)
-	if err := DownloadSettings(chbDir()); err != nil {
-		fmt.Printf("%sCould not refresh settings:%s %v\n", f.Yellow, f.Reset, err)
-	}
 }
 
 // extractTarBinary reads a tar stream and returns the contents of the named file.
