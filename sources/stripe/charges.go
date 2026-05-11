@@ -23,6 +23,7 @@ type ChargeData struct {
 // Charge holds data from a Stripe charge object and checkout session.
 type Charge struct {
 	ID              string            `json:"id"`
+	CustomerID      string            `json:"customerId,omitempty"`
 	CustomerName    string            `json:"customerName,omitempty"`
 	CustomerEmail   string            `json:"customerEmail,omitempty"`
 	BillingName     string            `json:"billingName,omitempty"`
@@ -33,7 +34,6 @@ type Charge struct {
 	ApplicationName string            `json:"applicationName,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
 	CustomFields    map[string]string `json:"customFields,omitempty"`
-	PaymentMethod   string            `json:"paymentMethod,omitempty"`
 	PaymentLink     string            `json:"paymentLink,omitempty"`
 }
 
@@ -103,15 +103,9 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
 			Name  string `json:"name"`
 			Email string `json:"email"`
 		} `json:"billing_details"`
-		ReceiptEmail         string            `json:"receipt_email"`
-		Metadata             map[string]string `json:"metadata"`
-		PaymentMethodDetails *struct {
-			Card *struct {
-				Brand string `json:"brand"`
-				Last4 string `json:"last4"`
-			} `json:"card"`
-		} `json:"payment_method_details"`
-		PaymentIntent interface{} `json:"payment_intent"`
+		ReceiptEmail  string            `json:"receipt_email"`
+		Metadata      map[string]string `json:"metadata"`
+		PaymentIntent interface{}       `json:"payment_intent"`
 	}
 
 	if err := json.Unmarshal(raw, &chargeResp); err != nil {
@@ -132,6 +126,7 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
 	}
 
 	if chargeResp.Customer != nil {
+		charge.CustomerID = chargeResp.Customer.ID
 		charge.CustomerName = chargeResp.Customer.Name
 		charge.CustomerEmail = chargeResp.Customer.Email
 	}
@@ -142,11 +137,6 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
 			charge.ApplicationName = chargeResp.Application
 		}
 	}
-	if chargeResp.PaymentMethodDetails != nil && chargeResp.PaymentMethodDetails.Card != nil {
-		card := chargeResp.PaymentMethodDetails.Card
-		charge.PaymentMethod = fmt.Sprintf("%s ****%s", card.Brand, card.Last4)
-	}
-
 	piID := ""
 	if piObj, ok := chargeResp.PaymentIntent.(map[string]interface{}); ok {
 		if id, ok := piObj["id"].(string); ok {

@@ -225,6 +225,7 @@ type TransactionEntry struct {
 	Timestamp        int64                  `json:"timestamp"`
 	Application      string                 `json:"application,omitempty"`
 	StripeChargeID   string                 `json:"stripeChargeId,omitempty"`
+	StripeCustomerID string                 `json:"stripeCustomerId,omitempty"`
 	Category         string                 `json:"category,omitempty"`
 	Collective       string                 `json:"collective,omitempty"`
 	Event            string                 `json:"event,omitempty"`
@@ -294,21 +295,24 @@ func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
 	return &txFile
 }
 
-// CounterpartyEntry for counterparties.json
+// CounterpartyEntry mirrors AddressMetadata so a counterparty has the same
+// shape regardless of where it came from (celo, gnosis, stripe, iban, …).
+// Entries are keyed by their NIP-73 URI in CounterpartiesFile.Counterparties,
+// so the URI doesn't need to be repeated inside the value.
 type CounterpartyEntry struct {
-	ID       string               `json:"id"`
-	Metadata CounterpartyMetadata `json:"metadata"`
-}
-
-type CounterpartyMetadata struct {
-	Description string  `json:"description"`
-	Type        *string `json:"type"`
+	Name         string            `json:"name,omitempty"`
+	About        string            `json:"about,omitempty"`
+	Picture      string            `json:"picture,omitempty"`
+	Tags         map[string]string `json:"tags,omitempty"`
+	NostrEventID string            `json:"nostrEventId,omitempty"`
+	Author       string            `json:"author,omitempty"`
+	CreatedAt    int64             `json:"createdAt,omitempty"`
 }
 
 type CounterpartiesFile struct {
-	Month          string              `json:"month"`
-	GeneratedAt    string              `json:"generatedAt"`
-	Counterparties []CounterpartyEntry `json:"counterparties"`
+	Month          string                       `json:"month"`
+	GeneratedAt    string                       `json:"generatedAt"`
+	Counterparties map[string]CounterpartyEntry `json:"counterparties"`
 }
 
 // ── Message reading helpers ─────────────────────────────────────────────────
@@ -2021,8 +2025,12 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 						chID = refundToCharge[srcID]
 					}
 				}
+				customerID := ""
 				if stripeCharges != nil && chID != "" {
 					if ch, ok := stripeCharges[chID]; ok {
+						if ch.CustomerID != "" {
+							customerID = ch.CustomerID
+						}
 						if counterparty == "" {
 							if name := ch.BestName(); name != "" {
 								counterparty = name
@@ -2037,9 +2045,6 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 							metadata["application"] = ch.ApplicationName
 						} else if ch.Application != "" {
 							metadata["application"] = ch.Application
-						}
-						if ch.PaymentMethod != "" {
-							metadata["paymentMethod"] = ch.PaymentMethod
 						}
 						if ch.PaymentLink != "" {
 							metadata["paymentLink"] = ch.PaymentLink
@@ -2079,6 +2084,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					Timestamp:        tx.Created,
 					Application:      stringMetadata(metadata, "application"),
 					StripeChargeID:   tx.ID,
+					StripeCustomerID: customerID,
 					Metadata:         metadata,
 				})
 			}
@@ -2210,6 +2216,16 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					entry.Metadata = map[string]interface{}{
 						"direction": internalDirection,
 					}
+				}
+
+				// Preserve the raw counterparty address before Nostr name
+				// resolution so downstream consumers (e.g. counterparties.json)
+				// can build a stable NIP-73 address URI.
+				if counterparty != "" {
+					if entry.Metadata == nil {
+						entry.Metadata = map[string]interface{}{}
+					}
+					entry.Metadata["counterpartyAddress"] = strings.ToLower(counterparty)
 				}
 
 				// Enrich with Nostr metadata
@@ -2616,28 +2632,47 @@ func generateCounterpartiesGo(dataDir, year, month string) int {
 		return 0
 	}
 
-	seen := map[string]bool{}
-	var counterparties []CounterpartyEntry
+	settings, _ := LoadSettings()
+	chainCaches := map[int]NostrMetadataCache{}
+
+	counterparties := map[string]CounterpartyEntry{}
 	for _, tx := range txFile.Transactions {
-		cp := tx.Counterparty
-		if cp == "" || seen[cp] {
+		id, addr, fallbackName, chainID := counterpartyIdentity(tx, settings)
+		if id == "" {
 			continue
 		}
-		seen[cp] = true
+		if _, ok := counterparties[id]; ok {
+			continue
+		}
 
-		desc := ""
-		if tx.Metadata != nil {
-			if d, ok := tx.Metadata["description"]; ok {
-				if s, ok := d.(string); ok {
-					desc = s
+		entry := CounterpartyEntry{Name: fallbackName}
+		if chainID > 0 && addr != "" {
+			cache, ok := chainCaches[chainID]
+			if !ok {
+				monthCache := LoadNostrMetadataCache(nostrsource.ChainMetadataPath(dataDir, year, month, chainID))
+				latestCache := LoadNostrMetadataCache(filepath.Join(dataDir, "latest", nostrsource.RelPath(strconv.Itoa(chainID), nostrsource.MetadataFile)))
+				cache = MergeNostrMetadata(latestCache, monthCache)
+				chainCaches[chainID] = cache
+			}
+			if md, ok := cache.Addresses[addr]; ok && md != nil {
+				if md.Name != "" {
+					entry.Name = md.Name
 				}
+				entry.About = md.About
+				entry.Picture = md.Picture
+				if len(md.Tags) > 0 {
+					entry.Tags = map[string]string{}
+					for k, v := range md.Tags {
+						entry.Tags[k] = v
+					}
+				}
+				entry.NostrEventID = md.NostrEventID
+				entry.Author = md.Author
+				entry.CreatedAt = md.CreatedAt
 			}
 		}
 
-		counterparties = append(counterparties, CounterpartyEntry{
-			ID:       cp,
-			Metadata: CounterpartyMetadata{Description: desc},
-		})
+		counterparties[id] = entry
 	}
 
 	if len(counterparties) == 0 {
@@ -2653,6 +2688,64 @@ func generateCounterpartiesGo(dataDir, year, month string) int {
 	cpData, _ := json.MarshalIndent(out, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "counterparties.json"), cpData)
 	return len(counterparties)
+}
+
+// counterpartyIdentity returns the NIP-73 URI for a tx counterparty, plus the
+// raw address (lowercased, empty for non-blockchain), a fallback display name,
+// and the chain ID when known. Returns an empty id when the tx has no usable
+// counterparty.
+func counterpartyIdentity(tx TransactionEntry, settings *Settings) (id, address, fallbackName string, chainID int) {
+	display := strings.TrimSpace(tx.Counterparty)
+
+	switch tx.Provider {
+	case "etherscan":
+		addr := stringMetadata(tx.Metadata, "counterpartyAddress")
+		if addr == "" {
+			if a := stringMetadata(tx.Metadata, "from"); a != "" {
+				addr = a
+			} else if a := stringMetadata(tx.Metadata, "to"); a != "" {
+				addr = a
+			} else if strings.HasPrefix(display, "0x") {
+				addr = display
+			}
+		}
+		if addr == "" {
+			return "", "", "", 0
+		}
+		addr = strings.ToLower(addr)
+		chain := ""
+		if tx.Chain != nil {
+			chain = *tx.Chain
+		}
+		cid := chainIDForSourceChain(settings, chain)
+		name := display
+		if strings.EqualFold(name, addr) {
+			name = ""
+		}
+		return BuildBlockchainAddressURI(cid, chain, addr), addr, name, cid
+
+	case "stripe":
+		if tx.StripeCustomerID == "" {
+			// Guest checkouts / one-off payments have no Stripe customer
+			// object — there's no canonical id to dedup against, so skip.
+			return "", "", "", 0
+		}
+		// Don't carry the Stripe customer name into counterparties.json — it's
+		// PII, and tx.Counterparty often falls back to the tx description
+		// ("Subscription update", "Financial contribution to …") rather than
+		// the actual person. The URI is enough to anonymously group txs.
+		return BuildStripeCustomerURI(tx.StripeCustomerID), "", "", 0
+
+	default:
+		if display == "" {
+			return "", "", "", 0
+		}
+		provider := strings.ToLower(strings.TrimSpace(tx.Provider))
+		if provider == "" {
+			return "text:" + display, "", display, 0
+		}
+		return provider + ":counterparty:" + display, "", display, 0
+	}
 }
 
 // ── Latest events generation ────────────────────────────────────────────────

@@ -2073,11 +2073,6 @@ func (m txBrowserModel) renderDetailBox() string {
 			add("Email", s)
 		}
 	}
-	if pm, ok := tx.Metadata["paymentMethod"]; ok {
-		if s, ok := pm.(string); ok && s != "" {
-			add("Payment", s)
-		}
-	}
 	for k, v := range tx.Metadata {
 		if strings.HasPrefix(k, "stripe_") {
 			if s, ok := v.(string); ok && s != "" {
@@ -2095,7 +2090,7 @@ func (m txBrowserModel) renderDetailBox() string {
 	// Show Nostr/custom tags (metadata keys that aren't standard enrichment fields)
 	standardKeys := map[string]bool{
 		"category": true, "description": true, "application": true,
-		"email": true, "paymentMethod": true, "paymentLink": true,
+		"email": true, "paymentLink": true,
 		"memo": true, "state": true, "accountSlug": true,
 	}
 	var tagLines []string

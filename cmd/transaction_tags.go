@@ -307,7 +307,7 @@ func syncTransactionTags(tx *TransactionEntry) {
 			"event": true, "eventId": true,
 			"eventName": true, "eventUrl": true,
 			"memo": true, "paymentLink": true,
-			"paymentMethod": true, "product": true, "state": true,
+			"product": true, "state": true,
 			"stripe_application": true, "stripe_collective": true,
 			"stripe_event_api_id": true, "stripe_event_name": true, "stripe_event_url": true,
 			"stripe_payment_link": true,

@@ -441,6 +441,31 @@ func BuildBlockchainURI(chainID int, txHash string) string {
 	return fmt.Sprintf("ethereum:%d:tx:%s", chainID, strings.ToLower(txHash))
 }
 
+// BuildBlockchainAddressURI creates a NIP-73 URI for a blockchain address.
+func BuildBlockchainAddressURI(chainID int, chain, address string) string {
+	addr := strings.ToLower(strings.TrimSpace(address))
+	if addr == "" {
+		return ""
+	}
+	if chainID > 0 {
+		return fmt.Sprintf("ethereum:%d:address:%s", chainID, addr)
+	}
+	if chain != "" {
+		return fmt.Sprintf("%s:address:%s", strings.ToLower(chain), addr)
+	}
+	return "address:" + addr
+}
+
+// BuildStripeCustomerURI creates a NIP-73 style URI for a Stripe customer.
+// `customerID` should be the Stripe customer identifier (cus_…).
+func BuildStripeCustomerURI(customerID string) string {
+	v := strings.TrimSpace(customerID)
+	if v == "" {
+		return ""
+	}
+	return "stripe:customer:" + v
+}
+
 // parseAddressMetadata builds an AddressMetadata from a Nostr event.
 func parseAddressMetadata(addr string, ev NostrEvent) *AddressMetadata {
 	m := &AddressMetadata{
