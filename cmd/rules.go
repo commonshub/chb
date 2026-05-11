@@ -34,21 +34,16 @@ type Rule struct {
 }
 
 func rulesPath() string {
-	return filepath.Join(AppDataDir(), "rules.json")
+	return settingsFilePath("rules.json")
 }
 
-// LoadRules reads rules from APP_DATA_DIR/rules.json.
-// On first load, migrates from settings.json if rules.json doesn't exist.
+// LoadRules reads rules from APP_DATA_DIR/settings/rules.json. The file is
+// seeded from the embedded defaults on first run and kept in sync by
+// EnsureSettingsBootstrapped when the user hasn't edited it locally.
 func LoadRules() ([]Rule, error) {
 	data, err := os.ReadFile(rulesPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Try migration from settings.json
-			rules := migrateRulesFromSettings()
-			if len(rules) > 0 {
-				SaveRules(rules)
-				return rules, nil
-			}
 			return []Rule{}, nil
 		}
 		return nil, err
@@ -60,7 +55,7 @@ func LoadRules() ([]Rule, error) {
 	return rules, nil
 }
 
-// SaveRules writes rules to APP_DATA_DIR/rules.json.
+// SaveRules writes rules to APP_DATA_DIR/settings/rules.json.
 func SaveRules(rules []Rule) error {
 	data, err := json.MarshalIndent(rules, "", "  ")
 	if err != nil {
@@ -71,49 +66,6 @@ func SaveRules(rules []Rule) error {
 	return os.WriteFile(rulesPath(), data, 0644)
 }
 
-// migrateRulesFromSettings converts old CategoryRule entries from settings.json.
-func migrateRulesFromSettings() []Rule {
-	settings, err := LoadSettings()
-	if err != nil || settings.Accounting == nil {
-		return nil
-	}
-
-	var rules []Rule
-	for _, old := range settings.Accounting.Rules {
-		r := Rule{
-			Assign: RuleAssign{
-				Category:   old.Category,
-				Collective: old.Collective,
-			},
-		}
-
-		// Convert old Match field to sender/description based on context
-		if old.Match != "" {
-			// Old "match" was against counterparty/description
-			r.Match.Description = old.Match
-		}
-		if old.Account != "" {
-			r.Match.Account = old.Account
-		}
-		if old.Provider != "" {
-			r.Match.Provider = old.Provider
-		}
-		if old.Currency != "" {
-			r.Match.Currency = old.Currency
-		}
-		if old.TxType != "" {
-			if strings.EqualFold(old.TxType, "CREDIT") {
-				r.Match.Direction = "in"
-			} else if strings.EqualFold(old.TxType, "DEBIT") {
-				r.Match.Direction = "out"
-			}
-		}
-
-		rules = append(rules, r)
-	}
-
-	return rules
-}
 
 // MatchesTransaction checks if a rule matches a transaction.
 func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {

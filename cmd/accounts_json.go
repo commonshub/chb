@@ -61,9 +61,12 @@ func emitAccountsJSON(args []string, configs []AccountConfig) {
 		if last := LastSyncTime("account:" + strings.ToLower(acc.Slug)); !last.IsZero() {
 			row.LastSyncAt = last.UTC().Format(time.RFC3339)
 		}
+		if last := LastFullSyncTime("account:" + strings.ToLower(acc.Slug)); !last.IsZero() {
+			row.LastFullSyncAt = last.UTC().Format(time.RFC3339)
+		}
 		if acc.OdooJournalID > 0 {
 			row.OdooJournalID = acc.OdooJournalID
-			row.OdooJournalName = acc.OdooJournalName
+			row.OdooJournalName = OdooJournalName(acc.OdooJournalID)
 			if status, ok := odooStatuses[acc.OdooJournalID]; ok {
 				m := status.Missing
 				row.OdooMissing = &m
@@ -137,9 +140,12 @@ func emitAccountDetailJSON(acc *AccountConfig, args []string) {
 	if last := LastSyncTime("account:" + strings.ToLower(acc.Slug)); !last.IsZero() {
 		row.LastSyncAt = last.UTC().Format(time.RFC3339)
 	}
+	if last := LastFullSyncTime("account:" + strings.ToLower(acc.Slug)); !last.IsZero() {
+		row.LastFullSyncAt = last.UTC().Format(time.RFC3339)
+	}
 	if acc.OdooJournalID > 0 {
 		row.OdooJournalID = acc.OdooJournalID
-		row.OdooJournalName = acc.OdooJournalName
+		row.OdooJournalName = OdooJournalName(acc.OdooJournalID)
 	}
 
 	_ = EmitJSON(row)

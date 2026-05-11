@@ -1,25 +1,27 @@
-package cmd
+package stripe
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/CommonsHub/chb/sources"
 )
 
-// StripeChargeEnrichment holds private customer/app data from Stripe charges.
-// Stored in finance/stripe/private/charges.json per month.
-type StripeChargeEnrichment struct {
-	FetchedAt      string                   `json:"fetchedAt"`
-	Charges        map[string]*StripeCharge `json:"charges"`                  // keyed by charge ID (ch_...)
-	RefundToCharge map[string]string        `json:"refundToCharge,omitempty"` // re_... → ch_...
+var httpClient = &http.Client{Timeout: 20 * time.Second}
+
+// ChargeData holds Stripe provider objects related to balance transactions.
+type ChargeData struct {
+	FetchedAt      string             `json:"fetchedAt"`
+	Charges        map[string]*Charge `json:"charges"`
+	RefundToCharge map[string]string  `json:"refundToCharge,omitempty"`
 }
 
-// StripeCharge holds enrichment data from a Stripe charge object + checkout session.
-type StripeCharge struct {
+// Charge holds data from a Stripe charge object and checkout session.
+type Charge struct {
 	ID              string            `json:"id"`
 	CustomerName    string            `json:"customerName,omitempty"`
 	CustomerEmail   string            `json:"customerEmail,omitempty"`
@@ -27,23 +29,25 @@ type StripeCharge struct {
 	BillingEmail    string            `json:"billingEmail,omitempty"`
 	ReceiptEmail    string            `json:"receiptEmail,omitempty"`
 	Description     string            `json:"description,omitempty"`
-	Application     string            `json:"application,omitempty"`     // ca_... ID
-	ApplicationName string            `json:"applicationName,omitempty"` // resolved name
-	Metadata        map[string]string `json:"metadata,omitempty"`        // charge + session metadata merged
-	CustomFields    map[string]string `json:"customFields,omitempty"`    // checkout session custom fields
-	PaymentMethod   string            `json:"paymentMethod,omitempty"`   // e.g. "visa ****4242"
-	PaymentLink     string            `json:"paymentLink,omitempty"`     // plink_... ID
+	Application     string            `json:"application,omitempty"`
+	ApplicationName string            `json:"applicationName,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CustomFields    map[string]string `json:"customFields,omitempty"`
+	PaymentMethod   string            `json:"paymentMethod,omitempty"`
+	PaymentLink     string            `json:"paymentLink,omitempty"`
 }
 
-// Known Stripe Connect application IDs → names
-var knownStripeApps = map[string]string{
+var KnownApps = map[string]string{
 	"ca_HB0JKrk4R6zGWt4fAD9M6iutRhuBdFqd": "Luma",
 	"ca_68FQ4jN0XMVhxpnk6gAptwvx90S9VYXF": "Open Collective",
 }
 
-// fetchStripeCharges fetches charge details for a list of charge IDs.
-func fetchStripeCharges(apiKey, accountID string, chargeIDs []string) (map[string]*StripeCharge, error) {
-	result := map[string]*StripeCharge{}
+func FetchCharges(apiKey, accountID string, chargeIDs []string) (map[string]*Charge, error) {
+	return FetchChargesWithProgress(apiKey, accountID, chargeIDs, nil)
+}
+
+func FetchChargesWithProgress(apiKey, accountID string, chargeIDs []string, progress sources.ProgressFunc) (map[string]*Charge, error) {
+	result := map[string]*Charge{}
 	if len(chargeIDs) == 0 {
 		return result, nil
 	}
@@ -57,37 +61,31 @@ func fetchStripeCharges(apiKey, accountID string, chargeIDs []string) (map[strin
 		seen[id] = true
 		unique = append(unique, id)
 	}
-	chargeIDs = unique
 
-	// Batch fetch charges (100 at a time with customer expansion)
-	for i := 0; i < len(chargeIDs); i += 100 {
-		end := i + 100
-		if end > len(chargeIDs) {
-			end = len(chargeIDs)
+	for i, chargeID := range unique {
+		if progress != nil && (i == 0 || (i+1)%10 == 0 || i+1 == len(unique)) {
+			progress(sources.ProgressEvent{
+				Source:  Source,
+				Step:    "fetch_charges",
+				Detail:  "charge_session",
+				Current: i + 1,
+				Total:   len(unique),
+			})
 		}
-		batch := chargeIDs[i:end]
-
-		for j, chargeID := range batch {
-			if j == 0 || (i+j+1)%10 == 0 || i+j+1 == len(chargeIDs) {
-				fmt.Printf(" %s%d/%d%s", Fmt.Dim, i+j+1, len(chargeIDs), Fmt.Reset)
-			}
-			charge, err := fetchSingleCharge(apiKey, accountID, chargeID)
-			if err != nil {
-				continue // skip failures silently
-			}
-			result[chargeID] = charge
-			time.Sleep(100 * time.Millisecond) // rate limit
+		charge, err := fetchSingleCharge(apiKey, accountID, chargeID)
+		if err != nil {
+			continue
 		}
+		result[chargeID] = charge
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	return result, nil
 }
 
-func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error) {
-	// Fetch charge with customer + payment_intent expanded
+func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
 	chargeURL := fmt.Sprintf("https://api.stripe.com/v1/charges/%s?expand[]=customer&expand[]=payment_intent", chargeID)
-
-	raw, err := stripeGet(apiKey, accountID, chargeURL)
+	raw, err := get(apiKey, accountID, chargeURL)
 	if err != nil {
 		return nil, err
 	}
@@ -113,14 +111,14 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error
 				Last4 string `json:"last4"`
 			} `json:"card"`
 		} `json:"payment_method_details"`
-		PaymentIntent interface{} `json:"payment_intent"` // expanded object or string ID
+		PaymentIntent interface{} `json:"payment_intent"`
 	}
 
 	if err := json.Unmarshal(raw, &chargeResp); err != nil {
 		return nil, err
 	}
 
-	charge := &StripeCharge{
+	charge := &Charge{
 		ID:           chargeResp.ID,
 		Description:  chargeResp.Description,
 		Application:  chargeResp.Application,
@@ -137,29 +135,23 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error
 		charge.CustomerName = chargeResp.Customer.Name
 		charge.CustomerEmail = chargeResp.Customer.Email
 	}
-
-	// Resolve application name
 	if chargeResp.Application != "" {
-		if name, ok := knownStripeApps[chargeResp.Application]; ok {
+		if name, ok := KnownApps[chargeResp.Application]; ok {
 			charge.ApplicationName = name
 		} else {
 			charge.ApplicationName = chargeResp.Application
 		}
 	}
-
-	// Payment method
 	if chargeResp.PaymentMethodDetails != nil && chargeResp.PaymentMethodDetails.Card != nil {
 		card := chargeResp.PaymentMethodDetails.Card
 		charge.PaymentMethod = fmt.Sprintf("%s ****%s", card.Brand, card.Last4)
 	}
 
-	// Extract payment intent ID to fetch checkout session
 	piID := ""
 	if piObj, ok := chargeResp.PaymentIntent.(map[string]interface{}); ok {
 		if id, ok := piObj["id"].(string); ok {
 			piID = id
 		}
-		// Also merge PI metadata
 		if piMeta, ok := piObj["metadata"].(map[string]interface{}); ok {
 			for k, v := range piMeta {
 				if s, ok := v.(string); ok && s != "" {
@@ -171,10 +163,9 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error
 		piID = piStr
 	}
 
-	// Fetch checkout session (has metadata from payment links + custom fields)
 	if piID != "" {
 		sessionURL := fmt.Sprintf("https://api.stripe.com/v1/checkout/sessions?payment_intent=%s", piID)
-		sessionRaw, err := stripeGet(apiKey, accountID, sessionURL)
+		sessionRaw, err := get(apiKey, accountID, sessionURL)
 		if err == nil {
 			var sessionResp struct {
 				Data []struct {
@@ -197,15 +188,11 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error
 			}
 			if json.Unmarshal(sessionRaw, &sessionResp) == nil && len(sessionResp.Data) > 0 {
 				session := sessionResp.Data[0]
-
-				// Merge session metadata (e.g. collective from payment link)
 				for k, v := range session.Metadata {
 					if v != "" {
 						charge.Metadata[k] = v
 					}
 				}
-
-				// Extract custom fields
 				if len(session.CustomFields) > 0 {
 					charge.CustomFields = map[string]string{}
 					for _, cf := range session.CustomFields {
@@ -224,7 +211,6 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error
 						}
 					}
 				}
-
 				charge.PaymentLink = session.PaymentLink
 			}
 		}
@@ -233,8 +219,21 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*StripeCharge, error
 	return charge, nil
 }
 
-// stripeGet makes an authenticated GET request to the Stripe API with retry on 429.
-func stripeGet(apiKey, accountID, url string) (json.RawMessage, error) {
+func FetchRefundChargeID(apiKey, accountID, refundID string) string {
+	raw, err := get(apiKey, accountID, fmt.Sprintf("https://api.stripe.com/v1/refunds/%s", refundID))
+	if err != nil {
+		return ""
+	}
+	var refund struct {
+		Charge string `json:"charge"`
+	}
+	if json.Unmarshal(raw, &refund) == nil {
+		return refund.Charge
+	}
+	return ""
+}
+
+func get(apiKey, accountID, url string) (json.RawMessage, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -244,7 +243,7 @@ func stripeGet(apiKey, accountID, url string) (json.RawMessage, error) {
 		req.Header.Set("Stripe-Account", accountID)
 	}
 
-	resp, err := stripeHTTPClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -252,14 +251,13 @@ func stripeGet(apiKey, accountID, url string) (json.RawMessage, error) {
 
 	if resp.StatusCode == 429 {
 		time.Sleep(2 * time.Second)
-		resp2, err := stripeHTTPClient.Do(req)
+		resp2, err := httpClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
 		defer resp2.Body.Close()
 		resp = resp2
 	}
-
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("stripe API returned %d", resp.StatusCode)
 	}
@@ -271,8 +269,7 @@ func stripeGet(apiKey, accountID, url string) (json.RawMessage, error) {
 	return raw, nil
 }
 
-// BestName returns the best available customer name from a charge.
-func (c *StripeCharge) BestName() string {
+func (c *Charge) BestName() string {
 	if c.BillingName != "" {
 		return c.BillingName
 	}
@@ -282,8 +279,7 @@ func (c *StripeCharge) BestName() string {
 	return ""
 }
 
-// BestEmail returns the best available email from a charge.
-func (c *StripeCharge) BestEmail() string {
+func (c *Charge) BestEmail() string {
 	if c.BillingEmail != "" {
 		return c.BillingEmail
 	}
@@ -296,51 +292,31 @@ func (c *StripeCharge) BestEmail() string {
 	return ""
 }
 
-// LoadStripeChargeEnrichment reads the private charge data for a month.
-func LoadStripeChargeEnrichment(dataDir, year, month string) (map[string]*StripeCharge, map[string]string) {
-	path := filepath.Join(dataDir, year, month, "finance", "stripe", "private", "charges.json")
-	data, err := os.ReadFile(path)
+func LoadChargeData(dataDir, year, month string) (map[string]*Charge, map[string]string) {
+	data, err := os.ReadFile(Path(dataDir, year, month, ChargesFile))
 	if err != nil {
 		return nil, nil
 	}
-	var enrichment StripeChargeEnrichment
-	if json.Unmarshal(data, &enrichment) != nil {
+	var chargeData ChargeData
+	if json.Unmarshal(data, &chargeData) != nil {
 		return nil, nil
 	}
-	return enrichment.Charges, enrichment.RefundToCharge
+	return chargeData.Charges, chargeData.RefundToCharge
 }
 
-// SaveStripeChargeEnrichment writes the private charge data for a month.
-func SaveStripeChargeEnrichment(dataDir, year, month string, charges map[string]*StripeCharge, refundToCharge map[string]string) {
-	enrichment := StripeChargeEnrichment{
-		FetchedAt:      time.Now().UTC().Format(time.RFC3339),
-		Charges:        charges,
-		RefundToCharge: refundToCharge,
-	}
-	data, _ := json.MarshalIndent(enrichment, "", "  ")
-	relPath := filepath.Join("finance", "stripe", "private", "charges.json")
-	_ = writeDataFile(filepath.Join(dataDir, year, month, relPath), data)
-	// Also write to latest
-	_ = writeDataFile(filepath.Join(dataDir, "latest", relPath), data)
-}
-
-// loadStripeCustomerData reads the private customer PII for a month.
-func loadStripeCustomerData(dataDir, year, month string) map[string]*StripeCustomerPII {
-	path := filepath.Join(dataDir, year, month, "finance", "stripe", "private", "customers.json")
-	data, err := os.ReadFile(path)
+func LoadCustomerData(dataDir, year, month string) map[string]*CustomerPII {
+	data, err := os.ReadFile(Path(dataDir, year, month, CustomersFile))
 	if err != nil {
 		return nil
 	}
-	var customerData StripeCustomerData
+	var customerData CustomerData
 	if json.Unmarshal(data, &customerData) != nil {
 		return nil
 	}
 	return customerData.Customers
 }
 
-// extractSourceID extracts the source ID from a Stripe balance transaction's source field.
-// Returns the ID and its prefix (e.g. "ch_", "re_", "po_").
-func extractSourceID(source json.RawMessage) string {
+func ExtractSourceID(source json.RawMessage) string {
 	if len(source) == 0 {
 		return ""
 	}
@@ -357,26 +333,10 @@ func extractSourceID(source json.RawMessage) string {
 	return ""
 }
 
-// extractChargeID extracts a charge ID from a Stripe balance transaction's source field.
-func extractChargeID(source json.RawMessage) string {
-	id := extractSourceID(source)
+func ExtractChargeID(source json.RawMessage) string {
+	id := ExtractSourceID(source)
 	if strings.HasPrefix(id, "ch_") {
 		return id
-	}
-	return ""
-}
-
-// fetchRefundChargeID fetches the original charge ID for a refund.
-func fetchRefundChargeID(apiKey, accountID, refundID string) string {
-	raw, err := stripeGet(apiKey, accountID, fmt.Sprintf("https://api.stripe.com/v1/refunds/%s", refundID))
-	if err != nil {
-		return ""
-	}
-	var refund struct {
-		Charge string `json:"charge"`
-	}
-	if json.Unmarshal(raw, &refund) == nil {
-		return refund.Charge
 	}
 	return ""
 }

@@ -1,0 +1,194 @@
+{
+  "rooms": [
+    {
+      "id": "ostrom",
+      "name": "Ostrom Room",
+      "slug": "ostrom",
+      "capacity": 80,
+      "description": "Our largest and most versatile space, named after Nobel laureate Elinor Ostrom. Perfect for events, big circles, panels, fishbowls, facilitation workshops, and community gatherings.",
+      "shortDescription": "Perfect for events, big circles, panels, fishbowls, facilitation...",
+      "pricePerHour": 100,
+      "tokensPerHour": 3,
+      "heroImage": "/images/img-2144.jpeg",
+      "features": [
+        "Flexible seating arrangements",
+        "Large windows with natural light",
+        "Sound system with speakers",
+        "TV/Monitor for presentations",
+        "Colorful floor cushions",
+        "Indoor plants",
+        "Air conditioning"
+      ],
+      "idealFor": [
+        "Large community events",
+        "Workshops and trainings",
+        "Panel discussions",
+        "Fishbowl conversations",
+        "Dance and movement",
+        "Ceremonies and celebrations"
+      ],
+      "discordChannelId": "1443322327159803945",
+      "googleCalendarId": "c_72861dcac23416de3fe708f857f5c74f2e2578fe7da94dcee0a55922734417ef@group.calendar.google.com"
+    },
+    {
+      "id": "satoshi",
+      "name": "Satoshi Room",
+      "slug": "satoshi",
+      "capacity": 15,
+      "description": "A professional meeting room named after Bitcoin's mysterious creator. Ideal for focused meetings, strategy sessions, and collaborative work.",
+      "shortDescription": "Perfect for larger meetings",
+      "pricePerHour": 50,
+      "tokensPerHour": 1.5,
+      "heroImage": "/images/satoshi-room.jpg",
+      "features": [
+        "Long conference table",
+        "Comfortable office chairs",
+        "Flipchart stand",
+        "TV/Monitor",
+        "Whiteboard",
+        "Natural light",
+        "Indoor plants"
+      ],
+      "idealFor": [
+        "Board meetings",
+        "Strategy sessions",
+        "Team meetings",
+        "Workshops (up to 15 people)",
+        "Presentations",
+        "Video conferences"
+      ],
+      "discordChannelId": "1443322243949137971",
+      "googleCalendarId": "c_fce54b1bddc311791897f8a8723d0b10d7e3b69ea520baee0d267ce9d3266068@group.calendar.google.com"
+    },
+    {
+      "id": "phonebooth",
+      "name": "Phonebooth",
+      "slug": "phonebooth",
+      "capacity": 1,
+      "description": "A private space for phone calls and meetings.",
+      "shortDescription": "Perfect for phone calls and meetings",
+      "pricePerHour": 10,
+      "tokensPerHour": 1,
+      "heroImage": "/images/phonebooth.jpg",
+      "features": [],
+      "idealFor": [
+        "Phone calls",
+        "Meetings",
+        "Private conversations"
+      ],
+      "discordChannelId": "1454246273522598050",
+      "googleCalendarId": "c_d85b07cd944c033724c8b4adbea66840619181e445e2e6c8062cc0f761f15218@group.calendar.google.com"
+    },
+    {
+      "id": "angel",
+      "name": "Angel Room",
+      "slug": "angel",
+      "capacity": 12,
+      "description": "A cozy and intimate space perfect for circle conversations, small workshops, and community gatherings. Features comfortable seating and a warm atmosphere.",
+      "shortDescription": "Perfect for circles",
+      "pricePerHour": 35,
+      "tokensPerHour": 1,
+      "heroImage": "/images/angel-room.jpeg",
+      "features": [
+        "Rattan lounge chairs",
+        "Scandinavian-style seating",
+        "Colorful geometric rug",
+        "Multiple indoor plants",
+        "Natural light",
+        "Cozy atmosphere"
+      ],
+      "idealFor": [
+        "Circle conversations",
+        "Small group facilitation",
+        "Intimate workshops",
+        "Coaching sessions",
+        "Reading groups",
+        "Support circles"
+      ],
+      "discordChannelId": "1443322374396051660",
+      "googleCalendarId": "c_3950a43f7dcd7c13415ca8d85ec6f96daffa9baf952ea653a063d03f22a5a6fe@group.calendar.google.com"
+    },
+    {
+      "id": "mushroom",
+      "name": "Mush Room",
+      "slug": "mushroom",
+      "capacity": 10,
+      "description": "A bright and functional workspace perfect for small meetings and collaborative work. Named after the mycelium networks that connect forest ecosystems.",
+      "shortDescription": "Perfect for small meetings",
+      "pricePerHour": 25,
+      "tokensPerHour": 1,
+      "heroImage": "/images/mush-room.jpg",
+      "features": [
+        "Flexible table arrangement",
+        "Office chairs",
+        "Whiteboard",
+        "Natural light",
+        "Indoor plants",
+        "Red cube pouf for casual seating"
+      ],
+      "idealFor": [
+        "Small team meetings",
+        "Working sessions",
+        "One-on-ones",
+        "Brainstorming",
+        "Study groups",
+        "Interview sessions"
+      ],
+      "discordChannelId": "1443322284160057455",
+      "googleCalendarId": "c_928d7621e14426ed508df906a7881dafc079757b44cea074d2434b405f86df7a@group.calendar.google.com"
+    },
+    {
+      "id": "coworking",
+      "name": "Coworking Space",
+      "slug": "coworking",
+      "capacity": 30,
+      "description": "Our open coworking area where community members come together to work, connect, and collaborate. Available for members and day-pass visitors.",
+      "shortDescription": "Open workspace for the community",
+      "pricePerHour": 0,
+      "tokensPerHour": 0,
+      "heroImage": "/images/chb-facade.avif",
+      "features": [
+        "Hot desks",
+        "High-speed WiFi",
+        "Power outlets",
+        "Community kitchen access",
+        "Coffee and tea",
+        "Quiet zones"
+      ],
+      "idealFor": [
+        "Remote work",
+        "Freelancing",
+        "Studying",
+        "Networking",
+        "Casual meetings",
+        "Community connection"
+      ],
+      "membershipRequired": true,
+      "discordChannelId": "1443323751134531695",
+      "googleCalendarId": "c_46409c48af2476b038fed585c06edd93133b5393d8a2b72b3ca98445a3372860@group.calendar.google.com"
+    },
+    {
+      "id": "playroom",
+      "name": "Playroom",
+      "slug": "playroom",
+      "capacity": 10,
+      "description": "A fun and playful space perfect for a great kicker game!",
+      "shortDescription": "Perfect for a great kicker game!",
+      "pricePerHour": 25,
+      "tokensPerHour": 1,
+      "heroImage": "/images/playroom.jpg",
+      "features": [
+        "Kicker table",
+        "Kicker balls"
+      ],
+      "idealFor": [
+        "Fun",
+        "Killing time",
+        "Team building"
+      ],
+      "membershipRequired": true,
+      "discordChannelId": "1465825193573351665",
+      "googleCalendarId": null
+    }
+  ]
+}

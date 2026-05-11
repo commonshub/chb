@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	discordsource "github.com/CommonsHub/chb/sources/discord"
 )
 
 type MessagesStatsMonth struct {
@@ -53,7 +55,7 @@ func MessagesStats(args []string) {
 				continue
 			}
 			ym := yd.Name() + "-" + md.Name()
-			discordDir := filepath.Join(dataDir, yd.Name(), md.Name(), "messages", "discord")
+			discordDir := discordsource.Path(dataDir, yd.Name(), md.Name())
 			if _, err := os.Stat(discordDir); os.IsNotExist(err) {
 				continue
 			}
@@ -63,7 +65,7 @@ func MessagesStats(args []string) {
 				if !cd.IsDir() {
 					continue
 				}
-				msgPath := filepath.Join(discordDir, cd.Name(), "messages.json")
+				msgPath := filepath.Join(discordDir, cd.Name(), discordsource.MessagesFile)
 				data, err := os.ReadFile(msgPath)
 				if err != nil {
 					continue

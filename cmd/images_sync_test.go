@@ -27,10 +27,10 @@ func TestResolveDiscordImagePathUsesCanonicalFilePath(t *testing.T) {
 	dataDir := t.TempDir()
 	img := ImageEntry{
 		ID:       "att-1",
-		FilePath: "2024/12/messages/discord/images/att-1.jpeg",
+		FilePath: "2024/12/sources/discord/images/att-1.jpeg",
 	}
 	got := resolveDiscordImagePath(dataDir, "latest", "", img)
-	want := dataDir + "/2024/12/messages/discord/images/att-1.jpeg"
+	want := dataDir + "/2024/12/sources/discord/images/att-1.jpeg"
 	if got != want {
 		t.Fatalf("resolveDiscordImagePath() = %q, want %q", got, want)
 	}

@@ -13,22 +13,15 @@ type Collective struct {
 }
 
 func collectivesPath() string {
-	return filepath.Join(chbDir(), "collectives.json")
+	return settingsFilePath("collectives.json")
 }
 
-// LoadCollectives reads collectives from APP_DATA_DIR/collectives.json.
-// On first load, migrates from settings.json if collectives.json doesn't exist.
+// LoadCollectives reads collectives from APP_DATA_DIR/settings/collectives.json.
+// The file is seeded from the embedded defaults on first run and kept in
+// sync by EnsureSettingsBootstrapped when the user hasn't edited it locally.
 func LoadCollectives() map[string]Collective {
 	data, err := os.ReadFile(collectivesPath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Migrate from settings.json
-			collectives := migrateCollectivesFromSettings()
-			if len(collectives) > 0 {
-				SaveCollectives(collectives)
-			}
-			return collectives
-		}
 		return map[string]Collective{}
 	}
 	var collectives map[string]Collective
@@ -38,10 +31,13 @@ func LoadCollectives() map[string]Collective {
 	return collectives
 }
 
-// SaveCollectives writes collectives to APP_DATA_DIR/collectives.json.
+// SaveCollectives writes collectives to APP_DATA_DIR/settings/collectives.json.
 func SaveCollectives(collectives map[string]Collective) error {
 	data, err := json.MarshalIndent(collectives, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(collectivesPath()), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(collectivesPath(), data, 0644)
@@ -66,20 +62,3 @@ func CollectiveSlugs() []string {
 	return slugs
 }
 
-func migrateCollectivesFromSettings() map[string]Collective {
-	settings, err := LoadSettings()
-	if err != nil {
-		return map[string]Collective{}
-	}
-
-	result := map[string]Collective{}
-	for slug, raw := range settings.Finance.Collectives {
-		var c Collective
-		if json.Unmarshal(raw, &c) == nil {
-			result[slug] = c
-		} else {
-			result[slug] = Collective{Name: slug}
-		}
-	}
-	return result
-}

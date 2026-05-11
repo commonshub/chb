@@ -7,9 +7,10 @@ import (
 	"strings"
 )
 
-// emailPattern roughly matches email addresses. Used to detect PII leaks in
-// files written outside a /private/ subdirectory.
-var emailPattern = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+// emailPattern matches conventional email addresses. It intentionally requires
+// a dotted domain so handles like "@Commons Hub" and opaque IDs like "no@t"
+// are not treated as PII.
+var emailPattern = regexp.MustCompile(`(?i)\b[a-z0-9.!#$%&'*+/=?^_{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b`)
 
 // pathHasPrivateSegment reports whether the given slash- or os-separated path
 // contains a "private" path segment.
@@ -22,6 +23,47 @@ func pathHasPrivateSegment(path string) bool {
 		}
 	}
 	return false
+}
+
+// pathHasSourcesSegment reports whether the path is under a monthly or latest
+// source dump directory: <YYYY>/<MM>/sources/<source>/... or
+// latest/sources/<source>/.... Source dumps are private backups by default;
+// only generated files are expected to be public-safe.
+func pathHasSourcesSegment(path string) bool {
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	for i, part := range parts {
+		if part != "sources" {
+			continue
+		}
+		if i >= 2 && isYearSegment(parts[i-2]) && isMonthSegment(parts[i-1]) {
+			return true
+		}
+		if i >= 1 && parts[i-1] == "latest" {
+			return true
+		}
+	}
+	return false
+}
+
+func isYearSegment(s string) bool {
+	if len(s) != 4 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isMonthSegment(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	return s >= "01" && s <= "12"
 }
 
 // nameFieldKeys are the JSON fields that must never contain an "@".
@@ -74,7 +116,7 @@ type PIILeak struct {
 func (l PIILeak) String() string {
 	switch l.Kind {
 	case "name-has-at":
-		return fmt.Sprintf("%s contains '@': %s", l.Field, l.Value)
+		return fmt.Sprintf("%s contains email: %s", l.Field, l.Value)
 	default:
 		return fmt.Sprintf("email in %s: %s", l.Field, l.Value)
 	}
@@ -82,7 +124,7 @@ func (l PIILeak) String() string {
 
 // validatePublicJSON scans a JSON payload for PII that must not appear outside
 // a /private/ directory. It returns:
-//   - a list of hard violations (must block the write): "@" in name fields
+//   - a list of hard violations (must block the write): emails in name fields
 //   - a list of soft violations (should warn): email-looking strings elsewhere
 //
 // The payload is only inspected when it is valid JSON; non-JSON bytes are
@@ -122,12 +164,12 @@ func scanPII(v interface{}, path string, hard, soft *[]PIILeak) {
 		}
 		leafLower := strings.ToLower(leaf)
 		if _, isName := nameFieldKeys[leafLower]; isName {
-			if strings.ContainsRune(t, '@') {
+			if containsEmail(t) {
 				*hard = append(*hard, PIILeak{Field: path, Kind: "name-has-at", Value: redactEmail(t)})
 				return
 			}
 		}
-		if emailPattern.MatchString(t) {
+		if containsEmail(t) {
 			if softAllowlistMatch(leafLower, t) {
 				return
 			}
@@ -152,8 +194,12 @@ func redactEmail(s string) string {
 	})
 }
 
-// scrubNameFields rewrites firstName/lastName/name values that contain "@" so
-// the written file never leaks emails in those fields. Returns the rewritten
+func containsEmail(s string) bool {
+	return emailPattern.MatchString(s)
+}
+
+// scrubNameFields rewrites firstName/lastName/name values that contain an email
+// address so the written file never leaks emails in those fields. Returns the rewritten
 // JSON bytes and the list of fields that were scrubbed.
 func scrubNameFields(data []byte) ([]byte, []PIILeak) {
 	var v interface{}
@@ -186,7 +232,7 @@ func scrubNameValue(v interface{}, key string, scrubbed *[]PIILeak) interface{} 
 		return t
 	case string:
 		if _, isName := nameFieldKeys[strings.ToLower(key)]; isName {
-			if strings.ContainsRune(t, '@') {
+			if containsEmail(t) {
 				*scrubbed = append(*scrubbed, PIILeak{Field: key, Kind: "name-has-at", Value: redactEmail(t)})
 				cleaned := sanitizePersonName(t)
 				if cleaned == "" && strings.ToLower(key) == "firstname" {

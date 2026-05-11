@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,22 +70,22 @@ func writeDataFile(path string, data []byte) error {
 }
 
 // enforcePIIPolicy scrubs name fields and warns about emails for JSON files
-// written outside a /private/ subdirectory. Non-JSON files and files inside a
-// /private/ path are returned as-is.
+// written outside /private/ and monthly /sources/ archives. Non-JSON files,
+// private paths, and source dumps are returned as-is.
 func enforcePIIPolicy(path string, data []byte) []byte {
 	if !strings.HasSuffix(path, ".json") {
 		return data
 	}
-	if pathHasPrivateSegment(path) {
+	if pathHasPrivateSegment(path) || pathHasSourcesSegment(path) {
 		return data
 	}
 	cleaned, scrubbed := scrubNameFields(data)
 	for _, leak := range scrubbed {
-		fmt.Fprintf(os.Stderr, "⚠ PII guard: scrubbed %s in %s (%s)\n", leak.Kind, path, leak.String())
+		Warnf("⚠ PII guard: scrubbed %s in %s (%s)", leak.Kind, path, leak.String())
 	}
 	_, soft := validatePublicJSON(cleaned)
 	for _, leak := range soft {
-		fmt.Fprintf(os.Stderr, "⚠ PII guard: possible email in %s — %s\n", path, leak.String())
+		Warnf("⚠ PII guard: possible email in %s — %s", path, leak.String())
 	}
 	return cleaned
 }
@@ -126,7 +125,7 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 				continue
 			}
 			current = filepath.Join(current, part)
-			if part == "private" {
+			if part == "private" || sourcesStartAt(baseDir, current) {
 				privateMode = true
 			}
 			mode := dataPublicDirMode
@@ -146,4 +145,19 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 	}
 
 	return nil
+}
+
+func sourcesStartAt(baseDir, currentPath string) bool {
+	rel, err := filepath.Rel(baseDir, currentPath)
+	if err != nil || rel == "." {
+		return false
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) == 3 && isYearSegment(parts[0]) && isMonthSegment(parts[1]) && parts[2] == "sources" {
+		return true
+	}
+	if len(parts) == 2 && parts[0] == "latest" && parts[1] == "sources" {
+		return true
+	}
+	return false
 }

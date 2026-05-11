@@ -1,0 +1,7 @@
+2026-05-05T00:10:16+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3TPSVSFAhaWeDyow0OyWsciX failed: luma redirect for evt-VfP8AcZ1kOz9yJc returned no Location header
+2026-05-05T00:10:17+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3TPSVSFAhaWeDyow0D6VIbYK failed: luma redirect for evt-VfP8AcZ1kOz9yJc returned no Location header
+2026-05-05T00:10:17+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3StnLnFAhaWeDyow2P41D6H6 failed: luma redirect for evt-P3W20IrEsqQej58 returned no Location header
+2026-05-05T00:10:17+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3SuUchFAhaWeDyow2KzP10DW failed: luma redirect for evt-P3W20IrEsqQej58 returned no Location header
+2026-05-05T00:10:18+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3TD7SqFAhaWeDyow0x4Cu4Iv failed: luma redirect for evt-P3W20IrEsqQej58 returned no Location header
+2026-05-05T00:10:18+02:00 [WARNING] Warning: processor luma-stripe transaction stripe:txn_3T9Te1FAhaWeDyow0YBFqlnd failed: luma redirect for evt-VfP8AcZ1kOz9yJc returned no Location header
+2026-05-05T00:10:22+02:00 [WARNING] ⚠ PII guard: scrubbed name-has-at in /tmp/data/2025/01/generated/members.json (firstName contains email: a***@example.com)

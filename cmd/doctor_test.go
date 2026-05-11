@@ -22,7 +22,7 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	latestChannelDir := filepath.Join(dataDir, "latest", "messages", "discord", "1443322327159803945")
+	latestChannelDir := filepath.Join(dataDir, "latest", "sources", "discord", "1443322327159803945")
 	if err := os.MkdirAll(latestChannelDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -31,17 +31,17 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	}
 
 	monthDir := filepath.Join(dataDir, "2026", "04")
-	if err := os.MkdirAll(filepath.Join(monthDir, "messages", "discord", "chan-1"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(monthDir, "sources", "discord", "chan-1"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(monthDir, "messages", "discord", "chan-1", "messages.json"), []byte(`{"messages":[{}]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(monthDir, "sources", "discord", "chan-1", "messages.json"), []byte(`{"messages":[{}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(monthDir, "generated"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	imageRel := "2026/04/messages/discord/images/att-1.png"
-	if err := os.MkdirAll(filepath.Join(dataDir, "2026", "04", "messages", "discord", "images"), 0755); err != nil {
+	imageRel := "2026/04/sources/discord/images/att-1.png"
+	if err := os.MkdirAll(filepath.Join(dataDir, "2026", "04", "sources", "discord", "images"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, filepath.FromSlash(imageRel)), []byte("png"), 0644); err != nil {
@@ -52,7 +52,7 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	    {
 	      "id": "att-1",
 	      "url": "https://cdn.discordapp.com/file.png",
-	      "filePath": "2026/04/messages/discord/images/att-1.png",
+	      "filePath": "2026/04/sources/discord/images/att-1.png",
 	      "timestamp": "2026-04-13T12:00:00.000000+00:00"
 	    }
 	  ]
@@ -69,7 +69,7 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	      "startAt": "2099-04-13T12:00:00Z",
 	      "url": "https://lu.ma/healthy-event",
 	      "coverImage": "https://images.luma.com/cover.jpg",
-	      "coverImageLocal": "2026/04/events/images/event-1.jpg"
+	      "coverImageLocal": "2026/04/generated/events/images/event-1.jpg"
 	    }
 	  ]
 	}`
@@ -89,14 +89,14 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	      "startAt": "2099-04-13T12:00:00Z",
 	      "url": "https://lu.ma/healthy-event",
 	      "coverImage": "https://images.luma.com/cover.jpg",
-	      "coverImageLocal": "2026/04/events/images/event-1.jpg"
+	      "coverImageLocal": "2026/04/generated/events/images/event-1.jpg"
 	    }
 	  ]
 	}`
-	if err := os.MkdirAll(filepath.Join(dataDir, "2026", "04", "events", "images"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dataDir, "2026", "04", "generated", "events", "images"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, "2026", "04", "events", "images", "event-1.jpg"), []byte("jpg"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataDir, "2026", "04", "generated", "events", "images", "event-1.jpg"), []byte("jpg"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, "latest", "generated", "events.json"), []byte(latestEventsJSON), 0644); err != nil {
@@ -163,7 +163,7 @@ func TestRunDoctorChecksFindsBrokenImagesJSON(t *testing.T) {
 	    {
 	      "id": "att-1",
 	      "url": "",
-	      "filePath": "latest/messages/discord/images/att-1.png",
+	      "filePath": "latest/sources/discord/images/att-1.png",
 	      "timestamp": "2026-04-13T12:00:00.000000+00:00",
 	      "proxyUrl": "/api/discord-image-proxy"
 	    }
@@ -208,7 +208,7 @@ func TestRunDoctorChecksIgnoresRoomICSOnlyMonth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	icsDir := filepath.Join(dataDir, "2026", "07", "calendars", "ics")
+	icsDir := filepath.Join(dataDir, "2026", "07", "sources", "ics")
 	if err := os.MkdirAll(icsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestRunDoctorChecksFindsBrokenHomepageLatestEvents(t *testing.T) {
 	      "startAt": "2099-04-13T12:00:00Z",
 	      "url": "https://lu.ma/event-1",
 	      "coverImage": "",
-	      "coverImageLocal": "2026/04/events/images/missing.jpg"
+	      "coverImageLocal": "2026/04/generated/events/images/missing.jpg"
 	    }
 	  ]
 	}`

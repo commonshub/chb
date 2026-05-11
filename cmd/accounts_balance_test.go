@@ -55,7 +55,9 @@ func TestStripe2024Balance(t *testing.T) {
 			[]interface{}{"type", "=", "bank"},
 		}},
 		map[string]interface{}{"fields": []string{"id"}, "limit": 1})
-	var mainJournals []struct{ ID int `json:"id"` }
+	var mainJournals []struct {
+		ID int `json:"id"`
+	}
 	json.Unmarshal(mainJournalResult, &mainJournals)
 	if len(mainJournals) > 0 && mainJournals[0].ID != journalID {
 		// Count lines in main journal
@@ -85,13 +87,13 @@ func TestStripe2024Balance(t *testing.T) {
 	}
 
 	realAccountID := "acct_1Nn0FaFAhaWeDyow"
+	CacheOdooJournalName(journalID, journalName)
 	acc := &AccountConfig{
-		Name:            "Test Stripe 2024",
-		Slug:            "stripe",
-		Provider:        "stripe",
-		AccountID:       realAccountID,
-		OdooJournalID:   journalID,
-		OdooJournalName: journalName,
+		Name:          "Test Stripe 2024",
+		Slug:          "stripe",
+		Provider:      "stripe",
+		AccountID:     realAccountID,
+		OdooJournalID: journalID,
 	}
 
 	// Compute expected values from local data
@@ -124,7 +126,7 @@ func TestStripe2024Balance(t *testing.T) {
 	// Sync with --until 2024
 	untilDate := time.Date(2025, 1, 1, 0, 0, 0, 0, BrusselsTZ())
 	t.Log("Syncing payouts + orphan charges...")
-	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, false, "", untilDate)
+	_, err = syncStripeToOdoo(acc, creds, uid, 0, false, false, false, "", untilDate)
 	if err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}

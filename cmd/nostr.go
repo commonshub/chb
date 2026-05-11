@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -67,23 +69,80 @@ const (
 	nostrBatchSize      = 50
 )
 
-// FetchNostrMetadata fetches NIP-73 / txinfo metadata for transactions and addresses.
-// It queries all configured Nostr relays in parallel and deduplicates results.
-func FetchNostrMetadata(chainID int, txHashes []string, addresses []string, since *time.Time) (map[string]*TxMetadata, map[string]*AddressMetadata, error) {
-	// Build URI list
-	var uris []string
+// FetchNostrTxMetadata fetches NIP-73 / txinfo annotations (kind 1111) for the
+// given tx hashes, optionally filtered by `since`. Tx annotations are append-only
+// so an incremental sync is safe.
+func FetchNostrTxMetadata(chainID int, txHashes []string, since *time.Time) (map[string]*TxMetadata, error) {
+	if len(txHashes) == 0 {
+		return map[string]*TxMetadata{}, nil
+	}
+	uris := make([]string, 0, len(txHashes))
 	for _, hash := range txHashes {
 		uris = append(uris, fmt.Sprintf("ethereum:%d:tx:%s", chainID, strings.ToLower(hash)))
 	}
+	events := fetchKind1111ByURIs(uris, since)
+	out := map[string]*TxMetadata{}
+	for _, ev := range events {
+		for _, tag := range ev.Tags {
+			if len(tag) < 2 || tag[0] != "i" {
+				continue
+			}
+			if !isTxURI(tag[1], chainID) {
+				continue
+			}
+			hash := strings.ToLower(extractURIPart(tag[1], "tx"))
+			if hash == "" {
+				continue
+			}
+			if existing, ok := out[hash]; !ok || ev.CreatedAt > existing.CreatedAt {
+				out[hash] = parseTxMetadata(hash, ev)
+			}
+		}
+	}
+	return out, nil
+}
+
+// FetchNostrAddressMetadata fetches kind 1111 annotations for the given Ethereum
+// addresses. No `since` filter — address profiles mutate over time and we always
+// want the latest version.
+func FetchNostrAddressMetadata(chainID int, addresses []string) (map[string]*AddressMetadata, error) {
+	if len(addresses) == 0 {
+		return map[string]*AddressMetadata{}, nil
+	}
+	uris := make([]string, 0, len(addresses))
 	for _, addr := range addresses {
 		uris = append(uris, fmt.Sprintf("ethereum:%d:address:%s", chainID, strings.ToLower(addr)))
 	}
+	events := fetchKind1111ByURIs(uris, nil)
+	out := map[string]*AddressMetadata{}
+	for _, ev := range events {
+		for _, tag := range ev.Tags {
+			if len(tag) < 2 || tag[0] != "i" {
+				continue
+			}
+			if !isAddressURI(tag[1], chainID) {
+				continue
+			}
+			addr := strings.ToLower(extractURIPart(tag[1], "address"))
+			if addr == "" {
+				continue
+			}
+			if existing, ok := out[addr]; !ok || ev.CreatedAt > existing.CreatedAt {
+				out[addr] = parseAddressMetadata(addr, ev)
+			}
+		}
+	}
+	return out, nil
+}
 
+// fetchKind1111ByURIs queries every configured Nostr relay in parallel for kind
+// 1111 events whose `i` tag matches one of the URIs. Returns the deduplicated
+// (latest createdAt wins) set keyed by event ID.
+func fetchKind1111ByURIs(uris []string, since *time.Time) map[string]NostrEvent {
 	if len(uris) == 0 {
-		return map[string]*TxMetadata{}, map[string]*AddressMetadata{}, nil
+		return map[string]NostrEvent{}
 	}
 
-	// Batch URIs in groups of nostrBatchSize
 	var batches [][]string
 	for i := 0; i < len(uris); i += nostrBatchSize {
 		end := i + nostrBatchSize
@@ -93,9 +152,8 @@ func FetchNostrMetadata(chainID int, txHashes []string, addresses []string, sinc
 		batches = append(batches, uris[i:end])
 	}
 
-	// Collect all events (deduplicated by ID)
 	eventsMu := sync.Mutex{}
-	allEvents := map[string]NostrEvent{} // key: event ID
+	allEvents := map[string]NostrEvent{}
 
 	var wg sync.WaitGroup
 	for _, relay := range nostrRelays {
@@ -104,13 +162,11 @@ func FetchNostrMetadata(chainID int, txHashes []string, addresses []string, sinc
 			defer wg.Done()
 			events, err := fetchFromRelay(relayURL, batches, since)
 			if err != nil {
-				// Relay unavailable — silently skip
 				return
 			}
 			eventsMu.Lock()
 			defer eventsMu.Unlock()
 			for id, ev := range events {
-				// Keep most recent event if duplicate ID somehow appears
 				if existing, ok := allEvents[id]; !ok || ev.CreatedAt > existing.CreatedAt {
 					allEvents[id] = ev
 				}
@@ -118,48 +174,7 @@ func FetchNostrMetadata(chainID int, txHashes []string, addresses []string, sinc
 		}(relay)
 	}
 	wg.Wait()
-
-	// Parse events into TxMetadata and AddressMetadata
-	txMeta := map[string]*TxMetadata{}
-	addrMeta := map[string]*AddressMetadata{}
-
-	for _, ev := range allEvents {
-		// Find the "i" tag to determine what this event annotates
-		for _, tag := range ev.Tags {
-			if len(tag) < 2 || tag[0] != "i" {
-				continue
-			}
-			uri := tag[1]
-
-			// ethereum:<chainId>:tx:<hash>
-			if isTxURI(uri, chainID) {
-				hash := extractURIPart(uri, "tx")
-				if hash == "" {
-					continue
-				}
-				hash = strings.ToLower(hash)
-				existing, ok := txMeta[hash]
-				if !ok || ev.CreatedAt > existing.CreatedAt {
-					txMeta[hash] = parseTxMetadata(hash, ev)
-				}
-			}
-
-			// ethereum:<chainId>:address:<addr>
-			if isAddressURI(uri, chainID) {
-				addr := extractURIPart(uri, "address")
-				if addr == "" {
-					continue
-				}
-				addr = strings.ToLower(addr)
-				existing, ok := addrMeta[addr]
-				if !ok || ev.CreatedAt > existing.CreatedAt {
-					addrMeta[addr] = parseAddressMetadata(addr, ev)
-				}
-			}
-		}
-	}
-
-	return txMeta, addrMeta, nil
+	return allEvents
 }
 
 // fetchFromRelay connects to a single relay and fetches events for all batches.
@@ -453,4 +468,74 @@ func parseAddressMetadata(addr string, ev NostrEvent) *AddressMetadata {
 		}
 	}
 	return m
+}
+
+// LoadNostrMetadataCache reads a metadata.json file. Returns an empty (but
+// initialized) cache if the file is missing or unreadable.
+func LoadNostrMetadataCache(path string) NostrMetadataCache {
+	cache := NostrMetadataCache{
+		Transactions: map[string]*TxMetadata{},
+		Addresses:    map[string]*AddressMetadata{},
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cache
+	}
+	_ = json.Unmarshal(data, &cache)
+	if cache.Transactions == nil {
+		cache.Transactions = map[string]*TxMetadata{}
+	}
+	if cache.Addresses == nil {
+		cache.Addresses = map[string]*AddressMetadata{}
+	}
+	return cache
+}
+
+// MergeNostrMetadata merges incoming entries into base, keeping the entry with
+// the higher CreatedAt when both contain the same key. The returned cache
+// carries `incoming`'s FetchedAt and ChainID (falling back to base's when zero).
+func MergeNostrMetadata(base, incoming NostrMetadataCache) NostrMetadataCache {
+	out := NostrMetadataCache{
+		FetchedAt:    incoming.FetchedAt,
+		ChainID:      incoming.ChainID,
+		Transactions: map[string]*TxMetadata{},
+		Addresses:    map[string]*AddressMetadata{},
+	}
+	if out.FetchedAt == "" {
+		out.FetchedAt = base.FetchedAt
+	}
+	if out.ChainID == 0 {
+		out.ChainID = base.ChainID
+	}
+	for k, v := range base.Transactions {
+		out.Transactions[k] = v
+	}
+	for k, v := range incoming.Transactions {
+		if existing, ok := out.Transactions[k]; !ok || v.CreatedAt > existing.CreatedAt {
+			out.Transactions[k] = v
+		}
+	}
+	for k, v := range base.Addresses {
+		out.Addresses[k] = v
+	}
+	for k, v := range incoming.Addresses {
+		if existing, ok := out.Addresses[k]; !ok || v.CreatedAt > existing.CreatedAt {
+			out.Addresses[k] = v
+		}
+	}
+	return out
+}
+
+// WriteNostrMetadataCache writes a metadata cache to disk directly. Unlike
+// writeMonthFile, this does NOT mirror to `latest/`; the caller decides where
+// to write each layer (per-month vs latest).
+func WriteNostrMetadataCache(path string, cache NostrMetadataCache) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }

@@ -9,14 +9,16 @@ import (
 
 func TestSplitNameStripsEmailTokens(t *testing.T) {
 	cases := []struct {
-		in             string
-		wantFirst      string
-		wantLast       string
+		in        string
+		wantFirst string
+		wantLast  string
 	}{
 		{"Judith Saragossi", "Judith", "Saragossi"},
 		{"judithsaragossi@gmail.com", "Member", ""},
 		{"Judith judithsaragossi@gmail.com", "Judith", ""},
 		{"   judithsaragossi@gmail.com   ", "Member", ""},
+		{"@Commons Hub", "@Commons", "Hub"},
+		{"no@t allowed", "no@t", "allowed"},
 		{"", "Member", ""},
 		{"Jean-Luc Picard", "Jean-Luc", "Picard"},
 	}
@@ -38,12 +40,12 @@ func TestScrubNameFieldsRewritesAtInNameValues(t *testing.T) {
   "firstName": "alice@example.com",
   "lastName":  "bob.jones@example.com",
   "name":      "Alice Wonderland",
-  "nested":    {"firstName": "no@t allowed"},
+  "nested":    {"firstName": "@Commons Hub"},
   "list":      [{"firstName": "only@email.com", "amount": 10}]
 }`)
 	out, scrubbed := scrubNameFields(in)
-	if len(scrubbed) != 4 {
-		t.Fatalf("expected 4 scrubs, got %d: %+v", len(scrubbed), scrubbed)
+	if len(scrubbed) != 3 {
+		t.Fatalf("expected 3 scrubs, got %d: %+v", len(scrubbed), scrubbed)
 	}
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(out, &parsed); err != nil {
@@ -58,13 +60,16 @@ func TestScrubNameFieldsRewritesAtInNameValues(t *testing.T) {
 	if parsed["name"] != "Alice Wonderland" {
 		t.Errorf("expected name unchanged, got %v", parsed["name"])
 	}
-	if s := string(out); strings.Contains(s, "@") {
-		t.Errorf("output still contains '@': %s", s)
+	if s := string(out); strings.Contains(s, "alice@example.com") || strings.Contains(s, "bob.jones@example.com") || strings.Contains(s, "only@email.com") {
+		t.Errorf("output still contains email: %s", s)
+	}
+	if parsed["nested"].(map[string]interface{})["firstName"] != "@Commons Hub" {
+		t.Errorf("expected non-email handle unchanged, got %v", parsed["nested"])
 	}
 }
 
 func TestValidatePublicJSONDetectsNameAtAndEmail(t *testing.T) {
-	in := []byte(`{"firstName":"x@y.com","contact":"mail me at bob@example.com","event":"evt@events.lu.ma"}`)
+	in := []byte(`{"firstName":"x@y.com","name":"@Commons Hub","contact":"mail me at bob@example.com","event":"evt@events.lu.ma"}`)
 	hard, soft := validatePublicJSON(in)
 	if len(hard) == 0 {
 		t.Fatalf("expected hard violation for firstName with @")
@@ -74,13 +79,21 @@ func TestValidatePublicJSONDetectsNameAtAndEmail(t *testing.T) {
 	}
 }
 
+func TestValidatePublicJSONDoesNotTreatAtMentionsAsEmail(t *testing.T) {
+	in := []byte(`{"name":"@Commons Hub","firstName":"no@t allowed","contact":"tag @Commons Hub"}`)
+	hard, soft := validatePublicJSON(in)
+	if len(hard) != 0 || len(soft) != 0 {
+		t.Fatalf("expected no PII findings for non-email @ strings, got hard=%+v soft=%+v", hard, soft)
+	}
+}
+
 func TestPathHasPrivateSegment(t *testing.T) {
 	cases := []struct {
 		path string
 		want bool
 	}{
-		{"/data/2025/01/finance/stripe/private/customers.json", true},
-		{"/data/2025/01/finance/stripe/subscriptions.json", false},
+		{"/data/2025/01/generated/private/customers.json", true},
+		{"/data/2025/01/sources/stripe/subscriptions.json", false},
 		{filepath.Join("data", "private", "x.json"), true},
 		{"private/x.json", true},
 		{"xprivate/x.json", false},
@@ -88,6 +101,23 @@ func TestPathHasPrivateSegment(t *testing.T) {
 	for _, c := range cases {
 		if got := pathHasPrivateSegment(c.path); got != c.want {
 			t.Errorf("pathHasPrivateSegment(%q) = %v; want %v", c.path, got, c.want)
+		}
+	}
+}
+
+func TestPathHasSourcesSegment(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/org-data/2026/04/sources/stripe/balance-transactions.json", true},
+		{"/org-data/latest/sources/luma/events.json", true},
+		{"/org-data/data/2026/04/generated/transactions.json", false},
+		{"/org-data/2026/04/generated/sources.json", false},
+	}
+	for _, c := range cases {
+		if got := pathHasSourcesSegment(c.path); got != c.want {
+			t.Errorf("pathHasSourcesSegment(%q) = %v; want %v", c.path, got, c.want)
 		}
 	}
 }
@@ -131,7 +161,7 @@ func TestEnforcePIIPolicyScrubsOnlyOutsidePrivate(t *testing.T) {
 	if strings.Contains(string(cleaned), "@") {
 		t.Errorf("expected '@' scrubbed in public path, got %s", cleaned)
 	}
-	privCleaned := enforcePIIPolicy("/tmp/data/2025/01/finance/stripe/private/customers.json", data)
+	privCleaned := enforcePIIPolicy("/tmp/data/2025/01/generated/private/customers.json", data)
 	if !strings.Contains(string(privCleaned), "@") {
 		t.Errorf("expected private path to be untouched, got %s", privCleaned)
 	}

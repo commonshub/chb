@@ -10,58 +10,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	discordsource "github.com/CommonsHub/chb/sources/discord"
 )
 
 const discordAPIBase = "https://discord.com/api/v10"
 
-// DiscordMessage represents a Discord message
-type DiscordMessage struct {
-	ID          string              `json:"id"`
-	ChannelID   string              `json:"channel_id,omitempty"`
-	Author      DiscordAuthor       `json:"author"`
-	Content     string              `json:"content"`
-	Timestamp   string              `json:"timestamp"`
-	Attachments []DiscordAttachment `json:"attachments"`
-	Embeds      []json.RawMessage   `json:"embeds"`
-	Mentions    []DiscordAuthor     `json:"mentions"`
-	Reactions   []DiscordReaction   `json:"reactions,omitempty"`
-}
-
-// DiscordAuthor represents a Discord user
-type DiscordAuthor struct {
-	ID         string  `json:"id"`
-	Username   string  `json:"username"`
-	GlobalName *string `json:"global_name"`
-	Avatar     *string `json:"avatar"`
-}
-
-// DiscordAttachment represents a message attachment
-type DiscordAttachment struct {
-	ID          string `json:"id"`
-	URL         string `json:"url"`
-	ProxyURL    string `json:"proxy_url"`
-	ContentType string `json:"content_type,omitempty"`
-}
-
-// DiscordReaction represents a message reaction
-type DiscordReaction struct {
-	Emoji DiscordEmoji `json:"emoji"`
-	Count int          `json:"count"`
-	Me    bool         `json:"me"`
-}
-
-// DiscordEmoji represents a Discord emoji
-type DiscordEmoji struct {
-	ID   *string `json:"id"`
-	Name string  `json:"name"`
-}
-
-// MessagesCacheFile is the structure saved to disk
-type MessagesCacheFile struct {
-	Messages  []DiscordMessage `json:"messages"`
-	CachedAt  string           `json:"cachedAt"`
-	ChannelID string           `json:"channelId"`
-}
+type DiscordMessage = discordsource.Message
+type DiscordAuthor = discordsource.Author
+type DiscordAttachment = discordsource.Attachment
+type DiscordReaction = discordsource.Reaction
+type DiscordEmoji = discordsource.Emoji
+type MessagesCacheFile = discordsource.CacheFile
 
 func MessagesSync(args []string) (int, error) {
 	if HasFlag(args, "--help", "-h", "help") {
@@ -179,9 +139,9 @@ func MessagesSync(args []string) (int, error) {
 			}
 			year, month := parts[0], parts[1]
 
-			// Save to data/YYYY/MM/channels/discord/{channelId}/messages.json
+			// Save to data/YYYY/MM/sources/discord/{channelId}/messages.json
 			dataDir := DataDir()
-			relPath := filepath.Join("messages", "discord", channelID, "messages.json")
+			relPath := discordsource.ChannelRelPath(channelID)
 
 			cache := MessagesCacheFile{
 				Messages:  monthMsgs,
@@ -207,7 +167,7 @@ func MessagesSync(args []string) (int, error) {
 		// This ensures latest/ has every message the API returned for this channel.
 		if len(messages) > 0 {
 			dataDir := DataDir()
-			relPath := filepath.Join("messages", "discord", channelID, "messages.json")
+			relPath := discordsource.ChannelRelPath(channelID)
 			cache := MessagesCacheFile{
 				Messages:  messages,
 				CachedAt:  time.Now().UTC().Format(time.RFC3339),
@@ -410,8 +370,8 @@ func printMessagesSyncHelp() {
 
 %sBEHAVIOR%s
   Messages are fetched from newest to oldest (Discord API pagination).
-  Each page returns 100 messages. Data is saved per month to:
-    DATA_DIR/YYYY/MM/channels/discord/{channelId}/messages.json
+  Each page returns 100 messages. Source data is saved per month to:
+    DATA_DIR/YYYY/MM/sources/discord/{channelId}/messages.json
 
   %s--history%s: paginates backwards until hitting a month with cached
   data, then stops. Saves everything from that point forward.
@@ -488,7 +448,7 @@ func findOldestCachedMonthForChannel(channelID string) string {
 			}
 			month := md.Name()
 
-			msgPath := filepath.Join(dataDir, year, month, "messages", "discord", channelID, "messages.json")
+			msgPath := discordsource.ChannelPath(dataDir, year, month, channelID)
 			if _, err := os.Stat(msgPath); err == nil {
 				ym := year + "-" + month
 				if oldest == "" || ym < oldest {

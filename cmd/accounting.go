@@ -5,7 +5,7 @@ import (
 )
 
 // AccountingSettings holds the accounting configuration from settings.json.
-// Rules have moved to APP_DATA_DIR/rules.json — the Rules field is kept for migration only.
+// Rules have moved to APP_DATA_DIR/settings/rules.json — the Rules field is kept for migration only.
 type AccountingSettings struct {
 	Categories        []CategoryDef         `json:"categories"`
 	DefaultCollective string                `json:"defaultCollective,omitempty"` // e.g. "commonshub"

@@ -248,8 +248,21 @@ func transactionTagValueEqual(key, a, b string) bool {
 }
 
 func syncTransactionTags(tx *TransactionEntry) {
+	// Drop any stale spread tags from the existing list — the canonical source
+	// is tx.Spread, which we re-emit below.
 	var tags [][]string
-	tags = append(tags, tx.Tags...)
+	for _, t := range tx.Tags {
+		if len(t) > 0 && t[0] == "spread" {
+			continue
+		}
+		tags = append(tags, t)
+	}
+	for _, s := range tx.Spread {
+		if s.Month == "" {
+			continue
+		}
+		tags = append(tags, []string{"spread", s.Month, s.Amount})
+	}
 
 	if tx.Category != "" {
 		addTransactionTag(&tags, "category", tx.Category)

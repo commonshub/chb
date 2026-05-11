@@ -3,10 +3,11 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	stripesource "github.com/CommonsHub/chb/sources/stripe"
 )
 
 // stripe_odoo_sync implements the chronological BT-iteration sync model.
@@ -35,6 +36,7 @@ func syncStripeChronological(
 	uid int,
 	dryRun bool,
 	force bool,
+	skipReconciliation bool,
 	payoutFilter string,
 	untilDate time.Time,
 ) (string, error) {
@@ -42,13 +44,8 @@ func syncStripeChronological(
 		return "", fmt.Errorf("--payout is not supported in the chronological sync model; use --force to reset and resync everything")
 	}
 
-	stripeKey := os.Getenv("STRIPE_SECRET_KEY")
-	if stripeKey == "" {
-		return "", fmt.Errorf("STRIPE_SECRET_KEY not set")
-	}
-
 	if force && !dryRun {
-		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID, acc.OdooJournalName); err != nil {
+		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID); err != nil {
 			return "", err
 		}
 	}
@@ -65,12 +62,12 @@ func syncStripeChronological(
 		odooLog("  %sNo prior sync — starting from account history%s\n", Fmt.Dim, Fmt.Reset)
 	}
 
-	odooLog("  %sFetching Stripe balance transactions...%s\n", Fmt.Dim, Fmt.Reset)
-	bts, err := fetchStripeBTsSince(stripeKey, resumeCursor)
+	odooLog("  %sLoading archived Stripe source transactions...%s\n", Fmt.Dim, Fmt.Reset)
+	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, resumeCursor)
 	if err != nil {
-		return "", fmt.Errorf("fetch balance transactions: %v", err)
+		return "", fmt.Errorf("load Stripe source transactions: %v", err)
 	}
-	odooLog("  %s%d new balance transactions%s\n\n", Fmt.Dim, len(bts), Fmt.Reset)
+	odooLog("  %s%d new Stripe balance transaction(s)%s\n\n", Fmt.Dim, len(bts), Fmt.Reset)
 	if len(bts) == 0 {
 		odooLog("  %s✓ Already in sync%s\n\n", Fmt.Green, Fmt.Reset)
 		return "already in sync", nil
@@ -78,6 +75,10 @@ func syncStripeChronological(
 	if force {
 		odooLog("  %sReset rebuild: importing chronologically, skipping per-line reconciliation, using in-memory balances unless Odoo create mismatches occur.%s\n\n",
 			Fmt.Dim, Fmt.Reset)
+	}
+	if skipReconciliation {
+		odooLog("  %sSkipping reconciliation; run `chb odoo journals %d reconcile` later to match imported lines.%s\n\n",
+			Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
 	}
 
 	// Find (or create) the currently-open statement. runningBalance is
@@ -99,8 +100,6 @@ func syncStripeChronological(
 	feeBTs := 0
 	feeStartDate := ""
 	feeEndDate := ""
-	feeFirstBTID := ""
-	feeLastBTID := ""
 	processedBTs := 0
 	skippedBTs := 0
 	payoutsSeen := 0
@@ -111,8 +110,6 @@ func syncStripeChronological(
 		feeBTs = 0
 		feeStartDate = ""
 		feeEndDate = ""
-		feeFirstBTID = ""
-		feeLastBTID = ""
 	}
 	appendAggregateFeeLine := func(paymentRef, importID, date string) {
 		if feeCents == 0 {
@@ -143,17 +140,17 @@ func syncStripeChronological(
 		batchLen := len(batch)
 		start := time.Now()
 		odooLog("    %screating %d statement line(s) in Odoo (%s)...%s\n", Fmt.Dim, batchLen, reason, Fmt.Reset)
-		createdIDs, _ := batchCreateStatementLinesWithIDs(creds, uid, batch)
+		createdIDs, _ := batchCreateStatementLinesWithProgress(creds, uid, batch, reason)
 		odooLog("    %screated %d/%d line(s) in %s%s\n", Fmt.Dim, len(createdIDs), batchLen, time.Since(start).Round(time.Second), Fmt.Reset)
 		stats.LinesCreated += len(createdIDs)
 		stats.LinesSkipped += batchLen - len(createdIDs)
 		if len(createdIDs) != batchLen {
 			createMismatch = true
 		}
-		if force {
+		if force || skipReconciliation {
 			// Reset rebuilds are dominated by Odoo writes. Per-line reconciliation is
 			// better handled with `chb odoo journals <id> reconcile` after the import.
-			odooLog("    %sreset rebuild: skipping per-line reconciliation%s\n", Fmt.Dim, Fmt.Reset)
+			odooLog("    %sskipping per-line reconciliation%s\n", Fmt.Dim, Fmt.Reset)
 		} else {
 			reconcileStart := time.Now()
 			odooLog("    %sreconciling %d new line(s)...%s\n", Fmt.Dim, len(createdIDs), Fmt.Reset)
@@ -163,14 +160,17 @@ func syncStripeChronological(
 		batch = nil
 	}
 
+	prepareStatus := newStatusLine()
 	for i, bt := range bts {
 		if !untilDate.IsZero() && time.Unix(bt.Created, 0).After(untilDate) {
 			break
 		}
 		processedBTs++
 		if processedBTs == 1 || processedBTs%100 == 0 {
-			odooLog("  %spreparing Stripe BT %d/%d (%s)%s\n",
-				Fmt.Dim, processedBTs, len(bts), time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02"), Fmt.Reset)
+			if !quietOdooContext() {
+				prepareStatus.Update("Preparing Stripe balance transaction %d/%d (%s)",
+					processedBTs, len(bts), time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02"))
+			}
 		}
 		importID := fmt.Sprintf("stripe:%s:%s:0", strings.ToLower(acc.AccountID), strings.ToLower(bt.ID))
 		if existingIDs[importID] {
@@ -207,17 +207,14 @@ func syncStripeChronological(
 				feeStartDate = date
 			}
 			feeEndDate = date
-			if feeFirstBTID == "" {
-				feeFirstBTID = bt.ID
-			}
-			feeLastBTID = bt.ID
 		}
 
 		// Close the open statement on automatic payout.
 		if bt.Type == "payout" && bt.PayoutAutomatic {
 			payoutsSeen++
+			prepareStatus.Clear()
 			name, ref := payoutStatementLabels(bt)
-			odooLog("  %sPayout %d: %s  (%d/%d BTs)%s\n", Fmt.Dim, payoutsSeen, name, i+1, len(bts), Fmt.Reset)
+			odooLog("  %sPayout %d: %s  (%d/%d Stripe balance transactions)%s\n", Fmt.Dim, payoutsSeen, name, i+1, len(bts), Fmt.Reset)
 			feeKey := bt.PayoutID
 			if feeKey == "" {
 				feeKey = bt.ID
@@ -264,18 +261,41 @@ func syncStripeChronological(
 			}
 		}
 	}
+	prepareStatus.Clear()
 
 	if feeCents != 0 {
-		importID := fmt.Sprintf("stripe:%s:open:%s:%s:fees",
-			strings.ToLower(acc.AccountID),
-			strings.ToLower(feeFirstBTID),
-			strings.ToLower(feeLastBTID),
-		)
+		// Stable importID per open statement: the same statement persists
+		// across sync runs until an automatic payout closes it, so we want
+		// a single rolling fee line that we update in place rather than a
+		// new line per run. See openStatementFeeImportID.
+		importID := openStatementFeeImportID(acc.AccountID, openStmtID)
 		date := feeEndDate
 		if date == "" {
 			date = time.Now().In(BrusselsTZ()).Format("2006-01-02")
 		}
-		appendAggregateFeeLine("Stripe fees for open statement", importID, date)
+		paymentRef := "Stripe fees for open statement"
+		addAmount := stripeAggregateFeeLineAmount(feeCents)
+
+		if dryRun {
+			runningBalance += addAmount
+			resetFeeAccumulator()
+		} else if existingID, existingAmount, err := fetchOdooLineByImportID(creds, uid, acc.OdooJournalID, importID); err == nil && existingID > 0 {
+			newAmount := existingAmount + addAmount
+			runningBalance += addAmount
+			if werr := updateStatementLineFields(creds, uid, existingID, map[string]interface{}{
+				"amount":      newAmount,
+				"payment_ref": paymentRef,
+				"date":        date,
+			}); werr != nil {
+				Warnf("  %s⚠ Failed to update open-statement fee line #%d: %v%s", Fmt.Yellow, existingID, werr, Fmt.Reset)
+			} else {
+				odooLog("    %supdated open-statement fee line #%d  %s → %s%s\n",
+					Fmt.Dim, existingID, fmtEURSigned(existingAmount), fmtEURSigned(newAmount), Fmt.Reset)
+			}
+			resetFeeAccumulator()
+		} else {
+			appendAggregateFeeLine(paymentRef, importID, date)
+		}
 	}
 	flush("final open statement")
 
@@ -291,28 +311,32 @@ func syncStripeChronological(
 		}
 		odooLog("  %supdating open statement balance...%s\n", Fmt.Dim, Fmt.Reset)
 		if err := setStatementBalanceEndReal(creds, uid, openStmtID, end); err != nil {
-			fmt.Printf("  %s⚠ Failed to update open statement balance: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to update open statement balance: %v%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 	}
 	if skippedBTs > 0 || processedBTs > 0 {
-		odooLog("  %sprocessed %d Stripe BT(s), skipped %d duplicate(s), closed %d statement(s)%s\n",
+		odooLog("  %sprocessed %d Stripe balance transaction(s), skipped %d duplicate(s), closed %d statement(s)%s\n",
 			Fmt.Dim, processedBTs, skippedBTs, stats.Statements, Fmt.Reset)
 	}
 
-	stats.PayoutsTotal = 0 // recomputed from lines already
 	if !quietOdooContext() {
 		stats.print()
 	}
 	warnInvalidStatements(creds, uid, acc.OdooJournalID)
-	summary := fmt.Sprintf("%d new transactions uploaded", stats.LinesCreated)
-	if stats.Statements > 0 {
-		summary = fmt.Sprintf("%d new transactions uploaded, %d statements closed", stats.LinesCreated, stats.Statements)
+	var summary string
+	switch {
+	case stats.LinesCreated == 0 && stats.Statements == 0:
+		summary = "already in sync"
+	case stats.Statements > 0:
+		summary = fmt.Sprintf("%d new, %d statements closed", stats.LinesCreated, stats.Statements)
+	default:
+		summary = fmt.Sprintf("%d new", stats.LinesCreated)
 	}
 	return summary, nil
 }
 
 // btPaymentRef returns a short human-readable description for a BT line.
-func btPaymentRef(bt StripeTransaction) string {
+func btPaymentRef(bt stripesource.Transaction) string {
 	switch bt.Type {
 	case "charge", "payment":
 		if bt.CustomerName != "" {
@@ -351,7 +375,7 @@ func btPaymentRef(bt StripeTransaction) string {
 
 // payoutStatementLabels returns (name, reference) for the closed statement
 // representing this automatic payout.
-func payoutStatementLabels(bt StripeTransaction) (string, string) {
+func payoutStatementLabels(bt stripesource.Transaction) (string, string) {
 	arrival := time.Unix(bt.PayoutArrivalDate, 0).In(BrusselsTZ()).Format("2006-01-02")
 	amount := float64(-bt.Net) / 100.0 // payout BT net is negative
 	currency := strings.ToUpper(bt.Currency)
@@ -368,7 +392,7 @@ func payoutStatementLabels(bt StripeTransaction) (string, string) {
 // line. Customer-facing transactions use the gross amount paid/refunded; Stripe
 // fees are represented by separate rows, so folding the fee into each charge
 // would understate customer revenue and double count fees in the journal view.
-func stripeStatementLineAmount(bt StripeTransaction) float64 {
+func stripeStatementLineAmount(bt stripesource.Transaction) float64 {
 	switch bt.Type {
 	case "charge", "payment", "refund", "payment_refund":
 		return centsToEuros(bt.Amount)
@@ -377,7 +401,7 @@ func stripeStatementLineAmount(bt StripeTransaction) float64 {
 	}
 }
 
-func stripeFeeAdjustmentCents(bt StripeTransaction) (int64, bool) {
+func stripeFeeAdjustmentCents(bt stripesource.Transaction) (int64, bool) {
 	if bt.Fee == 0 {
 		return 0, false
 	}
@@ -394,7 +418,7 @@ func stripeAggregateFeeLineAmount(feeCents int64) float64 {
 }
 
 // updateBTStats tallies stats per BT type.
-func updateBTStats(s *syncStats, bt StripeTransaction, amount float64) {
+func updateBTStats(s *syncStats, bt stripesource.Transaction, amount float64) {
 	switch bt.Type {
 	case "charge", "payment":
 		s.Charges++
@@ -404,77 +428,11 @@ func updateBTStats(s *syncStats, bt StripeTransaction, amount float64) {
 		s.Refunds++
 		s.RefundsTotal += centsToEuros(bt.Amount)
 		s.ChargeFees += centsToEuros(bt.Fee)
-	case "payout":
+	case "payout", "payout_cancel":
 		s.PayoutsTotal += amount
 	case "stripe_fee", "adjustment":
 		s.StripeFees += -amount
 	}
-}
-
-// ── Stripe API ──────────────────────────────────────────────────────────────
-
-// fetchStripeBTsSince fetches balance transactions with created > sinceUnix,
-// ordered chronologically ASC. Expands source + source.customer +
-// source.destination so each BT is self-contained.
-func fetchStripeBTsSince(apiKey string, sinceUnix int64) ([]StripeTransaction, error) {
-	base := "https://api.stripe.com/v1/balance_transactions?limit=100" +
-		"&expand[]=data.source" +
-		"&expand[]=data.source.customer" +
-		"&expand[]=data.source.destination"
-	if sinceUnix > 0 {
-		base += fmt.Sprintf("&created[gt]=%d", sinceUnix)
-	}
-
-	var all []StripeTransaction
-	startingAfter := ""
-	for {
-		reqURL := base
-		if startingAfter != "" {
-			reqURL += "&starting_after=" + startingAfter
-		}
-		req, err := http.NewRequest("GET", reqURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode == 429 {
-			resp.Body.Close()
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if resp.StatusCode != 200 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("Stripe API returned %d", resp.StatusCode)
-		}
-		var list StripeListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-			resp.Body.Close()
-			return nil, err
-		}
-		resp.Body.Close()
-
-		for i := range list.Data {
-			enrichStripeTransaction(&list.Data[i])
-		}
-		all = append(all, list.Data...)
-
-		if !list.HasMore || len(list.Data) == 0 {
-			break
-		}
-		startingAfter = list.Data[len(list.Data)-1].ID
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	// Stripe returns newest first; flip to chronological ASC.
-	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
-		all[i], all[j] = all[j], all[i]
-	}
-	return all, nil
 }
 
 // ── Odoo statement helpers ──────────────────────────────────────────────────
@@ -617,6 +575,50 @@ func closeOpenStatement(creds *OdooCredentials, uid int, stmtID int, name, ref s
 	return err
 }
 
+// openStatementFeeImportID returns the stable unique_import_id for the
+// rolling "Stripe fees for open statement" line. Tied to the open statement's
+// Odoo ID so the same line is updated across sync runs (instead of a new
+// duplicate line being created on each run, as happened with the prior
+// BT-range-based key).
+func openStatementFeeImportID(accountID string, openStmtID int) string {
+	return fmt.Sprintf("stripe:%s:open:%d:fees", strings.ToLower(accountID), openStmtID)
+}
+
+// fetchOdooLineByImportID looks up a single statement line by its unique
+// import id. Returns (0, 0, nil) when no line matches.
+func fetchOdooLineByImportID(creds *OdooCredentials, uid int, journalID int, importID string) (int, float64, error) {
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+			[]interface{}{"unique_import_id", "=", importID},
+		}},
+		map[string]interface{}{"fields": []string{"id", "amount"}, "limit": 1})
+	if err != nil {
+		return 0, 0, err
+	}
+	var rows []struct {
+		ID     int     `json:"id"`
+		Amount float64 `json:"amount"`
+	}
+	if err := json.Unmarshal(result, &rows); err != nil {
+		return 0, 0, err
+	}
+	if len(rows) == 0 {
+		return 0, 0, nil
+	}
+	return rows[0].ID, rows[0].Amount, nil
+}
+
+// updateStatementLineFields writes arbitrary fields onto an existing
+// statement line.
+func updateStatementLineFields(creds *OdooCredentials, uid int, lineID int, vals map[string]interface{}) error {
+	_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "write",
+		[]interface{}{[]interface{}{lineID}, vals}, nil)
+	return err
+}
+
 func setStatementBalanceEndReal(creds *OdooCredentials, uid int, stmtID int, value float64) error {
 	_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.bank.statement", "write",
@@ -681,63 +683,29 @@ func AccountStripePending(slug string) error {
 	if acc.Provider != "stripe" {
 		return fmt.Errorf("account '%s' is not a Stripe account", slug)
 	}
-	key := os.Getenv("STRIPE_SECRET_KEY")
-	if key == "" {
-		return fmt.Errorf("STRIPE_SECRET_KEY not set")
+	// Walk archived balance_transactions newest-first to find the last payout,
+	// then collect every BT created after it.
+	fmt.Printf("\n  %sLoading archived Stripe source transactions...%s\n", Fmt.Dim, Fmt.Reset)
+	all, err := stripesource.LoadTransactions(DataDir(), acc.AccountID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no Stripe source data found; run `chb transactions sync --source stripe --reset` first")
+		}
+		return err
 	}
-
-	// Walk balance_transactions newest-first to find the last payout, then
-	// collect every BT created after it.
-	fmt.Printf("\n  %sFetching balance transactions from Stripe...%s\n", Fmt.Dim, Fmt.Reset)
-	var lastPayout *StripeTransaction
-	var since []StripeTransaction
-	startingAfter := ""
-	done := false
-	for !done {
-		url := "https://api.stripe.com/v1/balance_transactions?limit=100&expand[]=data.source"
-		if startingAfter != "" {
-			url += "&starting_after=" + startingAfter
-		}
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+key)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode == 429 {
-			resp.Body.Close()
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if resp.StatusCode != 200 {
-			resp.Body.Close()
-			return fmt.Errorf("Stripe API returned %d", resp.StatusCode)
-		}
-		var list StripeListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-			resp.Body.Close()
-			return err
-		}
-		resp.Body.Close()
-
-		for i := range list.Data {
-			bt := &list.Data[i]
-			enrichStripeTransaction(bt)
-			if bt.Type == "payout" {
-				lastPayout = bt
-				done = true
-				break
+	var lastPayout *stripesource.Transaction
+	var since []stripesource.Transaction
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Type == "payout" {
+			lastPayout = &all[i]
+			if i+1 < len(all) {
+				since = append(since, all[i+1:]...)
 			}
-			since = append(since, *bt)
-		}
-		if done || !list.HasMore || len(list.Data) == 0 {
 			break
 		}
-		startingAfter = list.Data[len(list.Data)-1].ID
-		time.Sleep(200 * time.Millisecond)
+	}
+	if lastPayout == nil {
+		since = all
 	}
 
 	// Accumulate buckets. In Stripe semantics:

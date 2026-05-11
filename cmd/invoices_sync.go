@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/sources/odoo"
 )
 
 const odooDocumentsSchemaVersion = 4
@@ -268,7 +269,7 @@ func InvoicesSync(args []string) (int, error) {
 		if quietOdooContext() {
 			odooSyncLine("invoices", fmt.Sprintf("skipped (%v)", err))
 		} else {
-			fmt.Printf("%s⚠ %v, skipping invoices sync%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("%s⚠ %v, skipping invoices sync%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 		return 0, nil
 	}
@@ -278,7 +279,7 @@ func InvoicesSync(args []string) (int, error) {
 	now := time.Now().In(BrusselsTZ())
 
 	var startMonth, endMonth string
-	sinceMonth, isSince := ResolveSinceMonth(args, filepath.Join("finance", "odoo", "invoices.json"))
+	sinceMonth, isSince := ResolveSinceMonth(args, odoosource.RelPath(odoosource.InvoicesFile))
 	isFullSync := isSince
 	lastSyncTime := LastSyncTime("invoices")
 
@@ -422,12 +423,12 @@ func InvoicesSync(args []string) (int, error) {
 		}
 
 		data, _ := marshalIndentedNoHTMLEscape(publicOut)
-		if err := writeMonthFile(DataDir(), year, month, filepath.Join("finance", "odoo", "invoices.json"), data); err != nil {
+		if err := writeMonthFile(DataDir(), year, month, odoosource.RelPath(odoosource.InvoicesFile), data); err != nil {
 			fmt.Printf("  %s✗ Failed to write %s public invoices: %v%s\n", Fmt.Red, ym, err, Fmt.Reset)
 			continue
 		}
 		privateData, _ := marshalIndentedNoHTMLEscape(privateOut)
-		if err := writeMonthFile(DataDir(), year, month, filepath.Join("finance", "odoo", "private", "invoices.json"), privateData); err != nil {
+		if err := writeMonthFile(DataDir(), year, month, odoosource.PrivateRelPath(odoosource.InvoicesFile), privateData); err != nil {
 			fmt.Printf("  %s✗ Failed to write %s: %v%s\n", Fmt.Red, ym, err, Fmt.Reset)
 			continue
 		}
@@ -437,11 +438,18 @@ func InvoicesSync(args []string) (int, error) {
 	}
 
 	if quietOdooContext() {
-		status := fmt.Sprintf("%d new invoice(s) downloaded", savedInvoices)
-		if startMonth != endMonth {
-			status = fmt.Sprintf("%s (%s..%s)", status, startMonth, endMonth)
+		totalInvoices := 0
+		for _, monthInvoices := range byMonth {
+			totalInvoices += len(monthInvoices)
 		}
-		odooSyncLine("invoices", status)
+		newCount := len(rawInvoices)
+		var detail string
+		if newCount == 0 {
+			detail = "already in sync"
+		} else {
+			detail = fmt.Sprintf("%d new", newCount)
+		}
+		odooSyncLine("invoices", fmt.Sprintf("%d invoices (%s)", totalInvoices, detail))
 	} else {
 		fmt.Printf("\n%s✓ Done!%s %d invoice(s) synced\n\n", Fmt.Green, Fmt.Reset, savedInvoices)
 	}
@@ -500,6 +508,13 @@ func fetchOutgoingInvoicesFromOdoo(creds *OdooCredentials, uid int, startDate, e
 }
 
 func odooSearchReadAllMaps(creds *OdooCredentials, uid int, model string, domain []interface{}, fields []string, order string) ([]map[string]interface{}, error) {
+	return odooSearchReadAllMapsLabeled(creds, uid, model, domain, fields, order, "")
+}
+
+// odooSearchReadAllMapsLabeled is like odooSearchReadAllMaps but lets the
+// caller specify a human-readable label for the progress indicator, e.g.
+// "transactions from journal #48". When empty, the Odoo model name is used.
+func odooSearchReadAllMapsLabeled(creds *OdooCredentials, uid int, model string, domain []interface{}, fields []string, order string, progressLabel string) ([]map[string]interface{}, error) {
 	fields, err := odooFilterReadableFields(creds, uid, model, fields)
 	if err != nil {
 		return nil, err
@@ -508,6 +523,8 @@ func odooSearchReadAllMaps(creds *OdooCredentials, uid int, model string, domain
 	const pageSize = 200
 	var all []map[string]interface{}
 	offset := 0
+	status := newStatusLine()
+	defer status.Clear()
 	for {
 		result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			model, "search_read",
@@ -534,7 +551,11 @@ func odooSearchReadAllMaps(creds *OdooCredentials, uid int, model string, domain
 			break
 		}
 		offset += pageSize
-		fmt.Printf("    %s%s: %d fetched%s\n", Fmt.Dim, model, len(all), Fmt.Reset)
+		label := progressLabel
+		if label == "" {
+			label = model
+		}
+		status.Update("Fetching %s... %d so far", label, len(all))
 	}
 	return all, nil
 }
@@ -734,16 +755,16 @@ func enrichOutgoingInvoices(creds *OdooCredentials, uid int, rawInvoices []map[s
 		[]string{"id", "provider_code", "provider_reference", "amount", "currency_id", "state", "invoice_ids", "reference", "create_date", "last_state_change", "operation"},
 		"id desc")
 	if err != nil {
-		fmt.Printf("  %s⚠ Could not fetch payment transactions: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch payment transactions: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 
 	attachmentsByInvoiceID, err := fetchOdooDocumentAttachments(creds, uid, invoiceIDs)
 	if err != nil {
-		fmt.Printf("  %s⚠ Could not fetch document attachments: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch document attachments: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 	sentAtByInvoiceID, err := fetchInvoiceSentDates(creds, uid, invoiceIDs)
 	if err != nil {
-		fmt.Printf("  %s⚠ Could not fetch invoice sent dates: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ Could not fetch invoice sent dates: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
 
 	localTxIndex := loadOdooLocalTxIndex()
@@ -1306,8 +1327,8 @@ func loadCachedInvoiceMonths(dataDir, startMonth, endMonth string) map[string]ma
 }
 
 func isInvoiceMonthCacheUnchanged(dataDir, year, month string, nextPublic OdooOutgoingInvoicesFile, nextPrivate OdooOutgoingInvoicesPrivateFile) bool {
-	currentPublicPath := filepath.Join(dataDir, year, month, "finance", "odoo", "invoices.json")
-	currentPrivatePath := filepath.Join(dataDir, year, month, "finance", "odoo", "private", "invoices.json")
+	currentPublicPath := odoosource.Path(dataDir, year, month, odoosource.InvoicesFile)
+	currentPrivatePath := odoosource.PrivatePath(dataDir, year, month, odoosource.InvoicesFile)
 
 	publicData, err := os.ReadFile(currentPublicPath)
 	if err != nil {
@@ -1438,8 +1459,8 @@ func privateInvoiceToInternal(inv *OdooOutgoingInvoicePrivate) *OdooOutgoingInvo
 }
 
 func loadCachedInvoiceMonth(dataDir, year, month string) []OdooOutgoingInvoice {
-	publicPath := filepath.Join(dataDir, year, month, "finance", "odoo", "invoices.json")
-	privatePath := filepath.Join(dataDir, year, month, "finance", "odoo", "private", "invoices.json")
+	publicPath := odoosource.Path(dataDir, year, month, odoosource.InvoicesFile)
+	privatePath := odoosource.PrivatePath(dataDir, year, month, odoosource.InvoicesFile)
 
 	publicByID := map[int]OdooOutgoingInvoice{}
 	privateByID := map[int]OdooOutgoingInvoice{}
@@ -1813,8 +1834,8 @@ func printInvoicesSyncHelp() {
 
 %sDATA%s
   Saves monthly invoice snapshots to:
-    DATA_DIR/YYYY/MM/finance/odoo/invoices.json
-    DATA_DIR/YYYY/MM/finance/odoo/private/invoices.json
+    DATA_DIR/YYYY/MM/sources/odoo/invoices.json
+    DATA_DIR/YYYY/MM/sources/odoo/private/invoices.json
 
   Each invoice includes:
   • public: date, status, payment status, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction

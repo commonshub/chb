@@ -69,7 +69,7 @@ func SetupNostr() error {
 	}
 
 	if len(selectedRelays) == 0 {
-		fmt.Printf("\n%s⚠ No relays selected, using defaults%s\n", Fmt.Yellow, Fmt.Reset)
+		Warnf("%s⚠ No relays selected, using defaults%s", Fmt.Yellow, Fmt.Reset)
 		selectedRelays = defaultRelays
 	}
 
@@ -146,7 +146,7 @@ func SetupNostr() error {
 	// Publish profile
 	fmt.Printf("  Publishing profile to %d relays...\n", len(selectedRelays))
 	if err := PublishNostrProfile(keys); err != nil {
-		fmt.Printf("  %s⚠ %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("  %s⚠ %v%s", Fmt.Yellow, err, Fmt.Reset)
 	} else {
 		fmt.Printf("  %s✓ Profile published%s\n", Fmt.Green, Fmt.Reset)
 	}

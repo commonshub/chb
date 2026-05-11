@@ -1,0 +1,10 @@
+{
+  "google": {
+    "url": "https://calendar.google.com/calendar/ical/c_336112114c844a0d6ed178f0bfcbea8b69253b3f2c83b5ce3ed2c230e1b7a298%40group.calendar.google.com/public/basic.ics",
+    "visibility": "auto"
+  },
+  "luma": {
+    "url": "https://api2.luma.com/ics/get?entity=calendar&id=cal-kWlIiw3HsJFhs25",
+    "visibility": "public"
+  }
+}

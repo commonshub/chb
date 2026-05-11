@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	discordsource "github.com/CommonsHub/chb/sources/discord"
+	icssource "github.com/CommonsHub/chb/sources/ics"
 )
 
 type dirSize struct {
@@ -458,13 +461,13 @@ func Stats(args []string) {
 		ms := &monthMsgStats{}
 
 		// Count messages from discord channel files
-		discordDir := filepath.Join(m.path, "messages", "discord")
+		discordDir := filepath.Join(m.path, "sources", "discord")
 		if channels, err := os.ReadDir(discordDir); err == nil {
 			for _, ch := range channels {
 				if !ch.IsDir() || ch.Name() == "images" {
 					continue
 				}
-				msgPath := filepath.Join(discordDir, ch.Name(), "messages.json")
+				msgPath := filepath.Join(discordDir, ch.Name(), discordsource.MessagesFile)
 				data, err := os.ReadFile(msgPath)
 				if err != nil {
 					continue
@@ -479,7 +482,7 @@ func Stats(args []string) {
 		}
 
 		// Count images and their size
-		imagesDir := filepath.Join(m.path, "messages", "discord", "images")
+		imagesDir := filepath.Join(m.path, discordsource.RelPath("images"))
 		if entries, err := os.ReadDir(imagesDir); err == nil {
 			for _, e := range entries {
 				if e.IsDir() {
@@ -492,7 +495,7 @@ func Stats(args []string) {
 			}
 		}
 		// Also count event cover images
-		eventImagesDir := filepath.Join(m.path, "events", "images")
+		eventImagesDir := filepath.Join(m.path, "generated", "events", "images")
 		if entries, err := os.ReadDir(eventImagesDir); err == nil {
 			for _, e := range entries {
 				if e.IsDir() {
@@ -547,7 +550,7 @@ func Stats(args []string) {
 		bs := &monthBookingStats{}
 
 		// Count bookings from ICS files (one per room)
-		icsDir := filepath.Join(m.path, "calendars", "ics")
+		icsDir := icssource.Path(dataDir, m.year, m.month)
 		if files, err := os.ReadDir(icsDir); err == nil {
 			for _, f := range files {
 				if f.IsDir() || !strings.HasSuffix(f.Name(), ".ics") || f.Name() == "public.ics" {

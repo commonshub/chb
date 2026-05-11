@@ -47,7 +47,7 @@ func categorizeMoves(kind moveKind, args []string) error {
 
 	categories := LoadCategories()
 	if len(categories) == 0 {
-		return fmt.Errorf("no categories configured — add some to APP_DATA_DIR/categories.json first")
+		return fmt.Errorf("no categories configured — add some to APP_DATA_DIR/settings/categories.json first")
 	}
 	catOptions := []huh.Option[string]{huh.NewOption("(skip)", "")}
 	for _, c := range categories {
@@ -69,7 +69,7 @@ func categorizeMoves(kind moveKind, args []string) error {
 
 		moves, err := loadMoves(dataDir, year, month, kind)
 		if err != nil {
-			fmt.Printf("  %s⚠ %s: %v%s\n", Fmt.Yellow, ym, err, Fmt.Reset)
+			Warnf("  %s⚠ %s: %v%s", Fmt.Yellow, ym, err, Fmt.Reset)
 			return nil
 		}
 		if len(moves) == 0 {

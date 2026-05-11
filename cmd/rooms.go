@@ -16,7 +16,7 @@ func Rooms(args []string) {
 
 	rooms, err := LoadRooms()
 	if err != nil || len(rooms) == 0 {
-		fmt.Printf("\n%sNo rooms found. Place rooms.json in APP_DATA_DIR or run from the website repo.%s\n\n", Fmt.Dim, Fmt.Reset)
+		fmt.Printf("\n%sNo rooms found. Place rooms.json in APP_DATA_DIR/settings or run from the website repo.%s\n\n", Fmt.Dim, Fmt.Reset)
 		return
 	}
 
@@ -38,7 +38,7 @@ func Rooms(args []string) {
 	for _, r := range rooms {
 		var eur string
 		if r.PricePerHour > 0 {
-			eur = fmt.Sprintf("€%.0f", r.PricePerHour)
+			eur = fmt.Sprintf("%.0f EUR", r.PricePerHour)
 		} else {
 			eur = fmt.Sprintf("%sfree%s", Fmt.Dim, Fmt.Reset)
 		}
@@ -54,7 +54,7 @@ func Rooms(args []string) {
 		}
 
 		var cal string
-		if r.GoogleCalendarID != nil {
+		if r.Calendar != "" || r.GoogleCalendarID != nil {
 			cal = fmt.Sprintf("%s✓%s", Fmt.Green, Fmt.Reset)
 		} else {
 			cal = fmt.Sprintf("%s—%s", Fmt.Dim, Fmt.Reset)

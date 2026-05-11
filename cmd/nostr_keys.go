@@ -24,6 +24,10 @@ type NostrKeys struct {
 }
 
 func nostrKeysPath() string {
+	return settingsFilePath("nostr.json")
+}
+
+func legacyNostrKeysPath() string {
 	return filepath.Join(AppDataDir(), ".nostr-keys.json")
 }
 
@@ -31,7 +35,10 @@ func nostrKeysPath() string {
 func LoadNostrKeys() *NostrKeys {
 	data, err := os.ReadFile(nostrKeysPath())
 	if err != nil {
-		return nil
+		data, err = os.ReadFile(legacyNostrKeysPath())
+		if err != nil {
+			return nil
+		}
 	}
 	var keys NostrKeys
 	if json.Unmarshal(data, &keys) != nil {
@@ -144,10 +151,19 @@ func PublishNostrProfile(keys *NostrKeys) error {
 // PublishNostrEvent signs and publishes a single event to the configured relays.
 // Returns the list of relays that accepted the event.
 func PublishNostrEvent(keys *NostrKeys, ev *nostr.Event) ([]string, error) {
-	ev.PubKey = keys.PubHex
-	ev.CreatedAt = nostr.Timestamp(time.Now().Unix())
-	ev.Sign(keys.PrivHex)
+	SignNostrEvent(keys, ev)
+	return PublishSignedNostrEvent(keys, ev)
+}
 
+func SignNostrEvent(keys *NostrKeys, ev *nostr.Event) {
+	ev.PubKey = keys.PubHex
+	if ev.CreatedAt == 0 {
+		ev.CreatedAt = nostr.Timestamp(time.Now().Unix())
+	}
+	ev.Sign(keys.PrivHex)
+}
+
+func PublishSignedNostrEvent(keys *NostrKeys, ev *nostr.Event) ([]string, error) {
 	relays := keys.Relays
 	if len(relays) == 0 {
 		relays = nostrRelays

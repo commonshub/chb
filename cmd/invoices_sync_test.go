@@ -77,7 +77,7 @@ func TestLoadCachedInvoiceMonthReadsStatusesFromPublicFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal public file: %v", err)
 	}
-	if err := writeTestFile(DataDir()+"/2026/04/finance/odoo", "invoices.json", data); err != nil {
+	if err := writeTestFile(DataDir()+"/2026/04/sources/odoo", "invoices.json", data); err != nil {
 		t.Fatalf("write invoices.json: %v", err)
 	}
 

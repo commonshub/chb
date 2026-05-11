@@ -281,7 +281,7 @@ func fmtToken(v float64, symbol string) string {
 
 // fmtEUR formats a number as €12,345.67
 func fmtEUR(v float64) string {
-	return "€" + fmtNumber(math.Abs(v))
+	return fmtNumber(math.Abs(v)) + " EUR"
 }
 
 // fmtEURSigned formats with +/- prefix

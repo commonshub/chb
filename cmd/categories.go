@@ -4,37 +4,36 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func categoriesPath() string {
-	return filepath.Join(chbDir(), "categories.json")
+	return settingsFilePath("categories.json")
 }
 
-// LoadCategories reads categories from APP_DATA_DIR/categories.json.
-// On first load, migrates from settings.json if categories.json doesn't exist.
+// LoadCategories reads categories from APP_DATA_DIR/settings/categories.json,
+// falling back to DefaultAccountingSettings when the file is absent or
+// malformed.
 func LoadCategories() []CategoryDef {
 	data, err := os.ReadFile(categoriesPath())
 	if err != nil {
-		if os.IsNotExist(err) {
-			cats := migrateCategoriesFromSettings()
-			if len(cats) > 0 {
-				SaveCategories(cats)
-			}
-			return cats
-		}
 		return DefaultAccountingSettings().Categories
 	}
 	var cats []CategoryDef
 	if json.Unmarshal(data, &cats) != nil {
 		return DefaultAccountingSettings().Categories
 	}
-	return cats
+	return dedupeCategories(cats)
 }
 
-// SaveCategories writes categories to APP_DATA_DIR/categories.json.
+// SaveCategories writes categories to APP_DATA_DIR/settings/categories.json.
 func SaveCategories(cats []CategoryDef) error {
+	cats = dedupeCategories(cats)
 	data, err := json.MarshalIndent(cats, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(categoriesPath()), 0755); err != nil {
 		return err
 	}
 	return os.WriteFile(categoriesPath(), data, 0644)
@@ -45,7 +44,7 @@ func AddCategory(cat CategoryDef) {
 	cats := LoadCategories()
 	// Check if slug already exists
 	for _, c := range cats {
-		if c.Slug == cat.Slug {
+		if categoryKey(c) == categoryKey(cat) {
 			return
 		}
 	}
@@ -53,13 +52,29 @@ func AddCategory(cat CategoryDef) {
 	SaveCategories(cats)
 }
 
-func migrateCategoriesFromSettings() []CategoryDef {
-	settings, err := LoadSettings()
-	if err != nil || settings.Accounting == nil {
-		return DefaultAccountingSettings().Categories
+func dedupeCategories(cats []CategoryDef) []CategoryDef {
+	if len(cats) == 0 {
+		return cats
 	}
-	if len(settings.Accounting.Categories) > 0 {
-		return settings.Accounting.Categories
+	seen := map[string]bool{}
+	out := make([]CategoryDef, 0, len(cats))
+	for _, cat := range cats {
+		key := categoryKey(cat)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, cat)
 	}
-	return DefaultAccountingSettings().Categories
+	return out
 }
+
+func categoryKey(cat CategoryDef) string {
+	slug := strings.ToLower(strings.TrimSpace(cat.Slug))
+	if slug == "" {
+		return ""
+	}
+	direction := strings.ToLower(strings.TrimSpace(cat.Direction))
+	return slug + "\x00" + direction
+}
+

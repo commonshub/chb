@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/sources/odoo"
 )
 
 type attachmentSyncResult struct {
@@ -23,18 +25,18 @@ func AttachmentsSync(args []string) (int, error) {
 
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
-		fmt.Printf("%s⚠ %v, skipping attachments sync%s\n", Fmt.Yellow, err, Fmt.Reset)
+		Warnf("%s⚠ %v, skipping attachments sync%s", Fmt.Yellow, err, Fmt.Reset)
 		return 0, nil
 	}
 
 	dataDir := DataDir()
 	force := HasFlag(args, "--force")
-	startMonth, isHistory := ResolveSinceMonth(args, filepath.Join("finance", "odoo"))
+	startMonth, isHistory := ResolveSinceMonth(args, odoosource.RelPath())
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
-		fmt.Println("⚠️  No data found. Run sync first.")
+		Warnf("%s⚠ No data found. Run sync first.%s", Fmt.Yellow, Fmt.Reset)
 		return 0, nil
 	}
 
@@ -53,11 +55,11 @@ func AttachmentsSync(args []string) (int, error) {
 	for _, scope := range collectAttachmentSyncScopes(dataDir, years, posYear, posMonth, posFound, startMonth, isHistory) {
 		invoiceRes, err := syncInvoiceAttachmentMonth(dataDir, scope.Year, scope.Month, force, creds, uid)
 		if err != nil {
-			fmt.Printf("  %s⚠ %s invoices: %v%s\n", Fmt.Yellow, scope.Label, err, Fmt.Reset)
+			Warnf("  %s⚠ %s invoices: %v%s", Fmt.Yellow, scope.Label, err, Fmt.Reset)
 		}
 		billRes, err := syncBillAttachmentMonth(dataDir, scope.Year, scope.Month, force, creds, uid)
 		if err != nil {
-			fmt.Printf("  %s⚠ %s bills: %v%s\n", Fmt.Yellow, scope.Label, err, Fmt.Reset)
+			Warnf("  %s⚠ %s bills: %v%s", Fmt.Yellow, scope.Label, err, Fmt.Reset)
 		}
 
 		totalDownloaded += invoiceRes.Downloaded + billRes.Downloaded
@@ -129,7 +131,7 @@ func collectAttachmentSyncScopes(dataDir string, years []string, posYear, posMon
 }
 
 func syncInvoiceAttachmentMonth(dataDir, year, month string, force bool, creds *OdooCredentials, uid int) (attachmentSyncResult, error) {
-	path := filepath.Join(dataDir, year, month, "finance", "odoo", "private", "invoices.json")
+	path := odoosource.PrivatePath(dataDir, year, month, odoosource.InvoicesFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return attachmentSyncResult{}, nil
@@ -166,7 +168,7 @@ func syncInvoiceAttachmentMonth(dataDir, year, month string, force bool, creds *
 }
 
 func syncBillAttachmentMonth(dataDir, year, month string, force bool, creds *OdooCredentials, uid int) (attachmentSyncResult, error) {
-	path := filepath.Join(dataDir, year, month, "finance", "odoo", "private", "bills.json")
+	path := odoosource.PrivatePath(dataDir, year, month, odoosource.BillsFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return attachmentSyncResult{}, nil
@@ -244,7 +246,7 @@ func syncDocumentAttachments(dataDir, year, month, docKind string, docs []*OdooO
 			}
 
 			if err := downloadOdooAttachment(localAbsPath, *att, creds, uid); err != nil {
-				fmt.Printf("  %s⚠ Failed to download attachment %d: %v%s\n", Fmt.Yellow, att.ID, err, Fmt.Reset)
+				Warnf("  %s⚠ Failed to download attachment %d: %v%s", Fmt.Yellow, att.ID, err, Fmt.Reset)
 				continue
 			}
 
@@ -287,7 +289,7 @@ func buildAttachmentLocalPath(year, month, docKind string, docID int, att OdooDo
 	if att.ID > 0 {
 		base = fmt.Sprintf("%d", att.ID)
 	}
-	return filepath.ToSlash(filepath.Join(year, month, "finance", "odoo", "private", "attachments", docKind, fmt.Sprintf("%d", docID), base+ext))
+	return filepath.ToSlash(filepath.Join(year, month, odoosource.PrivateRelPath("attachments", docKind, fmt.Sprintf("%d", docID), base+ext)))
 }
 
 func mimeDefaultExt(mimeType string) string {
@@ -319,14 +321,14 @@ func printAttachmentsSyncHelp() {
 
 %sDESCRIPTION%s
   By default, processes the current month and previous month.
-  With %s--history%s, processes all historical months with Odoo finance data.
+  With %s--history%s, processes all historical months with Odoo source data.
 
   Reads:
-    data/YYYY/MM/finance/odoo/private/invoices.json
-    data/YYYY/MM/finance/odoo/private/bills.json
+    data/YYYY/MM/sources/odoo/private/invoices.json
+    data/YYYY/MM/sources/odoo/private/bills.json
 
   Downloads listed attachment binaries or URL attachments and stores them under:
-    data/YYYY/MM/finance/odoo/private/attachments/{invoices|bills}/{documentId}/{attachmentId}.{ext}
+    data/YYYY/MM/sources/odoo/private/attachments/{invoices|bills}/{documentId}/{attachmentId}.{ext}
 
   Existing files are skipped unless --force is used.
 

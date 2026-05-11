@@ -129,3 +129,10 @@ func writeMonthFile(dataDir, year, month, relPath string, data []byte) error {
 
 	return nil
 }
+
+func displayMonthRelPath(year, month, relPath string) string {
+	if year == "latest" || month == "" {
+		return filepath.ToSlash(filepath.Join(year, relPath))
+	}
+	return filepath.ToSlash(filepath.Join(year, month, relPath))
+}

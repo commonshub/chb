@@ -120,7 +120,15 @@ func reconcileCreatedStatementLine(creds *OdooCredentials, uid int, lineID int, 
 }
 
 func reconcileCreatedStatementLines(creds *OdooCredentials, uid int, lineIDs []int, dryRun bool, stats *syncStats) {
-	for _, lineID := range lineIDs {
+	status := newStatusLine()
+	if !quietOdooContext() && len(lineIDs) > 1 {
+		status.Update("Reconciling statement lines 0/%d", len(lineIDs))
+		defer status.Clear()
+	}
+	for i, lineID := range lineIDs {
+		if !quietOdooContext() && len(lineIDs) > 1 {
+			status.Update("Reconciling statement lines %d/%d", i+1, len(lineIDs))
+		}
 		reconcileCreatedStatementLine(creds, uid, lineID, dryRun, stats)
 	}
 }

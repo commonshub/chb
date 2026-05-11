@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/CommonsHub/chb/ical"
+	icssource "github.com/CommonsHub/chb/sources/ics"
 )
 
 type BookingEntry struct {
@@ -34,7 +35,30 @@ func loadAllBookings() ([]BookingEntry, error) {
 	}
 	roomSlugs := map[string]string{} // slug -> name
 	for _, r := range rooms {
-		roomSlugs[r.Slug] = r.Name
+		if r.Calendar != "" {
+			roomSlugs[r.Calendar] = r.Name
+		} else {
+			roomSlugs[r.Slug] = r.Name
+		}
+	}
+	if settings, err := LoadSettings(); err == nil {
+		roomsBySlug := map[string]RoomInfo{}
+		for _, room := range rooms {
+			roomsBySlug[room.Slug] = room
+		}
+		for _, source := range settings.Calendars.Sources {
+			if source.Room == "" {
+				continue
+			}
+			name := source.Name
+			if room, ok := roomsBySlug[source.Room]; ok {
+				name = room.Name
+			}
+			if name == "" {
+				name = source.Slug
+			}
+			roomSlugs[source.Slug] = name
+		}
 	}
 
 	yearDirs, _ := os.ReadDir(dataDir)
@@ -48,7 +72,7 @@ func loadAllBookings() ([]BookingEntry, error) {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			icsDir := filepath.Join(yearPath, md.Name(), "calendars", "ics")
+			icsDir := icssource.Path(dataDir, yd.Name(), md.Name())
 			if _, err := os.Stat(icsDir); os.IsNotExist(err) {
 				continue
 			}
@@ -171,7 +195,7 @@ func BookingsList(args []string) {
 	if len(sliced) == 0 {
 		fmt.Printf("\n%sNo bookings found.%s\n", Fmt.Dim, Fmt.Reset)
 		if _, err := os.Stat(DataDir()); os.IsNotExist(err) {
-			fmt.Printf("%sRun 'chb bookings sync' to fetch room calendars.%s\n", Fmt.Dim, Fmt.Reset)
+			fmt.Printf("%sRun 'chb calendars sync' to fetch room calendars.%s\n", Fmt.Dim, Fmt.Reset)
 		}
 		fmt.Println()
 		return
@@ -215,12 +239,6 @@ func BookingsList(args []string) {
 		fmt.Printf("\n%s… %d more. Use -n or --skip to paginate.%s\n", Fmt.Dim, remaining, Fmt.Reset)
 	}
 	fmt.Println()
-}
-
-// BookingsSync is an alias for CalendarsSync for backwards compatibility.
-func BookingsSync(args []string) error {
-	_, _, err := CalendarsSync(args)
-	return err
 }
 
 func getGoogleCalendarURL(calendarID string) string {

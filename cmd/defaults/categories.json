@@ -1,0 +1,117 @@
+[
+  {
+    "slug": "membership",
+    "label": "Membership",
+    "direction": "income"
+  },
+  {
+    "slug": "donations",
+    "label": "Donations",
+    "direction": "income"
+  },
+  {
+    "slug": "rentals",
+    "label": "Rentals",
+    "direction": "income"
+  },
+  {
+    "slug": "fridge",
+    "label": "Fridge",
+    "direction": "income"
+  },
+  {
+    "slug": "tickets",
+    "label": "Tickets",
+    "direction": "income"
+  },
+  {
+    "slug": "grants",
+    "label": "Grants",
+    "direction": "income"
+  },
+  {
+    "slug": "other-income",
+    "label": "Other Income",
+    "direction": "income"
+  },
+  {
+    "slug": "rent",
+    "label": "Rent",
+    "direction": "expense"
+  },
+  {
+    "slug": "salaries",
+    "label": "Salaries",
+    "direction": "expense"
+  },
+  {
+    "slug": "catering",
+    "label": "Catering",
+    "direction": "expense"
+  },
+  {
+    "slug": "utilities",
+    "label": "Utilities",
+    "direction": "expense"
+  },
+  {
+    "slug": "insurance",
+    "label": "Insurance",
+    "direction": "expense"
+  },
+  {
+    "slug": "supplies",
+    "label": "Supplies",
+    "direction": "expense"
+  },
+  {
+    "slug": "equipment",
+    "label": "Equipment",
+    "direction": "expense"
+  },
+  {
+    "slug": "services",
+    "label": "Services",
+    "direction": "expense"
+  },
+  {
+    "slug": "taxes",
+    "label": "Taxes",
+    "direction": "expense"
+  },
+  {
+    "slug": "events",
+    "label": "Events",
+    "direction": "expense"
+  },
+  {
+    "slug": "other-expense",
+    "label": "Other Expense",
+    "direction": "expense"
+  },
+  {
+    "slug": "catering",
+    "label": "Catering",
+    "direction": "income"
+  },
+  {
+    "slug": "furniture",
+    "label": "Furniture",
+    "direction": "expense"
+  },
+  {
+    "slug": "Coworking",
+    "label": "Coworking",
+    "direction": "income"
+  },
+  {
+    "slug": "accounting",
+    "label": "Accounting",
+    "direction": "expense"
+  },
+  {
+    "slug": "consulting",
+    "label": "Consulting",
+    "direction": "expense"
+  }
+]

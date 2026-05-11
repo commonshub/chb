@@ -10,6 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	discordsource "github.com/CommonsHub/chb/sources/discord"
+	etherscansource "github.com/CommonsHub/chb/sources/etherscan"
+	stripesource "github.com/CommonsHub/chb/sources/stripe"
 )
 
 // MembersFile represents members.json
@@ -32,20 +36,18 @@ func Report(args []string) error {
 	}
 
 	if len(args) == 0 {
-		return fmt.Errorf("usage: chb report <YYYY/MM> or <YYYY>")
+		return fmt.Errorf("usage: chb report <YYYY/MM>, <YYYYMM>, or <YYYY>")
 	}
 
-	period := args[0]
-
-	// Parse period: YYYY/MM or YYYY
-	parts := strings.Split(period, "/")
-	if len(parts) == 2 {
-		return monthlyReport(parts[0], parts[1])
-	} else if len(parts) == 1 && len(parts[0]) == 4 {
-		return yearlyReport(parts[0])
+	year, month, found := ParseYearMonthArg(args)
+	if found {
+		if month != "" {
+			return monthlyReport(year, month)
+		}
+		return yearlyReport(year)
 	}
 
-	return fmt.Errorf("invalid period format: %s (use YYYY/MM or YYYY)", period)
+	return fmt.Errorf("invalid period format: %s (use YYYY/MM, YYYYMM, or YYYY)", args[0])
 }
 
 func monthlyReport(year, month string) error {
@@ -58,6 +60,15 @@ func monthlyReport(year, month string) error {
 	fmt.Printf("\n%s📊 Report for %s %s%s\n\n", Fmt.Bold, monthName, year, Fmt.Reset)
 
 	dataDir := DataDir()
+
+	if report := loadGeneratedMonthlyReport(dataDir, year, month); report != nil {
+		printGeneratedMonthlyReport(*report, dataDir, year, month)
+		fmt.Println()
+		return nil
+	}
+
+	fmt.Printf("%sNo generated/report.json found; using legacy local summary. Run `chb generate %s/%s` to refresh the monthly report.%s\n\n",
+		Fmt.Dim, year, month, Fmt.Reset)
 
 	// ── Events ──
 	events := loadMonthEvents(dataDir, year, month)
@@ -74,6 +85,481 @@ func monthlyReport(year, month string) error {
 
 	fmt.Println()
 	return nil
+}
+
+func loadGeneratedMonthlyReport(dataDir, year, month string) *MonthlyReportFile {
+	path := filepath.Join(dataDir, year, month, "generated", "report.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var report MonthlyReportFile
+	if err := json.Unmarshal(data, &report); err != nil {
+		return nil
+	}
+	return &report
+}
+
+func printGeneratedMonthlyReport(report MonthlyReportFile, dataDir, year, month string) {
+	fmt.Printf("%s👥 Contributors%s  %s%d%s\n", Fmt.Bold, Fmt.Reset, Fmt.Cyan, report.Summary.Contributors, Fmt.Reset)
+
+	settings, _ := LoadSettings()
+	tokenSymbols := tokenSymbolSet(settings, report.Tokens)
+
+	tokens := report.Tokens
+	fmt.Printf("\n%s🪙 Tokens%s\n", Fmt.Bold, Fmt.Reset)
+	if len(tokens) == 0 {
+		fmt.Printf("  %sNo token activity%s\n", Fmt.Dim, Fmt.Reset)
+	} else {
+		for _, token := range tokens {
+			fmt.Printf("  %-8s minted %s  burnt %s  txs %d  supply %s  holders %d  active %d\n",
+				token.Symbol,
+				colorReportAmount(token.Minted, token.Symbol, Fmt.Green),
+				colorReportAmount(token.Burnt, token.Symbol, Fmt.Red),
+				token.Transactions,
+				formatReportAmount(token.TotalSupply, token.Symbol),
+				token.TokenHolders,
+				token.ActiveTokenHolders)
+
+			receivers, spenders := tokenTopFlows(dataDir, year, month, token, settings)
+			printTopFlows("Top receivers", receivers, token.Symbol)
+			printTopFlows("Top spenders", spenders, token.Symbol)
+			if len(receivers) > 0 || len(spenders) > 0 {
+				fmt.Println()
+			}
+		}
+	}
+
+	visibleCurrencies, currencyMembers := filterAndRegroupCurrencies(report.Currencies, tokenSymbols)
+
+	fmt.Printf("\n%s💶 Currencies%s\n", Fmt.Bold, Fmt.Reset)
+	if len(visibleCurrencies) == 0 {
+		fmt.Printf("  %sNo currency activity%s\n", Fmt.Dim, Fmt.Reset)
+	} else {
+		for _, cur := range visibleCurrencies {
+			fmt.Printf("  %-8s total in %s  out %s  net %s\n",
+				cur.Currency,
+				colorReportAmount(cur.In, cur.Currency, Fmt.Green),
+				colorReportAmount(cur.Out, cur.Currency, Fmt.Red),
+				colorNetReportAmount(cur.Net, cur.Currency))
+
+			customers, vendors := currencyTopFlows(dataDir, year, month, currencyMembers[cur.Currency])
+			printTopFlows("Top customers", customers, cur.Currency)
+			printTopFlows("Top vendors", vendors, cur.Currency)
+			if len(customers) > 0 || len(vendors) > 0 {
+				fmt.Println()
+			}
+		}
+	}
+
+	printTaggedFlowSection("🤝 Collectives", report.Collectives)
+	printTaggedFlowSection("🏷  Categories", report.Categories)
+
+	fmt.Printf("\n%s🏦 Accounts%s\n", Fmt.Bold, Fmt.Reset)
+	if len(report.Accounts) > 0 {
+		for _, acct := range report.Accounts {
+			slug, name := monthlyReportAccountSlugAndName(acct)
+			fmt.Printf("  %s%s%s", Fmt.Bold, slug, Fmt.Reset)
+			if name != "" && name != slug {
+				fmt.Printf("  %s%s%s", Fmt.Dim, name, Fmt.Reset)
+			}
+			fmt.Printf("  in %s  out %s  net %s  start %s  end %s\n",
+				colorReportAmount(acct.Amounts.In, acct.Currency, Fmt.Green),
+				colorReportAmount(acct.Amounts.Out, acct.Currency, Fmt.Red),
+				colorNetReportAmount(acct.Amounts.Net, acct.Currency),
+				formatOptionalReportAmount(acct.Balance.Opening, acct.Currency),
+				formatOptionalReportAmount(acct.Balance.Ending, acct.Currency))
+		}
+	} else {
+		fmt.Printf("  %sNo account activity%s\n", Fmt.Dim, Fmt.Reset)
+	}
+}
+
+func monthlyReportAccountSlugAndName(acct MonthlyReportAccount) (string, string) {
+	slug := acct.AccountSlug
+	if slug == "" {
+		slug = acct.Account
+	}
+	if slug == "" && acct.Token != nil {
+		slug = acct.Token.Symbol
+	}
+	if slug == "" {
+		slug = acct.Source
+	}
+	name := acct.AccountName
+	return slug, name
+}
+
+func tokenSymbolSet(settings *Settings, reportTokens []MonthlyReportTokenData) map[string]bool {
+	out := map[string]bool{}
+	if settings != nil {
+		for _, t := range settings.Tokens {
+			sym := strings.ToUpper(strings.TrimSpace(t.Symbol))
+			if sym != "" {
+				out[sym] = true
+			}
+		}
+	}
+	for _, t := range reportTokens {
+		sym := strings.ToUpper(strings.TrimSpace(t.Symbol))
+		if sym != "" {
+			out[sym] = true
+		}
+	}
+	return out
+}
+
+func filterAndRegroupCurrencies(currencies []MonthlyReportCurrency, tokenSymbols map[string]bool) ([]MonthlyReportCurrency, map[string][]string) {
+	members := map[string][]string{}
+	var eurAgg MonthlyReportCurrency
+	eurAgg.Currency = "EUR"
+	var eurMembers []string
+	others := []MonthlyReportCurrency{}
+
+	for _, c := range currencies {
+		upper := strings.ToUpper(strings.TrimSpace(c.Currency))
+		if tokenSymbols[upper] {
+			continue
+		}
+		if isEURCurrency(c.Currency) {
+			eurAgg.Transactions += c.Transactions
+			eurAgg.In = roundReportAmount(eurAgg.In + c.In)
+			eurAgg.Out = roundReportAmount(eurAgg.Out + c.Out)
+			eurAgg.Fees = roundReportAmount(eurAgg.Fees + c.Fees)
+			eurMembers = append(eurMembers, c.Currency)
+			continue
+		}
+		others = append(others, c)
+		members[c.Currency] = []string{c.Currency}
+	}
+
+	out := []MonthlyReportCurrency{}
+	if len(eurMembers) > 0 {
+		eurAgg.Net = roundReportAmount(eurAgg.In - eurAgg.Out - eurAgg.Fees)
+		out = append(out, eurAgg)
+		members["EUR"] = eurMembers
+	}
+	out = append(out, others...)
+	return out, members
+}
+
+type counterpartyAmount struct {
+	Name   string
+	Amount float64
+}
+
+func currencyTopFlows(dataDir, year, month string, currencyMembers []string) (customers, vendors []counterpartyAmount) {
+	if len(currencyMembers) == 0 {
+		return nil, nil
+	}
+	ccySet := map[string]bool{}
+	for _, c := range currencyMembers {
+		ccySet[strings.ToUpper(strings.TrimSpace(c))] = true
+	}
+	txFile := LoadTransactionsWithPII(dataDir, year, month)
+	if txFile == nil {
+		return nil, nil
+	}
+	credits := map[string]float64{}
+	debits := map[string]float64{}
+	for _, tx := range txFile.Transactions {
+		ccy := strings.ToUpper(strings.TrimSpace(tx.Currency))
+		if !ccySet[ccy] {
+			continue
+		}
+		cp := strings.TrimSpace(tx.Counterparty)
+		if cp == "" {
+			continue
+		}
+		amount := math.Abs(firstNonZeroFloat(tx.GrossAmount, tx.Amount, tx.NormalizedAmount, tx.NetAmount))
+		switch strings.ToUpper(tx.Type) {
+		case "CREDIT":
+			credits[cp] = roundReportAmount(credits[cp] + amount)
+		case "DEBIT":
+			debits[cp] = roundReportAmount(debits[cp] + amount)
+		}
+	}
+	return topNCounterparties(credits, 10), topNCounterparties(debits, 10)
+}
+
+type addressBucket struct {
+	amount float64
+	label  string
+}
+
+func tokenTopFlows(dataDir, year, month string, token MonthlyReportTokenData, _ *Settings) (receivers, spenders []counterpartyAmount) {
+	txFile := LoadTransactionsWithPII(dataDir, year, month)
+	if txFile == nil {
+		return nil, nil
+	}
+
+	zeroAddr := "0x0000000000000000000000000000000000000000"
+	receivedBy := map[string]*addressBucket{}
+	sentBy := map[string]*addressBucket{}
+
+	accumulate := func(m map[string]*addressBucket, addr, name string, amount float64) {
+		if addr == "" || strings.EqualFold(addr, zeroAddr) {
+			return
+		}
+		key := strings.ToLower(addr)
+		b := m[key]
+		if b == nil {
+			b = &addressBucket{}
+			m[key] = b
+		}
+		b.amount = roundReportAmount(b.amount + amount)
+		if name != "" {
+			b.label = name
+		}
+	}
+
+	for _, tx := range txFile.Transactions {
+		// Token-wide tracking only — wallet-specific txs are accounted under
+		// their account, not under the token-level top flows.
+		if !strings.EqualFold(tx.Currency, token.Symbol) || strings.TrimSpace(tx.Account) != "" {
+			continue
+		}
+		from, _ := tx.Metadata["from"].(string)
+		to, _ := tx.Metadata["to"].(string)
+		fromName, _ := tx.Metadata["fromName"].(string)
+		toName, _ := tx.Metadata["toName"].(string)
+		amount := math.Abs(firstNonZeroFloat(tx.GrossAmount, tx.Amount, tx.NormalizedAmount, tx.NetAmount))
+		accumulate(receivedBy, to, toName, amount)
+		accumulate(sentBy, from, fromName, amount)
+	}
+	return topNFromBuckets(receivedBy, 10), topNFromBuckets(sentBy, 10)
+}
+
+func topNFromBuckets(m map[string]*addressBucket, n int) []counterpartyAmount {
+	out := make([]counterpartyAmount, 0, len(m))
+	for addr, b := range m {
+		if b.amount <= 0 {
+			continue
+		}
+		display := b.label
+		if display == "" {
+			display = addr
+		}
+		out = append(out, counterpartyAmount{Name: display, Amount: b.amount})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Amount != out[j].Amount {
+			return out[i].Amount > out[j].Amount
+		}
+		return out[i].Name < out[j].Name
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func topNCounterparties(m map[string]float64, n int) []counterpartyAmount {
+	out := make([]counterpartyAmount, 0, len(m))
+	for k, v := range m {
+		if v <= 0 {
+			continue
+		}
+		out = append(out, counterpartyAmount{Name: k, Amount: v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Amount != out[j].Amount {
+			return out[i].Amount > out[j].Amount
+		}
+		return out[i].Name < out[j].Name
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func printTaggedFlowSection(header string, flows []MonthlyReportTaggedFlow) {
+	fmt.Printf("\n%s%s%s\n", Fmt.Bold, header, Fmt.Reset)
+	if len(flows) == 0 {
+		fmt.Printf("  %sNone%s\n", Fmt.Dim, Fmt.Reset)
+		return
+	}
+	tagWidth := 12
+	for _, f := range flows {
+		if l := len(f.Tag); l > tagWidth {
+			tagWidth = l
+		}
+	}
+	for _, f := range flows {
+		fmt.Printf("  %-*s  %-4s in %s  out %s  net %s\n",
+			tagWidth, f.Tag, f.Currency,
+			colorReportAmount(f.In, f.Currency, Fmt.Green),
+			colorReportAmount(f.Out, f.Currency, Fmt.Red),
+			colorNetReportAmount(f.Net, f.Currency))
+	}
+}
+
+func printTopFlows(label string, flows []counterpartyAmount, currency string) {
+	if len(flows) == 0 {
+		return
+	}
+	fmt.Printf("    %s%s%s\n", Fmt.Dim, label, Fmt.Reset)
+	for _, f := range flows {
+		fmt.Printf("      %-42s %s\n", displayCounterpartyName(f.Name), formatReportAmount(f.Amount, currency))
+	}
+}
+
+func displayCounterpartyName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if strings.HasPrefix(strings.ToLower(trimmed), "0x") && len(trimmed) == 42 {
+		return truncateAddr(trimmed)
+	}
+	if len(trimmed) > 42 {
+		return trimmed[:39] + "..."
+	}
+	return trimmed
+}
+
+func printMonthlyReportSource(src MonthlyReportSource) {
+	fmt.Printf("  %-10s records: %d", src.Source, src.Records)
+	if src.Attachments > 0 {
+		fmt.Printf("  attachments: %d", src.Attachments)
+	}
+	if len(src.Summary) > 0 {
+		fmt.Printf("  %s", monthlyReportSourceSummary(src.Summary, "byCalendar"))
+	}
+	fmt.Println()
+	if src.Source == "ics" {
+		printMonthlyReportCalendarBreakdown(src.Summary)
+	}
+}
+
+func monthlyReportAccountLabel(acct MonthlyReportAccount) string {
+	parts := []string{}
+	if acct.AccountName != "" {
+		parts = append(parts, acct.AccountName)
+	} else if acct.AccountSlug != "" {
+		parts = append(parts, acct.AccountSlug)
+	} else if acct.Account != "" {
+		parts = append(parts, acct.Account)
+	}
+	if acct.Chain != "" {
+		parts = append(parts, acct.Chain)
+	}
+	if acct.Currency != "" {
+		parts = append(parts, acct.Currency)
+	}
+	if len(parts) == 0 {
+		return acct.Source
+	}
+	return fmt.Sprintf("%s (%s)", strings.Join(parts, " / "), acct.Source)
+}
+
+func monthlyReportCountsLabel(counts MonthlyReportCounts) string {
+	parts := []string{}
+	add := func(label string, n int) {
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", label, n))
+		}
+	}
+	add("credits", counts.Credits)
+	add("debits", counts.Debits)
+	add("internal", counts.Internal)
+	add("mints", counts.Mints)
+	add("burns", counts.Burns)
+	add("transfers", counts.Transfers)
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func monthlyReportSourceSummary(summary map[string]interface{}, skipKeys ...string) string {
+	skip := map[string]bool{}
+	for _, key := range skipKeys {
+		skip[key] = true
+	}
+	keys := make([]string, 0, len(summary))
+	for k := range summary {
+		if skip[k] {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, summary[key]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func printMonthlyReportCalendarBreakdown(summary map[string]interface{}) {
+	raw, ok := summary["byCalendar"]
+	if !ok {
+		return
+	}
+	calendars := map[string]map[string]int{}
+	switch v := raw.(type) {
+	case map[string]map[string]int:
+		calendars = v
+	case map[string]interface{}:
+		for slug, val := range v {
+			counts := map[string]int{}
+			if m, ok := val.(map[string]interface{}); ok {
+				for key, n := range m {
+					switch x := n.(type) {
+					case float64:
+						counts[key] = int(x)
+					case int:
+						counts[key] = x
+					}
+				}
+			}
+			calendars[slug] = counts
+		}
+	default:
+		return
+	}
+	if len(calendars) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(calendars))
+	for slug := range calendars {
+		keys = append(keys, slug)
+	}
+	sort.Strings(keys)
+	for _, slug := range keys {
+		counts := calendars[slug]
+		fmt.Printf("    %-20s events: %d  bookings: %d\n", slug, counts["events"], counts["bookings"])
+	}
+}
+
+func formatOptionalReportAmount(v *float64, currency string) string {
+	if v == nil {
+		return "n/a"
+	}
+	return formatReportAmount(*v, currency)
+}
+
+func colorReportAmount(v float64, currency, color string) string {
+	return color + formatReportAmount(v, currency) + Fmt.Reset
+}
+
+func colorNetReportAmount(v float64, currency string) string {
+	color := Fmt.Green
+	if v < 0 {
+		color = Fmt.Red
+	} else if v == 0 {
+		color = Fmt.Dim
+	}
+	return colorReportAmount(v, currency, color)
+}
+
+func formatReportAmount(v float64, currency string) string {
+	if strings.EqualFold(currency, "EUR") || strings.EqualFold(currency, "EURe") || strings.EqualFold(currency, "EURb") {
+		return fmt.Sprintf("%.2f EUR", v)
+	}
+	if currency == "" {
+		return fmt.Sprintf("%.2f", v)
+	}
+	return fmt.Sprintf("%.8g %s", v, currency)
 }
 
 func yearlyReport(year string) error {
@@ -309,7 +795,7 @@ func printDiscordSummary(dataDir, year, month string) {
 }
 
 func countDiscordMessages(dataDir, year, month string) (int, map[string]int) {
-	discordDir := filepath.Join(dataDir, year, month, "messages", "discord")
+	discordDir := discordsource.Path(dataDir, year, month)
 	channelCounts := make(map[string]int)
 
 	if !fileExists(discordDir) {
@@ -327,7 +813,7 @@ func countDiscordMessages(dataDir, year, month string) (int, map[string]int) {
 			continue
 		}
 		channelID := e.Name()
-		messagesPath := filepath.Join(discordDir, channelID, "messages.json")
+		messagesPath := filepath.Join(discordDir, channelID, discordsource.MessagesFile)
 
 		data, err := os.ReadFile(messagesPath)
 		if err != nil {
@@ -402,8 +888,8 @@ func printTransactionsSummary(dataDir, year, month string) {
 
 	for _, acc := range settings.Finance.Accounts {
 		if acc.Provider == "etherscan" && acc.Token != nil {
-			filePath := filepath.Join(dataDir, year, month, "finance", acc.Chain,
-				fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol))
+			filePath := etherscansource.Path(dataDir, year, month, acc.Chain,
+				etherscansource.FileName(acc.Slug, acc.Token.Symbol))
 
 			data, err := os.ReadFile(filePath)
 			if err != nil {
@@ -444,13 +930,7 @@ func printTransactionsSummary(dataDir, year, month string) {
 		}
 
 		if acc.Provider == "stripe" {
-			accountID := acc.AccountID
-			if accountID == "" {
-				accountID = acc.Slug
-			}
-			filePath := filepath.Join(dataDir, year, month, "finance", "stripe",
-				fmt.Sprintf("%s.json", accountID))
-
+			filePath := stripesource.TransactionCachePath(dataDir, year, month)
 			data, err := os.ReadFile(filePath)
 			if err != nil {
 				continue
@@ -523,8 +1003,8 @@ func calculateMonthTransactions(dataDir, year, month string) (income, expenses f
 
 	for _, acc := range settings.Finance.Accounts {
 		if acc.Provider == "etherscan" && acc.Token != nil {
-			filePath := filepath.Join(dataDir, year, month, "finance", acc.Chain,
-				fmt.Sprintf("%s.%s.json", acc.Slug, acc.Token.Symbol))
+			filePath := etherscansource.Path(dataDir, year, month, acc.Chain,
+				etherscansource.FileName(acc.Slug, acc.Token.Symbol))
 
 			data, err := os.ReadFile(filePath)
 			if err != nil {
@@ -548,13 +1028,7 @@ func calculateMonthTransactions(dataDir, year, month string) (income, expenses f
 		}
 
 		if acc.Provider == "stripe" {
-			accountID := acc.AccountID
-			if accountID == "" {
-				accountID = acc.Slug
-			}
-			filePath := filepath.Join(dataDir, year, month, "finance", "stripe",
-				fmt.Sprintf("%s.json", accountID))
-
+			filePath := stripesource.TransactionCachePath(dataDir, year, month)
 			data, err := os.ReadFile(filePath)
 			if err != nil {
 				continue
@@ -605,7 +1079,7 @@ func formatEuro(v float64) string {
 	if v == 0 {
 		return "—"
 	}
-	return fmt.Sprintf("€%.0f", v)
+	return fmt.Sprintf("%.0f EUR", v)
 }
 
 func printReportHelp() {
@@ -615,14 +1089,17 @@ func printReportHelp() {
 
 %sUSAGE%s
   %schb report%s <YYYY/MM>   Monthly report
+  %schb report%s <YYYYMM>    Monthly report
   %schb report%s <YYYY>      Yearly report
 
 %sEXAMPLES%s
   %s$ chb report 2025/11     # November 2025 report
+  $ chb report 202511      # November 2025 report
   $ chb report 2025         # Full year 2025 report%s
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,

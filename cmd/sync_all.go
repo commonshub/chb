@@ -62,10 +62,10 @@ func SyncAll(args []string) error {
 		errs[source] = err.Error()
 		if jsonMode {
 			// Stdout is silenced; surface the error directly on stderr.
-			fmt.Fprintf(os.Stderr, "⚠ %s: %v\n", source, err)
+			Warnf("⚠ %s: %v", source, err)
 			return
 		}
-		fmt.Printf("%s⚠ %s: %v%s\n", Fmt.Yellow, source, err, Fmt.Reset)
+		Warnf("%s⚠ %s: %v%s", Fmt.Yellow, source, err, Fmt.Reset)
 	}
 
 	fmt.Printf("\n%s━━━ Calendars ━━━%s\n", Fmt.Bold, Fmt.Reset)
@@ -137,16 +137,16 @@ func SyncAll(args []string) error {
 	if jsonMode {
 		os.Stdout = origStdout
 		summary := SyncSummary{
-			ElapsedMS:      elapsed.Milliseconds(),
-			NewBookings:    newBookings,
-			NewEvents:      newEvents,
+			ElapsedMS:       elapsed.Milliseconds(),
+			NewBookings:     newBookings,
+			NewEvents:       newEvents,
 			NewTransactions: newTx,
-			NewInvoices:    newInvoices,
-			NewBills:       newBills,
-			NewAttachments: newAttachments,
-			NewMessages:    newMessages,
-			NewImages:      newImages,
-			Errors:         errs,
+			NewInvoices:     newInvoices,
+			NewBills:        newBills,
+			NewAttachments:  newAttachments,
+			NewMessages:     newMessages,
+			NewImages:       newImages,
+			Errors:          errs,
 		}
 		_ = EmitJSON(summary)
 		return nil

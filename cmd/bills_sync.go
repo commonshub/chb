@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/sources/odoo"
 )
 
 type OdooVendorBillsFile struct {
@@ -43,7 +44,7 @@ func BillsSync(args []string) (int, error) {
 		if quietOdooContext() {
 			odooSyncLine("bills", fmt.Sprintf("skipped (%v)", err))
 		} else {
-			fmt.Printf("%s⚠ %v, skipping bills sync%s\n", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("%s⚠ %v, skipping bills sync%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 		return 0, nil
 	}
@@ -53,7 +54,7 @@ func BillsSync(args []string) (int, error) {
 	now := time.Now().In(BrusselsTZ())
 
 	var startMonth, endMonth string
-	sinceMonth, isSince := ResolveSinceMonth(args, filepath.Join("finance", "odoo", "bills.json"))
+	sinceMonth, isSince := ResolveSinceMonth(args, odoosource.RelPath(odoosource.BillsFile))
 	isFullSync := isSince
 	lastSyncTime := LastSyncTime("bills")
 
@@ -197,12 +198,12 @@ func BillsSync(args []string) (int, error) {
 		}
 
 		data, _ := marshalIndentedNoHTMLEscape(publicOut)
-		if err := writeMonthFile(DataDir(), year, month, filepath.Join("finance", "odoo", "bills.json"), data); err != nil {
+		if err := writeMonthFile(DataDir(), year, month, odoosource.RelPath(odoosource.BillsFile), data); err != nil {
 			fmt.Printf("  %s✗ Failed to write %s public bills: %v%s\n", Fmt.Red, ym, err, Fmt.Reset)
 			continue
 		}
 		privateData, _ := marshalIndentedNoHTMLEscape(privateOut)
-		if err := writeMonthFile(DataDir(), year, month, filepath.Join("finance", "odoo", "private", "bills.json"), privateData); err != nil {
+		if err := writeMonthFile(DataDir(), year, month, odoosource.PrivateRelPath(odoosource.BillsFile), privateData); err != nil {
 			fmt.Printf("  %s✗ Failed to write %s: %v%s\n", Fmt.Red, ym, err, Fmt.Reset)
 			continue
 		}
@@ -212,11 +213,18 @@ func BillsSync(args []string) (int, error) {
 	}
 
 	if quietOdooContext() {
-		status := fmt.Sprintf("%d new bill(s) downloaded", savedBills)
-		if startMonth != endMonth {
-			status = fmt.Sprintf("%s (%s..%s)", status, startMonth, endMonth)
+		totalBills := 0
+		for _, monthBills := range byMonth {
+			totalBills += len(monthBills)
 		}
-		odooSyncLine("bills", status)
+		newCount := len(rawBills)
+		var detail string
+		if newCount == 0 {
+			detail = "already in sync"
+		} else {
+			detail = fmt.Sprintf("%d new", newCount)
+		}
+		odooSyncLine("bills", fmt.Sprintf("%d bills (%s)", totalBills, detail))
 	} else {
 		fmt.Printf("\n%s✓ Done!%s %d bill(s) synced\n\n", Fmt.Green, Fmt.Reset, savedBills)
 	}
@@ -268,8 +276,8 @@ func loadCachedBillMonths(dataDir, startMonth, endMonth string) map[string]map[i
 }
 
 func isBillMonthCacheUnchanged(dataDir, year, month string, nextPublic OdooVendorBillsFile, nextPrivate OdooVendorBillsPrivateFile) bool {
-	publicPath := filepath.Join(dataDir, year, month, "finance", "odoo", "bills.json")
-	privatePath := filepath.Join(dataDir, year, month, "finance", "odoo", "private", "bills.json")
+	publicPath := odoosource.Path(dataDir, year, month, odoosource.BillsFile)
+	privatePath := odoosource.PrivatePath(dataDir, year, month, odoosource.BillsFile)
 
 	publicData, err := os.ReadFile(publicPath)
 	if err != nil {
@@ -297,8 +305,8 @@ func isBillMonthCacheUnchanged(dataDir, year, month string, nextPublic OdooVendo
 }
 
 func loadCachedBillMonth(dataDir, year, month string) []OdooOutgoingInvoice {
-	publicPath := filepath.Join(dataDir, year, month, "finance", "odoo", "bills.json")
-	privatePath := filepath.Join(dataDir, year, month, "finance", "odoo", "private", "bills.json")
+	publicPath := odoosource.Path(dataDir, year, month, odoosource.BillsFile)
+	privatePath := odoosource.PrivatePath(dataDir, year, month, odoosource.BillsFile)
 
 	publicByID := map[int]OdooOutgoingInvoice{}
 	privateByID := map[int]OdooOutgoingInvoice{}
@@ -402,8 +410,8 @@ func printBillsSyncHelp() {
 
 %sDATA%s
   Saves monthly vendor bill snapshots to:
-    DATA_DIR/YYYY/MM/finance/odoo/bills.json
-    DATA_DIR/YYYY/MM/finance/odoo/private/bills.json
+    DATA_DIR/YYYY/MM/sources/odoo/bills.json
+    DATA_DIR/YYYY/MM/sources/odoo/private/bills.json
 
   Each bill includes:
   • public: date, status, payment status, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction

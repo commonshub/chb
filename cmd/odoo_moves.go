@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	odoosource "github.com/CommonsHub/chb/sources/odoo"
 )
 
 // preserveMoveAnnotations carries chb-authored annotations (Collective, Event,
@@ -32,7 +34,7 @@ func preserveMoveAnnotations(fresh, prev OdooOutgoingInvoice) OdooOutgoingInvoic
 type moveKind struct {
 	label          string // human label used in prompts and logs ("invoice", "bill")
 	labelPl        string // plural ("invoices", "bills")
-	relPath        string // per-month public path, e.g. finance/odoo/invoices.json
+	relPath        string // per-month public source path, e.g. sources/odoo/invoices.json
 	privateRelPath string // per-month private path with PII
 	model          string // Odoo model technical name
 	isBill         bool
@@ -42,16 +44,16 @@ var (
 	moveKindInvoice = moveKind{
 		label:          "invoice",
 		labelPl:        "invoices",
-		relPath:        filepath.Join("finance", "odoo", "invoices.json"),
-		privateRelPath: filepath.Join("finance", "odoo", "private", "invoices.json"),
+		relPath:        odoosource.RelPath(odoosource.InvoicesFile),
+		privateRelPath: odoosource.PrivateRelPath(odoosource.InvoicesFile),
 		model:          "account.move",
 		isBill:         false,
 	}
 	moveKindBill = moveKind{
 		label:          "bill",
 		labelPl:        "bills",
-		relPath:        filepath.Join("finance", "odoo", "bills.json"),
-		privateRelPath: filepath.Join("finance", "odoo", "private", "bills.json"),
+		relPath:        odoosource.RelPath(odoosource.BillsFile),
+		privateRelPath: odoosource.PrivateRelPath(odoosource.BillsFile),
 		model:          "account.move",
 		isBill:         true,
 	}

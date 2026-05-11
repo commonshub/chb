@@ -1,0 +1,77 @@
+[
+  {
+    "match": {
+      "description": "*subscription*"
+    },
+    "assign": {
+      "category": "membership"
+    }
+  },
+  {
+    "match": {
+      "description": "*monthly financial contribution*"
+    },
+    "assign": {
+      "category": "membership"
+    }
+  },
+  {
+    "match": {
+      "description": "*member*"
+    },
+    "assign": {
+      "category": "membership"
+    }
+  },
+  {
+    "match": {
+      "account": "fridge"
+    },
+    "assign": {
+      "category": "fridge"
+    }
+  },
+  {
+    "match": {
+      "account": "coffee"
+    },
+    "assign": {
+      "category": "donations"
+    }
+  },
+  {
+    "match": {
+      "description": "*donation*"
+    },
+    "assign": {
+      "category": "donations"
+    }
+  },
+  {
+    "match": {
+      "application": "Luma"
+    },
+    "assign": {
+      "category": "tickets"
+    }
+  },
+  {
+    "match": {
+      "description": "*openletter*",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "donations",
+      "collective": "openletter"
+    }
+  },
+  {
+    "match": {
+      "description": "*Block 26: Celebrating the Belgian Blockchain Ecosystem*"
+    },
+    "assign": {
+      "category": "tickets",
+      "collective": "block26"
+    }
+  }
+]
