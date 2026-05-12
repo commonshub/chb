@@ -13,18 +13,23 @@ type RuleMatch struct {
 	Sender      string `json:"sender,omitempty"`      // glob on counterparty for incoming (IBAN, 0xaddr, name)
 	Recipient   string `json:"recipient,omitempty"`   // glob on counterparty for outgoing (IBAN, 0xaddr, name)
 	Description string `json:"description,omitempty"` // glob on tx description/memo
+	IBAN        string `json:"iban,omitempty"`        // exact match on counterparty IBAN (spaces stripped, case-insensitive)
 	Account     string `json:"account,omitempty"`     // account slug (fridge, coffee, stripe, savings)
 	Provider    string `json:"provider,omitempty"`    // stripe, etherscan, monerium
 	Currency    string `json:"currency,omitempty"`    // EUR, EURe, EURb, CHT
 	Direction   string `json:"direction,omitempty"`   // "in" or "out"
-	Application string `json:"application,omitempty"` // stripe connect app: Luma, Open Collective, etc.
+	Application string `json:"application,omitempty"` // stripe connect app: luma, opencollective, etc.
 }
 
 // RuleAssign defines what a matching rule assigns.
+// Category/Collective/Event are fallback assignments (only set when empty).
+// Type and Description are overrides (always applied when present).
 type RuleAssign struct {
-	Category   string `json:"category"`             // category slug (required)
-	Collective string `json:"collective,omitempty"` // collective slug
-	Event      string `json:"event,omitempty"`      // event UID
+	Category    string `json:"category,omitempty"`    // category slug
+	Collective  string `json:"collective,omitempty"`  // collective slug
+	Event       string `json:"event,omitempty"`       // event UID
+	Type        string `json:"type,omitempty"`        // override tx.Type (CREDIT/DEBIT/MINT/BURN/INTERNAL/TRANSFER)
+	Description string `json:"description,omitempty"` // override metadata.description
 }
 
 // Rule is a categorization rule.
@@ -110,6 +115,13 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		}
 	}
 
+	if m.IBAN != "" {
+		txIBAN := normalizeIBAN(stringMetadata(tx.Metadata, "iban"))
+		if txIBAN == "" || txIBAN != normalizeIBAN(m.IBAN) {
+			return false
+		}
+	}
+
 	if m.Sender != "" {
 		if !tx.IsIncoming() {
 			return false
@@ -131,13 +143,17 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 	}
 
 	if m.Description != "" {
-		target := strings.ToLower(tx.Counterparty)
-		if desc, ok := tx.Metadata["description"]; ok {
-			if s, ok := desc.(string); ok {
-				target = strings.ToLower(s)
-			}
+		// Match against the first non-empty of: metadata.description, memo
+		// (Monerium SEPA reference, etc.), then the raw counterparty. All
+		// comparisons are lower-cased so the rule pattern is case-insensitive.
+		description := stringMetadata(tx.Metadata, "description")
+		if description == "" {
+			description = stringMetadata(tx.Metadata, "memo")
 		}
-		if !globMatch(strings.ToLower(m.Description), target) {
+		if description == "" {
+			description = tx.Counterparty
+		}
+		if !globMatch(strings.ToLower(m.Description), strings.ToLower(description)) {
 			return false
 		}
 	}
@@ -171,6 +187,9 @@ func (r *Rule) RuleSummary() string {
 	}
 	if r.Match.Application != "" {
 		parts = append(parts, fmt.Sprintf("app: %s", r.Match.Application))
+	}
+	if r.Match.IBAN != "" {
+		parts = append(parts, fmt.Sprintf("iban: %s", r.Match.IBAN))
 	}
 	if len(parts) == 0 {
 		return "(no conditions)"

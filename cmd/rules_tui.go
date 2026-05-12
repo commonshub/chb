@@ -356,8 +356,8 @@ func (m *ruleEditorModel) startFieldEdit(field string) {
 	case "application":
 		m.editValue = m.rule.Match.Application
 		formField = huh.NewSelect[string]().Title("Application").Options(
-			huh.NewOption("(any)", ""), huh.NewOption("Luma", "Luma"),
-			huh.NewOption("Open Collective", "Open Collective"),
+			huh.NewOption("(any)", ""), huh.NewOption("Luma", "luma"),
+			huh.NewOption("Open Collective", "opencollective"),
 		).Value(&m.editValue)
 	case "category":
 		m.editValue = m.rule.Assign.Category

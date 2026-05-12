@@ -2074,13 +2074,6 @@ func (m txBrowserModel) renderDetailBox() string {
 		}
 	}
 	for k, v := range tx.Metadata {
-		if strings.HasPrefix(k, "stripe_") {
-			if s, ok := v.(string); ok && s != "" {
-				add(strings.TrimPrefix(k, "stripe_"), s)
-			}
-		}
-	}
-	for k, v := range tx.Metadata {
 		if strings.HasPrefix(k, "custom_") {
 			if s, ok := v.(string); ok && s != "" {
 				add(strings.TrimPrefix(k, "custom_"), s)

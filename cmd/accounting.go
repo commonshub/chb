@@ -47,10 +47,10 @@ func DefaultAccountingSettings() *AccountingSettings {
 		Categories: []CategoryDef{
 			// Income
 			{Slug: "membership", Label: "Membership", Direction: "income"},
-			{Slug: "donations", Label: "Donations", Direction: "income"},
+			{Slug: "donation", Label: "Donation", Direction: "income"},
 			{Slug: "rentals", Label: "Rentals", Direction: "income"},
 			{Slug: "fridge", Label: "Fridge", Direction: "income"},
-			{Slug: "tickets", Label: "Tickets", Direction: "income"},
+			{Slug: "ticket", Label: "Ticket", Direction: "income"},
 			{Slug: "grants", Label: "Grants", Direction: "income"},
 			{Slug: "other-income", Label: "Other Income", Direction: "income"},
 			// Expenses
@@ -109,6 +109,90 @@ func (c *Categorizer) CollectiveFor(tx TransactionEntry) string {
 		}
 	}
 	return ""
+}
+
+// Apply walks the rules and assigns category/collective/event (fallback —
+// only when empty), plus type/description (override — always applied) from
+// every matching rule. Finally stamps metadata.vatAmount on incoming
+// EUR/EURe transactions whose category isn't VAT-exempt.
+func (c *Categorizer) Apply(tx *TransactionEntry) {
+	for _, rule := range c.rules {
+		if !rule.MatchesTransaction(*tx) {
+			continue
+		}
+		if rule.Assign.Category != "" && tx.Category == "" {
+			tx.Category = rule.Assign.Category
+		}
+		if rule.Assign.Collective != "" && tx.Collective == "" {
+			tx.Collective = rule.Assign.Collective
+		}
+		if rule.Assign.Event != "" && tx.Event == "" {
+			tx.Event = rule.Assign.Event
+		}
+		if rule.Assign.Type != "" {
+			tx.Type = rule.Assign.Type
+		}
+		if rule.Assign.Description != "" {
+			if tx.Metadata == nil {
+				tx.Metadata = map[string]interface{}{}
+			}
+			tx.Metadata["description"] = rule.Assign.Description
+		}
+	}
+	stampVAT(tx)
+}
+
+// vatRate is the Belgian standard VAT rate. The gross amount is treated as
+// VAT-inclusive, so vatAmount = gross × rate / (1 + rate).
+const vatRate = 0.21
+
+// vatExemptCategories never get a vatAmount stamped on them: rent doesn't
+// invoke VAT (or VAT is paid separately on the landlord side), donations
+// have no taxable consideration, memberships are exempt.
+var vatExemptCategories = map[string]struct{}{
+	"rent":       {},
+	"donation":   {},
+	"membership": {},
+}
+
+// stampVAT computes metadata.vatAmount for incoming EUR/EURe transactions
+// whose category isn't VAT-exempt. Re-stamps each call so categorization
+// changes are reflected; if a non-VAT category gets assigned later, the
+// stamp is cleared. Only writes when the tx has a positive grossAmount.
+func stampVAT(tx *TransactionEntry) {
+	if tx == nil || !tx.IsIncoming() {
+		clearMetadataKey(tx, "vatAmount")
+		return
+	}
+	if !isEURCurrency(tx.Currency) {
+		clearMetadataKey(tx, "vatAmount")
+		return
+	}
+	if _, exempt := vatExemptCategories[tx.Category]; exempt {
+		clearMetadataKey(tx, "vatAmount")
+		return
+	}
+	gross := tx.GrossAmount
+	if gross <= 0 {
+		clearMetadataKey(tx, "vatAmount")
+		return
+	}
+	vat := roundCents(gross * vatRate / (1 + vatRate))
+	if vat <= 0 {
+		clearMetadataKey(tx, "vatAmount")
+		return
+	}
+	if tx.Metadata == nil {
+		tx.Metadata = map[string]interface{}{}
+	}
+	tx.Metadata["vatAmount"] = vat
+}
+
+func clearMetadataKey(tx *TransactionEntry, key string) {
+	if tx == nil || tx.Metadata == nil {
+		return
+	}
+	delete(tx.Metadata, key)
 }
 
 // CategoryLabel returns the human label for a category slug.

@@ -135,9 +135,9 @@ func normalizeCSVCategory(cat string) string {
 	case "MEMBERSHIP":
 		return "membership"
 	case "TICKET", "TICKET-NOVAT":
-		return "tickets"
+		return "ticket"
 	case "DONATION":
-		return "donations"
+		return "donation"
 	case "COWORKING":
 		return "coworking"
 	case "SERVICE":

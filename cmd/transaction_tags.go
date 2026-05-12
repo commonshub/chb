@@ -213,22 +213,16 @@ func transactionMatchesLegacyTagFields(tx TransactionEntry, query []string) bool
 	}
 	keys := []string{key}
 	if key == "paymentLink" {
-		keys = append(keys, "stripe_payment_link")
+		keys = append(keys, "payment_link")
 	}
 	if key == "eventUrl" {
-		keys = append(keys, "stripe_event_url")
+		keys = append(keys, "event_url")
 	}
 	if key == "eventName" {
-		keys = append(keys, "stripe_event_name")
-	}
-	if key == "application" {
-		keys = append(keys, "stripe_application")
+		keys = append(keys, "event_name")
 	}
 	if key == "event" {
-		keys = append(keys, "eventId", "event_id", "stripe_event_api_id")
-	}
-	if key == "collective" {
-		keys = append(keys, "stripe_collective")
+		keys = append(keys, "eventId", "event_id", "event_api_id")
 	}
 	for _, k := range keys {
 		if s, ok := tx.Metadata[k].(string); ok && transactionTagValueEqual(key, s, value) {
@@ -285,36 +279,30 @@ func syncTransactionTags(tx *TransactionEntry) {
 
 	if tx.Metadata != nil {
 		addTransactionTagFromValue(&tags, "application", tx.Metadata["application"])
-		addTransactionTagFromValue(&tags, "application", tx.Metadata["stripe_application"])
 		addTransactionTagFromValue(&tags, "paymentLink", tx.Metadata["paymentLink"])
-		addTransactionTagFromValue(&tags, "paymentLink", tx.Metadata["stripe_payment_link"])
+		addTransactionTagFromValue(&tags, "paymentLink", tx.Metadata["payment_link"])
 		addTransactionTagFromValue(&tags, "event", tx.Metadata["event"])
 		addTransactionTagFromValue(&tags, "event", tx.Metadata["eventId"])
-		addTransactionTagFromValue(&tags, "event", tx.Metadata["stripe_event_api_id"])
+		addTransactionTagFromValue(&tags, "event", tx.Metadata["event_api_id"])
 		addTransactionTagFromValue(&tags, "eventUrl", tx.Metadata["eventUrl"])
-		addTransactionTagFromValue(&tags, "eventUrl", tx.Metadata["stripe_event_url"])
+		addTransactionTagFromValue(&tags, "eventUrl", tx.Metadata["event_url"])
 		addTransactionTagFromValue(&tags, "eventName", tx.Metadata["eventName"])
-		addTransactionTagFromValue(&tags, "eventName", tx.Metadata["stripe_event_name"])
+		addTransactionTagFromValue(&tags, "eventName", tx.Metadata["event_name"])
 		addTransactionTagFromValue(&tags, "collective", tx.Metadata["collective"])
-		addTransactionTagFromValue(&tags, "collective", tx.Metadata["stripe_collective"])
 		addTransactionTagFromValue(&tags, "category", tx.Metadata["category"])
 		addTransactionTagFromValue(&tags, "t", tx.Metadata["product"])
-		addTransactionTagFromValue(&tags, "t", tx.Metadata["stripe_product"])
 
 		skipMetadataTags := map[string]bool{
 			"accountSlug": true, "application": true, "category": true,
 			"collective": true, "description": true, "email": true,
-			"event": true, "eventId": true,
+			"event": true, "eventId": true, "event_api_id": true,
 			"eventName": true, "eventUrl": true,
-			"memo": true, "paymentLink": true,
-			"product": true, "state": true,
-			"stripe_application": true, "stripe_collective": true,
-			"stripe_event_api_id": true, "stripe_event_name": true, "stripe_event_url": true,
-			"stripe_payment_link": true,
-			"stripe_product":      true,
+			"event_name": true, "event_url": true,
+			"memo": true, "paymentLink": true, "payment_link": true,
+			"product": true, "state": true, "to": true,
 		}
 		for k, v := range tx.Metadata {
-			if skipMetadataTags[k] || strings.HasPrefix(k, "stripe_") || strings.HasPrefix(k, "custom_") {
+			if skipMetadataTags[k] || strings.HasPrefix(k, "custom_") {
 				continue
 			}
 			addTransactionTagFromValue(&tags, k, v)

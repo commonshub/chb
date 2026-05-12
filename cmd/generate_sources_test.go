@@ -369,13 +369,13 @@ END:VCALENDAR`)
 		t.Fatalf("generateMonthlyReportGo() = false")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "report.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "summary.json"))
 	if err != nil {
-		t.Fatalf("read report.json: %v", err)
+		t.Fatalf("read summary.json: %v", err)
 	}
 	var report MonthlyReportFile
 	if err := json.Unmarshal(data, &report); err != nil {
-		t.Fatalf("unmarshal report.json: %v", err)
+		t.Fatalf("unmarshal summary.json: %v", err)
 	}
 	if report.Summary.Contributors != 2 || report.Summary.Images != 1 || report.Summary.Transactions != 3 || report.Summary.Events != 2 || report.Summary.Bookings != 2 {
 		t.Fatalf("unexpected report summary: %#v", report.Summary)
@@ -480,13 +480,13 @@ func TestGenerateMonthlyReportGoSummarizesMintableTokens(t *testing.T) {
 		t.Fatalf("generateMonthlyReportGo() = false")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "report.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "summary.json"))
 	if err != nil {
-		t.Fatalf("read report.json: %v", err)
+		t.Fatalf("read summary.json: %v", err)
 	}
 	var report MonthlyReportFile
 	if err := json.Unmarshal(data, &report); err != nil {
-		t.Fatalf("unmarshal report.json: %v", err)
+		t.Fatalf("unmarshal summary.json: %v", err)
 	}
 	if len(report.Tokens) != 1 {
 		t.Fatalf("tokens = %d, want 1: %#v", len(report.Tokens), report.Tokens)

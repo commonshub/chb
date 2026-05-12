@@ -224,7 +224,7 @@ func TestLumaProcessorInfersEventFromCachedURLTitleAndCollective(t *testing.T) {
 				ID:         "stripe:txn_charge",
 				Provider:   "stripe",
 				Type:       "CREDIT",
-				Category:   "tickets",
+				Category:   "ticket",
 				Collective: "block26",
 				Metadata: map[string]interface{}{
 					"description": "Block 26",
@@ -238,7 +238,7 @@ func TestLumaProcessorInfersEventFromCachedURLTitleAndCollective(t *testing.T) {
 				ID:         "stripe:txn_refund",
 				Provider:   "stripe",
 				Type:       "DEBIT",
-				Category:   "tickets",
+				Category:   "ticket",
 				Collective: "block26",
 				Metadata: map[string]interface{}{
 					"description": "Block 26",
@@ -252,14 +252,14 @@ func TestLumaProcessorInfersEventFromCachedURLTitleAndCollective(t *testing.T) {
 			if err := plugin.ProcessTransaction(ctx, &tx); err != nil {
 				t.Fatal(err)
 			}
-			if tx.Application != "Luma" {
-				t.Fatalf("Application = %q, want Luma", tx.Application)
+			if tx.Application != "luma" {
+				t.Fatalf("Application = %q, want luma", tx.Application)
 			}
 			if tx.Event != "evt-Ga7MtsEoQmF3FDR" {
 				t.Fatalf("Event = %q, want evt-Ga7MtsEoQmF3FDR", tx.Event)
 			}
-			if got := stringMetadata(tx.Metadata, "application"); got != "Luma" {
-				t.Fatalf("metadata.application = %q, want Luma", got)
+			if got := stringMetadata(tx.Metadata, "application"); got != "luma" {
+				t.Fatalf("metadata.application = %q, want luma", got)
 			}
 			if got := stringMetadata(tx.Metadata, "eventId"); got != "evt-Ga7MtsEoQmF3FDR" {
 				t.Fatalf("metadata.eventId = %q", got)
@@ -274,7 +274,7 @@ func TestLumaProcessorInfersEventFromCachedURLTitleAndCollective(t *testing.T) {
 				{"application", "luma"},
 				{"eventId", "evt-Ga7MtsEoQmF3FDR"},
 				{"eventUrl", "https://luma.com/block26"},
-				{"category", "tickets"},
+				{"category", "ticket"},
 				{"collective", "block26"},
 			} {
 				if !transactionHasTag(tx, tag) {
@@ -416,7 +416,7 @@ func TestGenerateTransactionsMergesStripeChargeDataEvenWithCustomerData(t *testi
 		t.Fatalf("transactions len = %d, want 1", len(out.Transactions))
 	}
 	tx := out.Transactions[0]
-	if tx.Application != "Luma" || tx.Event != "evt-Ga7MtsEoQmF3FDR" {
+	if tx.Application != "luma" || tx.Event != "evt-Ga7MtsEoQmF3FDR" {
 		t.Fatalf("missing Luma app/event: %#v", tx)
 	}
 	if tx.NetAmount != 24 || tx.GrossAmount != 25 || tx.Fee != 1 {

@@ -36,7 +36,7 @@
       "account": "coffee"
     },
     "assign": {
-      "category": "donations"
+      "category": "donation"
     }
   },
   {
@@ -44,15 +44,15 @@
       "description": "*donation*"
     },
     "assign": {
-      "category": "donations"
+      "category": "donation"
     }
   },
   {
     "match": {
-      "application": "Luma"
+      "application": "luma"
     },
     "assign": {
-      "category": "tickets"
+      "category": "ticket"
     }
   },
   {
@@ -61,7 +61,7 @@
       "direction": "in"
     },
     "assign": {
-      "category": "donations",
+      "category": "donation",
       "collective": "openletter"
     }
   },
@@ -70,8 +70,64 @@
       "description": "*Block 26: Celebrating the Belgian Blockchain Ecosystem*"
     },
     "assign": {
-      "category": "tickets",
+      "category": "ticket",
       "collective": "block26"
+    }
+  },
+  {
+    "match": {
+      "description": "*rent *"
+    },
+    "assign": {
+      "category": "rent",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "iban": "NL41CITI2032304805",
+      "currency": "EURe",
+      "direction": "in"
+    },
+    "assign": {
+      "type": "INTERNAL",
+      "description": "Stripe Payout"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*Mezze Way*"
+    },
+    "assign": {
+      "category": "catering",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*Foodiz*"
+    },
+    "assign": {
+      "category": "catering",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "recipient": "*Pistolei*"
+    },
+    "assign": {
+      "category": "catering",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "sender": "*BRUSSELS PAY ASBL*"
+    },
+    "assign": {
+      "type": "INTERNAL",
+      "description": "Payout"
     }
   }
 ]

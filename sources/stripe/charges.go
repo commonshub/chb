@@ -38,8 +38,8 @@ type Charge struct {
 }
 
 var KnownApps = map[string]string{
-	"ca_HB0JKrk4R6zGWt4fAD9M6iutRhuBdFqd": "Luma",
-	"ca_68FQ4jN0XMVhxpnk6gAptwvx90S9VYXF": "Open Collective",
+	"ca_HB0JKrk4R6zGWt4fAD9M6iutRhuBdFqd": "luma",
+	"ca_68FQ4jN0XMVhxpnk6gAptwvx90S9VYXF": "opencollective",
 }
 
 func FetchCharges(apiKey, accountID string, chargeIDs []string) (map[string]*Charge, error) {

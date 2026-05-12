@@ -77,7 +77,7 @@ func TestTransactionTableDisplaysAssignmentsFromTags(t *testing.T) {
 
 func TestCategoryOptionsFilterByTransactionDirection(t *testing.T) {
 	cats := []CategoryDef{
-		{Slug: "tickets", Direction: "income"},
+		{Slug: "ticket", Direction: "income"},
 		{Slug: "catering", Direction: "expense"},
 		{Slug: "catering", Direction: "income"},
 		{Slug: "rent", Direction: "expense"},
@@ -89,7 +89,7 @@ func TestCategoryOptionsFilterByTransactionDirection(t *testing.T) {
 	}
 
 	incomeTx := TransactionEntry{Type: "CREDIT", NormalizedAmount: 12, Currency: "EUR"}
-	if got := categoryOptionsForTransaction(incomeTx, cats); !reflect.DeepEqual(got, []string{"catering", "tickets"}) {
+	if got := categoryOptionsForTransaction(incomeTx, cats); !reflect.DeepEqual(got, []string{"catering", "ticket"}) {
 		t.Fatalf("income category options = %#v", got)
 	}
 }

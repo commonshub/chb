@@ -14,6 +14,7 @@ type moneriumProcessor struct {
 
 type moneriumOrderInfo struct {
 	Counterparty string
+	IBAN         string
 	Memo         string
 	State        string
 	Kind         string
@@ -56,6 +57,7 @@ func (p *moneriumProcessor) WarmUp(ctx *ProcessorContext) error {
 		for _, order := range cache.Orders {
 			info := moneriumOrderInfo{
 				Counterparty: moneriumCounterpartyName(order),
+				IBAN:         normalizeIBAN(order.Counterpart.Identifier.IBAN),
 				Memo:         order.Memo,
 				State:        order.State,
 				Kind:         order.Kind,
@@ -85,6 +87,11 @@ func (p *moneriumProcessor) ProcessTransaction(ctx *ProcessorContext, tx *Transa
 	if tx.Metadata == nil {
 		tx.Metadata = map[string]interface{}{}
 	}
+	if info.IBAN != "" {
+		// IBAN is PII; the public/private split moves the "iban" metadata
+		// key into private/enrichment.json so it never reaches the public file.
+		tx.Metadata["iban"] = info.IBAN
+	}
 	if info.Memo != "" {
 		tx.Metadata["memo"] = info.Memo
 		if tx.Metadata["description"] == nil || tx.Metadata["description"] == "" {
@@ -109,6 +116,21 @@ func (p *moneriumProcessor) ProcessEvent(ctx *ProcessorContext, ev *FullEvent) e
 
 func (p *moneriumProcessor) Flush(ctx *ProcessorContext) error {
 	return nil
+}
+
+// normalizeIBAN strips whitespace and upper-cases an IBAN so we store the
+// machine-form (ISO 13616) regardless of how the source formatted it.
+func normalizeIBAN(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.ToUpper(b.String())
 }
 
 func moneriumCounterpartyName(order moneriumsource.Order) string {

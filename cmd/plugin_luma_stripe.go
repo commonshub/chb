@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,8 +141,8 @@ func (p *lumaStripeProcessor) ProcessTransaction(ctx *ProcessorContext, tx *Tran
 	if tx.Metadata == nil {
 		tx.Metadata = map[string]interface{}{}
 	}
-	tx.Application = "Luma"
-	tx.Metadata["application"] = "Luma"
+	tx.Application = "luma"
+	tx.Metadata["application"] = "luma"
 	if eventID != "" {
 		tx.Metadata["eventId"] = eventID
 	}
@@ -221,7 +222,7 @@ func (p *lumaStripeProcessor) inferTransactionEvent(tx TransactionEntry) lumaStr
 		return lumaStripeTransactionEventHint{}
 	}
 
-	if eventURL := firstNonEmptyStr(firstTransactionTagValue(tx, "eventUrl"), stringMetadata(tx.Metadata, "eventUrl"), stringMetadata(tx.Metadata, "stripe_event_url")); eventURL != "" {
+	if eventURL := firstNonEmptyStr(firstTransactionTagValue(tx, "eventUrl"), stringMetadata(tx.Metadata, "eventUrl"), stringMetadata(tx.Metadata, "event_url")); eventURL != "" {
 		alias := normalizeLumaEventURLAlias(eventURL)
 		for _, hint := range p.transactionHints {
 			if alias != "" && alias == normalizeLumaEventURLAlias(hint.URL) {
@@ -230,10 +231,10 @@ func (p *lumaStripeProcessor) inferTransactionEvent(tx TransactionEntry) lumaStr
 		}
 	}
 
-	txCollective := normalizeTransactionTagSlug(firstNonEmptyStr(tx.Collective, stringMetadata(tx.Metadata, "collective"), stringMetadata(tx.Metadata, "stripe_collective")))
+	txCollective := normalizeTransactionTagSlug(firstNonEmptyStr(tx.Collective, stringMetadata(tx.Metadata, "collective")))
 	txText := normalizeLumaMatchText(firstNonEmptyStr(
 		stringMetadata(tx.Metadata, "eventName"),
-		stringMetadata(tx.Metadata, "stripe_event_name"),
+		stringMetadata(tx.Metadata, "event_name"),
 		stringMetadata(tx.Metadata, "description"),
 		tx.Counterparty,
 	))
@@ -259,8 +260,8 @@ func (p *lumaStripeProcessor) applyLumaTransactionMetadata(tx *TransactionEntry,
 	if tx.Metadata == nil {
 		tx.Metadata = map[string]interface{}{}
 	}
-	tx.Application = "Luma"
-	tx.Metadata["application"] = "Luma"
+	tx.Application = "luma"
+	tx.Metadata["application"] = "luma"
 	if hint.LumaEventID != "" {
 		tx.Metadata["eventId"] = hint.LumaEventID
 	}
@@ -376,7 +377,7 @@ func (p *lumaStripeProcessor) transactionLumaEventID(tx TransactionEntry) string
 		return tagValue
 	}
 	if tx.Metadata != nil {
-		for _, key := range []string{"event", "eventId", "event_id", "stripe_event_api_id"} {
+		for _, key := range []string{"event", "eventId", "event_id", "event_api_id"} {
 			if s, ok := tx.Metadata[key].(string); ok && isLumaEventID(s) {
 				return s
 			}
@@ -518,7 +519,7 @@ func looksLikeLumaTicketTransaction(tx TransactionEntry) bool {
 		strings.Contains(description, "automatic taxes") {
 		return false
 	}
-	if strings.EqualFold(tx.Category, "tickets") || transactionHasTag(tx, []string{"category", "tickets"}) {
+	if strings.EqualFold(tx.Category, "ticket") || transactionHasTag(tx, []string{"category", "ticket"}) {
 		return true
 	}
 	if strings.EqualFold(tx.Application, "Luma") || strings.EqualFold(stringMetadata(tx.Metadata, "application"), "Luma") {
@@ -564,4 +565,27 @@ func stringMetadata(metadata map[string]interface{}, key string) string {
 		return strings.TrimSpace(s)
 	}
 	return ""
+}
+
+// floatMetadata reads metadata[key] as a float, accepting either a JSON
+// number or a numeric string. Returns 0 when missing or unparseable.
+func floatMetadata(metadata map[string]interface{}, key string) float64 {
+	if metadata == nil {
+		return 0
+	}
+	switch v := metadata[key].(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
 }

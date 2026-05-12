@@ -141,7 +141,7 @@ func txinfoTokenURL(chain, address string) string {
 // loadLatestReportTokens reads DATA_DIR/latest/generated/report.json and
 // returns its tokens slice, or nil when the file is missing or unreadable.
 func loadLatestReportTokens() []MonthlyReportTokenData {
-	path := filepath.Join(DataDir(), "latest", "generated", "report.json")
+	path := filepath.Join(DataDir(), "latest", "generated", "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil

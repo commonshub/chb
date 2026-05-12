@@ -225,8 +225,12 @@ type TransactionEntry struct {
 	Timestamp        int64                  `json:"timestamp"`
 	Application      string                 `json:"application,omitempty"`
 	StripeCustomerID string                 `json:"stripeCustomerId,omitempty"`
-	Category         string                 `json:"category,omitempty"`
-	Collective       string                 `json:"collective,omitempty"`
+	// Category and Collective live in Metadata in the public JSON
+	// (metadata.category / metadata.collective). They're kept on the struct
+	// for internal access by rules, reports and reconciliation; the custom
+	// UnmarshalJSON below restores them from metadata when loading.
+	Category   string `json:"-"`
+	Collective string `json:"-"`
 	Event            string                 `json:"event,omitempty"`
 	Tags             [][]string             `json:"tags,omitempty"`
 	Metadata         map[string]interface{} `json:"metadata,omitempty"`
@@ -240,6 +244,77 @@ type TransactionEntry struct {
 	Account        string `json:"account,omitempty"`
 	Counterparty   string `json:"counterparty,omitempty"`
 	StripeChargeID string `json:"stripeChargeId,omitempty"`
+}
+
+// MarshalJSON projects Category and Collective into metadata.<key> so the
+// public JSON never carries the root-level keys (avoiding duplication).
+func (tx TransactionEntry) MarshalJSON() ([]byte, error) {
+	type alias TransactionEntry
+	a := alias(tx)
+	if tx.Category != "" || tx.Collective != "" || len(a.Metadata) > 0 {
+		meta := make(map[string]interface{}, len(a.Metadata)+2)
+		for k, v := range a.Metadata {
+			meta[k] = v
+		}
+		if tx.Category != "" {
+			meta["category"] = tx.Category
+		} else {
+			delete(meta, "category")
+		}
+		if tx.Collective != "" {
+			meta["collective"] = tx.Collective
+		} else {
+			delete(meta, "collective")
+		}
+		if len(meta) == 0 {
+			a.Metadata = nil
+		} else {
+			a.Metadata = meta
+		}
+	}
+	return json.Marshal(a)
+}
+
+// UnmarshalJSON populates internal-only convenience fields (Category /
+// Collective) so consumers reading transactions.json keep working without
+// changes. We accept both metadata.<key> (the canonical place) and
+// top-level <key> (for back-compat with older files / test fixtures).
+func (tx *TransactionEntry) UnmarshalJSON(data []byte) error {
+	type alias TransactionEntry
+	aux := struct {
+		Category   string `json:"category"`
+		Collective string `json:"collective"`
+		*alias
+	}{alias: (*alias)(tx)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.Category != "" {
+		tx.Category = aux.Category
+	} else if tx.Category == "" {
+		tx.Category = stringMetadata(tx.Metadata, "category")
+	}
+	if aux.Collective != "" {
+		tx.Collective = aux.Collective
+	} else if tx.Collective == "" {
+		tx.Collective = stringMetadata(tx.Metadata, "collective")
+	}
+	return nil
+}
+
+// syncMetadataString writes value into tx.Metadata[key], or deletes the key
+// when value is empty, so the public output never carries a stale string.
+func syncMetadataString(tx *TransactionEntry, key, value string) {
+	if value != "" {
+		if tx.Metadata == nil {
+			tx.Metadata = map[string]interface{}{}
+		}
+		tx.Metadata[key] = value
+		return
+	}
+	if tx.Metadata != nil {
+		delete(tx.Metadata, key)
+	}
 }
 
 // IsIncoming returns true for credits (CREDIT, MINT).
@@ -263,6 +338,7 @@ type TransactionsFile struct {
 type TransactionPII struct {
 	Name  string `json:"name,omitempty"`
 	Email string `json:"email,omitempty"`
+	IBAN  string `json:"iban,omitempty"`
 }
 
 // TransactionsPIIFile is saved to generated/private/enrichment.json.
@@ -307,6 +383,12 @@ func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
 				}
 				tx.Metadata["email"] = pii.Email
 			}
+			if pii.IBAN != "" {
+				if tx.Metadata == nil {
+					tx.Metadata = map[string]interface{}{}
+				}
+				tx.Metadata["iban"] = pii.IBAN
+			}
 		}
 	}
 
@@ -319,6 +401,7 @@ func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
 // so the URI doesn't need to be repeated inside the value.
 type CounterpartyEntry struct {
 	Name         string            `json:"name,omitempty"`
+	Slug         string            `json:"slug,omitempty"` // populated only for our own tracked accounts
 	About        string            `json:"about,omitempty"`
 	Picture      string            `json:"picture,omitempty"`
 	Tags         map[string]string `json:"tags,omitempty"`
@@ -675,16 +758,37 @@ func Generate(args []string) error {
 	}
 	fmt.Println()
 
-	// 12. Generate monthly reports
-	fmt.Printf("📄 Generating monthly reports...\n")
+	// 11b. Rebuild fiscal-host commissions (10% of each collective's monthly
+	// gross income, paid to the fiscal host). Must run before summaries so
+	// they get folded into the monthly aggregation.
+	fmt.Printf("💼 Rebuilding host commissions...\n")
+	if err := rebuildCommissions(dataDir); err != nil {
+		Warnf("  %s⚠ %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	} else {
+		fmt.Printf("  %sdone%s\n", Fmt.Dim, Fmt.Reset)
+	}
+	fmt.Println()
+
+	// 12. Generate monthly summaries
+	fmt.Printf("📄 Generating monthly summaries...\n")
 	totalReports := 0
 	for _, scope := range scopes {
 		if generateMonthlyReportGo(dataDir, scope.Year, scope.Month, settings) {
-			fmt.Printf("  ✓ %s-%s: generated/report.json\n", scope.Year, scope.Month)
+			fmt.Printf("  ✓ %s-%s: generated/summary.json\n", scope.Year, scope.Month)
 			totalReports++
 		}
 	}
-	fmt.Printf("  %s%d report(s)%s\n\n", Fmt.Dim, totalReports, Fmt.Reset)
+	fmt.Printf("  %s%d summary(s)%s\n\n", Fmt.Dim, totalReports, Fmt.Reset)
+
+	// 13. Rebalance per-collective startBalance/endBalance across months and
+	// write the global rollup latest/generated/summary.json.
+	fmt.Printf("📊 Computing cross-month balances...\n")
+	if n, err := rebuildSummaryRollup(dataDir); err != nil {
+		Warnf("  %s⚠ %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	} else {
+		fmt.Printf("  %s✓%s latest/generated/summary.json (%d collective rows)\n", Fmt.Green, Fmt.Reset, n)
+	}
+	fmt.Println()
 
 	fmt.Printf("\n%s✅ All data generation complete!%s\n\n", Fmt.Green, Fmt.Reset)
 	return nil
@@ -774,11 +878,11 @@ func generateTransactionScopes(dataDir string, scopes []generateScope, startedAt
 		if cpCount > 0 {
 			fmt.Printf("  %s✓%s generated/counterparties.json (%d counterparties)\n", Fmt.Green, Fmt.Reset, cpCount)
 		}
-		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "report.json")))
+		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "summary.json")))
 		reportWritten := generateMonthlyReportGo(dataDir, scope.Year, scope.Month, settings)
 		status.Clear()
 		if reportWritten {
-			fmt.Printf("  %s✓%s generated/report.json\n", Fmt.Green, Fmt.Reset)
+			fmt.Printf("  %s✓%s generated/summary.json\n", Fmt.Green, Fmt.Reset)
 		}
 	}
 	if _, err := os.Stat(latestDir); err == nil {
@@ -2008,8 +2112,12 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 
 				// Determine counterparty: prefer private customer data, then inline, then charge data
 				counterparty := tx.CustomerName
+				// metadata is a summary of the most-common tags. The
+				// `category` key is filled in after the enrichment chain
+				// (rules / Nostr / Odoo) with the final assigned category —
+				// not the Stripe `reporting_category` ("charge", "fee", …),
+				// which isn't a category in our sense.
 				metadata := map[string]interface{}{
-					"category":    tx.ReportingCategory,
 					"description": tx.Description,
 				}
 				if tx.CustomerEmail != "" {
@@ -2387,7 +2495,6 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 
 	// Apply enrichment priority chain: Nostr > CSV > Odoo > Local rules
 	if settings != nil {
-		categorizer := NewCategorizer(settings)
 		for i := range transactions {
 			tx := &transactions[i]
 
@@ -2449,8 +2556,8 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				}
 			}
 			if tx.Collective == "" {
-				// From Open Collective: stripe_to = "https://opencollective.com/openletter"
-				if to, ok := tx.Metadata["stripe_to"]; ok {
+				// From Open Collective: metadata.to = "https://opencollective.com/openletter"
+				if to, ok := tx.Metadata["to"]; ok {
 					if toStr, ok := to.(string); ok && strings.Contains(toStr, "opencollective.com/") {
 						parts := strings.Split(toStr, "opencollective.com/")
 						if len(parts) == 2 {
@@ -2465,8 +2572,8 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 
 			// 1c. Auto-assign event from Stripe/Nostr metadata
 			if tx.Event == "" {
-				// Luma: stripe_event_api_id is the same UID as in events.json
-				if evtID, ok := tx.Metadata["stripe_event_api_id"]; ok {
+				// Luma: event_api_id is the same UID as in events.json
+				if evtID, ok := tx.Metadata["event_api_id"]; ok {
 					if evtStr, ok := evtID.(string); ok && evtStr != "" {
 						tx.Event = evtStr
 					}
@@ -2505,17 +2612,32 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				}
 			}
 
-			// 4. Local rules (lowest priority, only if not set by higher sources)
-			if tx.Category == "" {
-				tx.Category = categorizer.Categorize(*tx)
-			}
-			if tx.Collective == "" {
-				tx.Collective = categorizer.CollectiveFor(*tx)
-			}
+			// Local rules run after processors below so that plugin-enriched
+			// metadata (Monerium memo, Luma event info, …) is available to
+			// the rule matcher.
 		}
 	}
 
 	runTransactionProcessors(dataDir, year, month, transactions)
+
+	// 4. Local rules (lowest priority for category/collective/event,
+	// always-applied for type/description). Runs after processors so memo
+	// and IBAN added by plugins (Monerium) are visible to the matcher.
+	if settings != nil {
+		categorizer := NewCategorizer(settings)
+		for i := range transactions {
+			categorizer.Apply(&transactions[i])
+		}
+	}
+
+	// Category and collective live only in metadata in the public JSON, so
+	// mirror tx.Category / tx.Collective into the metadata map (or drop the
+	// keys when no value was assigned).
+	for i := range transactions {
+		tx := &transactions[i]
+		syncMetadataString(tx, "category", tx.Category)
+		syncMetadataString(tx, "collective", tx.Collective)
+	}
 
 	for i := range transactions {
 		syncTransactionTags(&transactions[i])
@@ -2543,9 +2665,12 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		publicTxs[i].StripeChargeID = ""
 
 		// Extract PII: customer name (for Stripe) and email.
-		var piiName, piiEmail string
+		var piiName, piiEmail, piiIBAN string
 		if email, ok := tx.Metadata["email"].(string); ok && email != "" {
 			piiEmail = email
+		}
+		if iban, ok := tx.Metadata["iban"].(string); ok && iban != "" {
+			piiIBAN = iban
 		}
 
 		// For Stripe/Monerium, counterparty may be a person's name (PII).
@@ -2578,13 +2703,15 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				publicMeta[k] = v
 			}
 			delete(publicMeta, "email") // legacy key, always redundant
+			delete(publicMeta, "iban")  // PII — kept only in private/enrichment.json
 			publicTxs[i].Metadata = publicMeta
 		}
 
-		if piiName != "" || piiEmail != "" {
+		if piiName != "" || piiEmail != "" || piiIBAN != "" {
 			piiFile.Enrichments[tx.ID] = &TransactionPII{
 				Name:  piiName,
 				Email: piiEmail,
+				IBAN:  piiIBAN,
 			}
 		}
 	}
@@ -2655,11 +2782,10 @@ func internalTransferHashesFromChainDir(chainDir string) map[string]bool {
 }
 
 // foldStripeMetadataValue writes a single Stripe metadata pair into the
-// canonical tx metadata map. Semantic keys (`name`/`display_name`/`displayName`
-// → bare `name`, filtered through safeFirstName; `collective` → bare
-// `collective`) are promoted out of the `stripe_*` namespace so frontends can
-// read them uniformly. The filter on `name` guards against a merchant
-// labelling a field "name" and the customer pasting a full name or email.
+// canonical tx metadata map. `name`/`display_name`/`displayName` are filtered
+// through safeFirstName because anything labelled "name" risks carrying full
+// names or emails. Other keys pass through unprefixed; existing keys (our own
+// derived values) take precedence so a merchant can't overwrite them.
 func foldStripeMetadataValue(metadata map[string]interface{}, k, v string) {
 	if v == "" {
 		return
@@ -2673,14 +2799,9 @@ func foldStripeMetadataValue(metadata map[string]interface{}, k, v string) {
 		if _, exists := metadata["name"]; !exists {
 			metadata["name"] = safe
 		}
-	case "collective":
-		if _, exists := metadata["collective"]; !exists {
-			metadata["collective"] = v
-		}
 	default:
-		key := "stripe_" + k
-		if _, exists := metadata[key]; !exists {
-			metadata[key] = v
+		if _, exists := metadata[k]; !exists {
+			metadata[k] = v
 		}
 	}
 }
@@ -2701,6 +2822,32 @@ func safeFirstName(s string) string {
 		return ""
 	}
 	return first
+}
+
+// buildAccountURIIndex returns a NIP-73 URI → FinanceAccount map for our own
+// tracked accounts. Used so counterparties.json can show the account name /
+// slug whenever a tx references one of them (either as accountId, or as the
+// counterpartyId of an inverse-direction tx).
+func buildAccountURIIndex(settings *Settings) map[string]FinanceAccount {
+	out := map[string]FinanceAccount{}
+	if settings == nil {
+		return out
+	}
+	for _, acc := range settings.Finance.Accounts {
+		var uri string
+		switch strings.ToLower(acc.Provider) {
+		case "stripe":
+			uri = BuildStripeAccountURI(acc.AccountID)
+		case "etherscan":
+			if acc.Address != "" {
+				uri = BuildBlockchainAddressURI(acc.ChainID, acc.Chain, acc.Address)
+			}
+		}
+		if uri != "" {
+			out[uri] = acc
+		}
+	}
+	return out
 }
 
 // buildTokenContractIndex returns a (lowercase chain) + (uppercase symbol) →
@@ -2769,6 +2916,7 @@ func generateCounterpartiesGo(dataDir, year, month string) int {
 
 	settings, _ := LoadSettings()
 	chainCaches := map[int]NostrMetadataCache{}
+	accountsByURI := buildAccountURIIndex(settings)
 
 	counterparties := map[string]CounterpartyEntry{}
 	for _, tx := range txFile.Transactions {
@@ -2808,6 +2956,25 @@ func generateCounterpartiesGo(dataDir, year, month string) int {
 		}
 
 		counterparties[id] = entry
+	}
+
+	// Layer in our own tracked accounts. They show up as both accountId and
+	// counterpartyId across transactions (when funds move between us and
+	// someone else), and the settings entry has the canonical name + slug.
+	for _, tx := range txFile.Transactions {
+		for _, uri := range []string{tx.AccountID, tx.CounterpartyID} {
+			if uri == "" {
+				continue
+			}
+			acc, ok := accountsByURI[uri]
+			if !ok {
+				continue
+			}
+			entry := counterparties[uri]
+			entry.Name = acc.Name
+			entry.Slug = acc.Slug
+			counterparties[uri] = entry
+		}
 	}
 
 	if len(counterparties) == 0 {

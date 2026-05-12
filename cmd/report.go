@@ -67,7 +67,7 @@ func monthlyReport(year, month string) error {
 		return nil
 	}
 
-	fmt.Printf("%sNo generated/report.json found; using legacy local summary. Run `chb generate %s/%s` to refresh the monthly report.%s\n\n",
+	fmt.Printf("%sNo generated/summary.json found; using legacy local summary. Run `chb generate %s/%s` to refresh the monthly summary.%s\n\n",
 		Fmt.Dim, year, month, Fmt.Reset)
 
 	// ── Events ──
@@ -88,7 +88,7 @@ func monthlyReport(year, month string) error {
 }
 
 func loadGeneratedMonthlyReport(dataDir, year, month string) *MonthlyReportFile {
-	path := filepath.Join(dataDir, year, month, "generated", "report.json")
+	path := filepath.Join(dataDir, year, month, "generated", "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -374,24 +374,38 @@ func topNCounterparties(m map[string]float64, n int) []counterpartyAmount {
 	return out
 }
 
-func printTaggedFlowSection(header string, flows []MonthlyReportTaggedFlow) {
+func printTaggedFlowSection(header string, entries []TaggedSummary) {
 	fmt.Printf("\n%s%s%s\n", Fmt.Bold, header, Fmt.Reset)
-	if len(flows) == 0 {
+	if len(entries) == 0 {
 		fmt.Printf("  %sNone%s\n", Fmt.Dim, Fmt.Reset)
 		return
 	}
 	tagWidth := 12
-	for _, f := range flows {
-		if l := len(f.Tag); l > tagWidth {
+	for _, e := range entries {
+		if l := len(e.Slug); l > tagWidth {
 			tagWidth = l
 		}
 	}
-	for _, f := range flows {
-		fmt.Printf("  %-*s  %-4s in %s  out %s  net %s\n",
-			tagWidth, f.Tag, f.Currency,
-			colorReportAmount(f.In, f.Currency, Fmt.Green),
-			colorReportAmount(f.Out, f.Currency, Fmt.Red),
-			colorNetReportAmount(f.Net, f.Currency))
+	for _, e := range entries {
+		for i, c := range e.Currencies {
+			slug := ""
+			if i == 0 {
+				slug = e.Slug
+			}
+			extras := ""
+			if c.Fees > 0 {
+				extras += fmt.Sprintf("  fees %s", colorReportAmount(c.Fees, c.Currency, Fmt.Yellow))
+			}
+			if c.VAT > 0 {
+				extras += fmt.Sprintf("  vat %s", colorReportAmount(c.VAT, c.Currency, Fmt.Yellow))
+			}
+			fmt.Printf("  %-*s  %-4s in %s  out %s%s  net %s\n",
+				tagWidth, slug, c.Currency,
+				colorReportAmount(c.In, c.Currency, Fmt.Green),
+				colorReportAmount(c.Out, c.Currency, Fmt.Red),
+				extras,
+				colorNetReportAmount(c.Net, c.Currency))
+		}
 	}
 }
 

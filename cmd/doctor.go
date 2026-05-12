@@ -330,7 +330,7 @@ func checkGeneratedFiles(scope doctorScope, report *doctorReport) {
 	if hasAnyMaterialData(transactionSourceDirs...) {
 		requireFile(scope, filepath.Join(generatedDir, "transactions.json"), "transaction sources present but generated/transactions.json is missing", "Run: chb generate", report)
 		requireFile(scope, filepath.Join(generatedDir, "counterparties.json"), "transaction sources present but generated/counterparties.json is missing", "Run: chb generate", report)
-		requireFile(scope, filepath.Join(generatedDir, "report.json"), "transaction sources present but generated/report.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "summary.json"), "transaction sources present but generated/summary.json is missing", "Run: chb generate", report)
 	}
 	if hasPublicEventSourceData(publicICS) {
 		requireFile(scope, filepath.Join(generatedDir, "events.json"), "calendar/event data present but generated/events.json is missing", "Run: chb calendars sync --history && chb generate events", report)

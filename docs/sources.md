@@ -42,9 +42,12 @@ Current sources:
 - `sources/ics`: Monthly ICS calendar archives for room bookings and configured
   calendars.
 
-Monthly generation writes `generated/report.json` after the other generated
+Monthly generation writes `generated/summary.json` after the other generated
 files. Each source can contribute source-specific record, attachment, and
-summary counts through the monthly report contributor hook in `cmd`.
+summary counts through the monthly report contributor hook in `cmd`. A
+cross-month rollup pass then fills in per-collective `startBalance` /
+`endBalance` and writes the global aggregate to
+`latest/generated/summary.json`.
 
 Derived public calendar exports and event cover image downloads live under
 `generated/` (for example `generated/calendars/public.ics` and

@@ -113,6 +113,21 @@ func TestRebuildInboundSpreadsAndAccrualAggregation(t *testing.T) {
 	}
 }
 
+// findFlow returns the first CurrencyFlow under the named slug. Tests in this
+// file all use a single currency per slug, so picking the first is fine.
+func findFlow(entries []TaggedSummary, slug string) *CurrencyFlow {
+	for i := range entries {
+		if entries[i].Slug != slug {
+			continue
+		}
+		if len(entries[i].Currencies) == 0 {
+			return nil
+		}
+		return &entries[i].Currencies[0]
+	}
+	return nil
+}
+
 func TestRebuildInboundSpreadsClearsOrphans(t *testing.T) {
 	dataDir := t.TempDir()
 	// Pretend a previous rebuild left an orphan.
@@ -126,11 +141,3 @@ func TestRebuildInboundSpreadsClearsOrphans(t *testing.T) {
 	}
 }
 
-func findFlow(rows []MonthlyReportTaggedFlow, tag string) *MonthlyReportTaggedFlow {
-	for i := range rows {
-		if rows[i].Tag == tag {
-			return &rows[i]
-		}
-	}
-	return nil
-}

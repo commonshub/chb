@@ -11,7 +11,7 @@ import (
 func TestReportMonthlyUsesGeneratedReportJSON(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("DATA_DIR", dataDir)
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "report.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "summary.json"), `{
 	  "year": "2026",
 	  "month": "04",
 	  "summary": {"contributors": 3, "images": 5, "transactions": 2, "events": 1, "bookings": 4},
@@ -79,7 +79,7 @@ func TestReportMonthlyUsesGeneratedReportJSON(t *testing.T) {
 func TestReportMonthlyAcceptsYYYYMM(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("DATA_DIR", dataDir)
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "report.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "summary.json"), `{
 	  "year": "2026",
 	  "month": "04",
 	  "summary": {"contributors": 1},

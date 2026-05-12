@@ -3234,7 +3234,7 @@ func buildOdooNarration(acc *AccountConfig, tx TransactionEntry) string {
 	}
 
 	// Selected metadata (non-PII)
-	for _, key := range []string{"application", "stripe_from", "stripe_to", "stripe_orderId", "stripe_event_api_id"} {
+	for _, key := range []string{"application", "from", "to", "orderId", "event_api_id"} {
 		if v, ok := tx.Metadata[key].(string); ok && v != "" {
 			details[key] = v
 		}

@@ -5,8 +5,8 @@
     "direction": "income"
   },
   {
-    "slug": "donations",
-    "label": "Donations",
+    "slug": "donation",
+    "label": "Donation",
     "direction": "income"
   },
   {
@@ -20,8 +20,8 @@
     "direction": "income"
   },
   {
-    "slug": "tickets",
-    "label": "Tickets",
+    "slug": "ticket",
+    "label": "Ticket",
     "direction": "income"
   },
   {
