@@ -108,7 +108,7 @@ func writeDiagnostic(level string, echo bool, format string, args ...interface{}
 		if err != nil {
 			cwd = "."
 		}
-		diagnosticsPath = filepath.Join(cwd, time.Now().Format("20060102-1504")+".log")
+		diagnosticsPath = diagnosticsLogPath(cwd, time.Now())
 		diagnosticsFile, _ = os.OpenFile(diagnosticsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	}
 	if diagnosticsFile == nil {
@@ -117,4 +117,8 @@ func writeDiagnostic(level string, echo bool, format string, args ...interface{}
 
 	clean := ansiPattern.ReplaceAllString(message, "")
 	_, _ = fmt.Fprintf(diagnosticsFile, "%s [%s] %s\n", time.Now().Format(time.RFC3339), strings.ToUpper(level), clean)
+}
+
+func diagnosticsLogPath(dir string, t time.Time) string {
+	return filepath.Join(dir, t.Format("20060102")+".log")
 }
