@@ -314,7 +314,7 @@ func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResul
 		if workerCount < 1 {
 			workerCount = 1
 		}
-		fmt.Printf("  ↳ %s-%s event covers: %d queued across %d domain(s), %d worker(s)\n", year, month, len(tasks), len(domains), workerCount)
+		fmt.Printf("  ↳ %s-%s event covers: %d queued across %s, %s\n", year, month, len(tasks), Pluralize(len(domains), "domain", ""), Pluralize(workerCount, "worker", ""))
 
 		for _, res := range downloadEventCoverTasks(tasks, workerCount) {
 			if res.Err != nil {

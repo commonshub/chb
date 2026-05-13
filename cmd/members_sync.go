@@ -127,7 +127,7 @@ func MembersSync(args []string) error {
 
 	// Determine months
 	months := getMemberMonths(args)
-	fmt.Printf("📆 %d month(s) to process\n", len(months))
+	fmt.Printf("📆 %s to process\n", Pluralize(len(months), "month", ""))
 
 	// Read settings
 	settings, err := LoadSettings()

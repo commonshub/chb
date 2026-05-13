@@ -298,13 +298,13 @@ func PrintStatementIssues(issues []StatementBalanceIssue) {
 	if len(issues) == 0 {
 		return
 	}
-	Warnf("  %s⚠ %d invalid statement(s):%s", Fmt.Yellow, len(issues), Fmt.Reset)
+	Warnf("  %s⚠ %s:%s", Fmt.Yellow, Pluralize(len(issues), "invalid statement", ""), Fmt.Reset)
 	for _, i := range issues {
 		switch i.Kind {
 		case "balance_mismatch":
 			fmt.Printf("  %s#%d  %s  %s(%s)%s\n", Fmt.Bold, i.StatementID, i.StatementName, Fmt.Dim, i.Date, Fmt.Reset)
 			fmt.Printf("    %sbalance_start     %12s%s\n", Fmt.Dim, fmtEUR(i.BalanceStart), Fmt.Reset)
-			fmt.Printf("    %ssum of %d line(s) %12s%s\n", Fmt.Dim, i.LineCount, fmtEURSigned(i.LineSum), Fmt.Reset)
+			fmt.Printf("    %ssum of %-10s %12s%s\n", Fmt.Dim, Pluralize(i.LineCount, "line", ""), fmtEURSigned(i.LineSum), Fmt.Reset)
 			fmt.Printf("    %srunning balance   %12s  %s← should match end%s\n", Fmt.Dim, fmtEUR(i.RunningBalance), Fmt.Green, Fmt.Reset)
 			fmt.Printf("    %sbalance_end_real  %12s  %s← off by %s%s\n\n",
 				Fmt.Dim, fmtEUR(i.BalanceEndReal), Fmt.Red, fmtEURSigned(i.Diff()), Fmt.Reset)
@@ -320,8 +320,8 @@ func PrintStatementIssues(issues []StatementBalanceIssue) {
 				Fmt.Dim, fmtEUR(i.BalanceStart), Fmt.Red,
 				fmtEURSigned(i.BalanceStart-i.PreviousEndReal), Fmt.Reset)
 		case "duplicate_open_fee_lines":
-			fmt.Printf("  %s#%d  %s  %s(%s) — %d duplicate \"Stripe fees for open statement\" line(s)%s\n",
-				Fmt.Bold, i.StatementID, i.StatementName, Fmt.Dim, i.Date, len(i.DuplicateLines), Fmt.Reset)
+			fmt.Printf("  %s#%d  %s  %s(%s) — %s of \"Stripe fees for open statement\"%s\n",
+				Fmt.Bold, i.StatementID, i.StatementName, Fmt.Dim, i.Date, Pluralize(len(i.DuplicateLines), "duplicate line", ""), Fmt.Reset)
 			var sum float64
 			for _, d := range i.DuplicateLines {
 				fmt.Printf("    %sline #%-7d  %12s  %s  %s%s\n",

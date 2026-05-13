@@ -897,7 +897,7 @@ func (m txBrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusError = true
 			return m, clearTxStatusAfter(msg.Seq, 10*time.Second)
 		}
-		m.statusText = fmt.Sprintf("Posted %d Nostr event(s) to %d relay(s)", msg.Published, msg.Relays)
+		m.statusText = fmt.Sprintf("Posted %s to %s", Pluralize(msg.Published, "Nostr event", ""), Pluralize(msg.Relays, "relay", ""))
 		m.statusError = false
 		return m, clearTxStatusAfter(msg.Seq, 4*time.Second)
 	case txClearStatusMsg:
@@ -1444,8 +1444,8 @@ func (m txBrowserModel) spreadPreviewLines() []string {
 		currency = "EUR"
 	}
 	totalLabel := formatSpreadAmount(total, currency)
-	headline := fmt.Sprintf("%d month(s) × %s = %s",
-		len(entries),
+	headline := fmt.Sprintf("%s × %s = %s",
+		Pluralize(len(entries), "month", ""),
 		formatSpreadEntry(entries[0], currency),
 		totalLabel)
 	out := []string{headline}
@@ -1535,7 +1535,7 @@ func (m *txBrowserModel) startNostrPublish(txs []TransactionEntry) tea.Cmd {
 	relays := nostrRelayCountForPosting()
 	m.statusSeq++
 	seq := m.statusSeq
-	m.statusText = fmt.Sprintf("Posting %d Nostr event(s) to %d relay(s)...", events, relays)
+	m.statusText = fmt.Sprintf("Posting %s to %s...", Pluralize(events, "Nostr event", ""), Pluralize(relays, "relay", ""))
 	m.statusError = false
 	return publishTransactionAnnotationsCmd(seq, txs)
 }
@@ -1644,7 +1644,7 @@ func publishTransactionAnnotationsFromTUI(txs []TransactionEntry) (events int, r
 		published++
 	}
 	if failures > 0 {
-		return events, relays, published, fmt.Errorf("%d/%d event(s) failed; first error: %s", failures, events, firstFailure)
+		return events, relays, published, fmt.Errorf("%d/%s failed; first error: %s", failures, Pluralize(events, "event", ""), firstFailure)
 	}
 	return events, relays, published, nil
 }

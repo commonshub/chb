@@ -635,7 +635,7 @@ func Generate(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("📋 Found %d year(s): %s\n\n", len(years), strings.Join(years, ", "))
+	fmt.Printf("📋 Found %s: %s\n\n", Pluralize(len(years), "year", ""), strings.Join(years, ", "))
 
 	scopes := collectGenerateScopes(dataDir, years, posYear, posMonth, posFound, startMonth)
 	scopeYears := uniqueGenerateScopeYears(scopes)
@@ -656,7 +656,7 @@ func Generate(args []string) error {
 	for _, scope := range scopes {
 		n := generateMonthImagesGo(dataDir, scope.Year, scope.Month)
 		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %d image(s)\n", scope.Year, scope.Month, n)
+			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "image", ""))
 			totalImages += n
 		}
 	}
@@ -666,7 +666,7 @@ func Generate(args []string) error {
 	if _, err := os.Stat(latestDir); err == nil {
 		n := generateMonthImagesGo(dataDir, "latest", "")
 		if n > 0 {
-			fmt.Printf("  ✓ latest: %d image(s)\n", n)
+			fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "image", ""))
 			totalImages += n
 		}
 	}
@@ -686,7 +686,7 @@ func Generate(args []string) error {
 	for _, scope := range scopes {
 		n := generateMonthContributorsGo(dataDir, scope.Year, scope.Month, settings, contributorsCache, time.Time{})
 		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %d contributor(s)\n", scope.Year, scope.Month, n)
+			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "contributor", ""))
 		}
 	}
 	// Also generate for latest/ — rolling 90-day window
@@ -694,7 +694,7 @@ func Generate(args []string) error {
 		cutoff := time.Now().UTC().AddDate(0, 0, -LatestContributorsWindowDays)
 		n := generateMonthContributorsGo(dataDir, "latest", "", settings, contributorsCache, cutoff)
 		if n > 0 {
-			fmt.Printf("  ✓ latest (%dd): %d contributor(s)\n", LatestContributorsWindowDays, n)
+			fmt.Printf("  ✓ latest (%dd): %s\n", LatestContributorsWindowDays, Pluralize(n, "contributor", ""))
 		}
 	}
 	contributorsCache.save()
@@ -722,14 +722,14 @@ func Generate(args []string) error {
 	for _, scope := range scopes {
 		n := generateTransactionsGo(dataDir, scope.Year, scope.Month, settings)
 		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %d transaction(s)\n", scope.Year, scope.Month, n)
+			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "transaction", ""))
 		}
 	}
 	// Also generate for latest/
 	if _, err := os.Stat(latestDir); err == nil {
 		n := generateTransactionsGo(dataDir, "latest", "", settings)
 		if n > 0 {
-			fmt.Printf("  ✓ latest: %d transaction(s)\n", n)
+			fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "transaction", ""))
 		}
 	}
 	fmt.Println()
@@ -791,7 +791,7 @@ func Generate(args []string) error {
 			totalReports++
 		}
 	}
-	fmt.Printf("  %s%d summary(s)%s\n\n", Fmt.Dim, totalReports, Fmt.Reset)
+	fmt.Printf("  %s%s%s\n\n", Fmt.Dim, Pluralize(totalReports, "summary", "summaries"), Fmt.Reset)
 
 	// 13. Rebalance per-collective startBalance/endBalance across months and
 	// write the global rollup latest/generated/summary.json.
@@ -920,8 +920,8 @@ func generateTransactionScopes(dataDir string, scopes []generateScope, startedAt
 	}
 
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
-	fmt.Printf("\n%s✓ Transaction generation complete%s: %d tx across %d month(s), %s\n\n",
-		Fmt.Green, Fmt.Reset, totalTx, len(scopes), elapsed)
+	fmt.Printf("\n%s✓ Transaction generation complete%s: %d tx across %s, %s\n\n",
+		Fmt.Green, Fmt.Reset, totalTx, Pluralize(len(scopes), "month", ""), elapsed)
 	return nil
 }
 
@@ -962,14 +962,14 @@ func GenerateMessages(args []string) error {
 	for _, scope := range scopes {
 		n := generateMonthImagesGo(dataDir, scope.Year, scope.Month)
 		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %d image(s)\n", scope.Year, scope.Month, n)
+			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "image", ""))
 			total += n
 		}
 	}
 	if latestDir := filepath.Join(dataDir, "latest"); dirExists(latestDir) {
 		n := generateMonthImagesGo(dataDir, "latest", "")
 		if n > 0 {
-			fmt.Printf("  ✓ latest: %d image(s)\n", n)
+			fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "image", ""))
 			total += n
 		}
 	}
@@ -1904,7 +1904,7 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 		profileCount++
 	}
 
-	fmt.Printf("  ✓ Generated %d user profile(s)\n", profileCount)
+	fmt.Printf("  ✓ Generated %s\n", Pluralize(profileCount, "user profile", ""))
 }
 
 // ── Yearly users ────────────────────────────────────────────────────────────
@@ -2108,10 +2108,6 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				if tx.Amount < 0 {
 					txType = "DEBIT"
 					amount = -amount
-				}
-				// Payouts are handled by the payout-based Odoo sync, skip in generate
-				if tx.ReportingCategory == "payout" {
-					continue
 				}
 				// Stripe billing fees (usage fees, taxes) are real debits from the balance
 				if tx.ReportingCategory == "fee" {
@@ -3169,7 +3165,7 @@ func generateLatestEventsGo(dataDir string, years []string) {
 		Events:      upcoming,
 	}
 	writeJSONFile(outputPath, out)
-	fmt.Printf("  ✓ latest/events.json: %d upcoming event(s)\n", len(upcoming))
+	fmt.Printf("  ✓ latest/events.json: %s\n", Pluralize(len(upcoming), "upcoming event", ""))
 }
 
 // ── Generated README ────────────────────────────────────────────────────────

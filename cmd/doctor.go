@@ -49,8 +49,8 @@ func Doctor(args []string) error {
 
 	fmt.Printf("\n%s🩺 Doctor%s\n", Fmt.Bold, Fmt.Reset)
 	fmt.Printf("%sDATA_DIR: %s%s\n", Fmt.Dim, dataDir, Fmt.Reset)
-	fmt.Printf("%sChecked %d scope(s), %d image reference(s)%s\n\n",
-		Fmt.Dim, report.ScopesChecked, report.ImagesChecked, Fmt.Reset)
+	fmt.Printf("%sChecked %s, %s%s\n\n",
+		Fmt.Dim, Pluralize(report.ScopesChecked, "scope", ""), Pluralize(report.ImagesChecked, "image reference", ""), Fmt.Reset)
 
 	if len(report.Findings) == 0 {
 		fmt.Printf("%s✓ DATA_DIR looks healthy%s\n\n", Fmt.Green, Fmt.Reset)
@@ -75,7 +75,7 @@ func Doctor(args []string) error {
 	fmt.Println()
 
 	if errorCount > 0 {
-		return fmt.Errorf("%d issue group(s) found", errorCount)
+		return fmt.Errorf("%s found", Pluralize(errorCount, "issue group", ""))
 	}
 	return nil
 }

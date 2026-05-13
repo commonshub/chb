@@ -339,7 +339,7 @@ func InvoicesSync(args []string) (int, error) {
 		return 0, nil
 	}
 
-	odooLog("  %sFetched %d invoice(s)%s\n", Fmt.Dim, len(rawInvoices), Fmt.Reset)
+	odooLog("  %sFetched %s%s\n", Fmt.Dim, Pluralize(len(rawInvoices), "invoice", ""), Fmt.Reset)
 
 	enriched, err := enrichOutgoingInvoices(creds, uid, rawInvoices, false)
 	if err != nil {
@@ -418,7 +418,7 @@ func InvoicesSync(args []string) (int, error) {
 		}
 
 		if !force && isInvoiceMonthCacheUnchanged(DataDir(), year, month, publicOut, privateOut) {
-			odooLog("  ⏭ %s: %d invoice(s) unchanged\n", ym, len(invoices))
+			odooLog("  ⏭ %s: %s unchanged\n", ym, Pluralize(len(invoices), "invoice", ""))
 			continue
 		}
 
@@ -433,7 +433,7 @@ func InvoicesSync(args []string) (int, error) {
 			continue
 		}
 
-		odooLog("  ✓ %s: %d invoice(s)\n", ym, len(invoices))
+		odooLog("  ✓ %s: %s\n", ym, Pluralize(len(invoices), "invoice", ""))
 		savedInvoices += len(invoices)
 	}
 
@@ -451,7 +451,7 @@ func InvoicesSync(args []string) (int, error) {
 		}
 		odooSyncLine("invoices", fmt.Sprintf("%d invoices (%s)", totalInvoices, detail))
 	} else {
-		fmt.Printf("\n%s✓ Done!%s %d invoice(s) synced\n\n", Fmt.Green, Fmt.Reset, savedInvoices)
+		fmt.Printf("\n%s✓ Done!%s %s synced\n\n", Fmt.Green, Fmt.Reset, Pluralize(savedInvoices, "invoice", ""))
 	}
 	UpdateSyncSource("invoices", isFullSync)
 	UpdateSyncActivity(isFullSync)

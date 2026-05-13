@@ -50,24 +50,16 @@ func syncStripeChronological(
 		}
 	}
 
-	// Resume cursor: latest synced BT created time (0 = from the beginning).
-	resumeCursor, err := fetchStripeResumeCursor(creds, uid, acc)
-	if err != nil {
-		return "", fmt.Errorf("determine resume cursor: %v", err)
-	}
-	if resumeCursor > 0 {
-		odooLog("  %sResuming from %s%s\n", Fmt.Dim,
-			time.Unix(resumeCursor, 0).Format("2006-01-02 15:04"), Fmt.Reset)
-	} else {
-		odooLog("  %sNo prior sync — starting from account history%s\n", Fmt.Dim, Fmt.Reset)
-	}
-
+	// Load every local BT and dedup against the full Odoo import_id set
+	// further down. The previous max(date)-2d resume cursor missed BTs
+	// that Stripe added retroactively beyond the 2-day buffer (refunds,
+	// disputes, late captures), leaving them silently absent from Odoo.
 	odooLog("  %sLoading archived Stripe source transactions...%s\n", Fmt.Dim, Fmt.Reset)
-	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, resumeCursor)
+	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
 	if err != nil {
 		return "", fmt.Errorf("load Stripe source transactions: %v", err)
 	}
-	odooLog("  %s%d new Stripe balance transaction(s)%s\n\n", Fmt.Dim, len(bts), Fmt.Reset)
+	odooLog("  %s%s%s\n\n", Fmt.Dim, Pluralize(len(bts), "new Stripe balance transaction", ""), Fmt.Reset)
 	if len(bts) == 0 {
 		odooLog("  %s✓ Already in sync%s\n\n", Fmt.Green, Fmt.Reset)
 		return "already in sync", nil
@@ -139,9 +131,9 @@ func syncStripeChronological(
 		}
 		batchLen := len(batch)
 		start := time.Now()
-		odooLog("    %screating %d statement line(s) in Odoo (%s)...%s\n", Fmt.Dim, batchLen, reason, Fmt.Reset)
+		odooLog("    %screating %s in Odoo (%s)...%s\n", Fmt.Dim, Pluralize(batchLen, "statement line", ""), reason, Fmt.Reset)
 		createdIDs, _ := batchCreateStatementLinesWithProgress(creds, uid, batch, reason)
-		odooLog("    %screated %d/%d line(s) in %s%s\n", Fmt.Dim, len(createdIDs), batchLen, time.Since(start).Round(time.Second), Fmt.Reset)
+		odooLog("    %screated %d/%s in %s%s\n", Fmt.Dim, len(createdIDs), Pluralize(batchLen, "line", ""), time.Since(start).Round(time.Second), Fmt.Reset)
 		stats.LinesCreated += len(createdIDs)
 		stats.LinesSkipped += batchLen - len(createdIDs)
 		if len(createdIDs) != batchLen {
@@ -153,7 +145,7 @@ func syncStripeChronological(
 			odooLog("    %sskipping per-line reconciliation%s\n", Fmt.Dim, Fmt.Reset)
 		} else {
 			reconcileStart := time.Now()
-			odooLog("    %sreconciling %d new line(s)...%s\n", Fmt.Dim, len(createdIDs), Fmt.Reset)
+			odooLog("    %sreconciling %s...%s\n", Fmt.Dim, Pluralize(len(createdIDs), "new line", ""), Fmt.Reset)
 			reconcileCreatedStatementLines(creds, uid, createdIDs, false, stats)
 			odooLog("    %sreconcile pass done in %s%s\n", Fmt.Dim, time.Since(reconcileStart).Round(time.Second), Fmt.Reset)
 		}
@@ -315,8 +307,8 @@ func syncStripeChronological(
 		}
 	}
 	if skippedBTs > 0 || processedBTs > 0 {
-		odooLog("  %sprocessed %d Stripe balance transaction(s), skipped %d duplicate(s), closed %d statement(s)%s\n",
-			Fmt.Dim, processedBTs, skippedBTs, stats.Statements, Fmt.Reset)
+		odooLog("  %sprocessed %s, skipped %s, closed %s%s\n",
+			Fmt.Dim, Pluralize(processedBTs, "Stripe balance transaction", ""), Pluralize(skippedBTs, "duplicate", ""), Pluralize(stats.Statements, "statement", ""), Fmt.Reset)
 	}
 
 	if !quietOdooContext() {
@@ -628,41 +620,6 @@ func setStatementBalanceEndReal(creds *OdooCredentials, uid int, stmtID int, val
 	return err
 }
 
-// fetchStripeResumeCursor returns the Unix timestamp of the most-recently-
-// synced BT for the account, as derived from existing unique_import_id
-// values. Returns 0 if nothing is synced yet.
-//
-// We can't recover a precise timestamp from the import_id alone, so we use
-// the max line `date` as a lower bound and subtract a 2-day safety buffer;
-// de-dup via existingIDs catches the overlap.
-func fetchStripeResumeCursor(creds *OdooCredentials, uid int, acc *AccountConfig) (int64, error) {
-	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-		"account.bank.statement.line", "search_read",
-		[]interface{}{[]interface{}{
-			[]interface{}{"journal_id", "=", acc.OdooJournalID},
-			[]interface{}{"unique_import_id", "=like", "stripe:%"},
-		}},
-		map[string]interface{}{"fields": []string{"date"}, "limit": 1, "order": "date desc, id desc"})
-	if err != nil {
-		return 0, err
-	}
-	var rows []struct {
-		Date odooStr `json:"date"`
-	}
-	if err := json.Unmarshal(result, &rows); err != nil {
-		return 0, err
-	}
-	if len(rows) == 0 || rows[0].Date == "" {
-		return 0, nil
-	}
-	t, err := time.Parse("2006-01-02", string(rows[0].Date))
-	if err != nil {
-		return 0, nil
-	}
-	// 2-day safety buffer to catch BTs whose date was yesterday but
-	// created later in the day than our last-synced line.
-	return t.AddDate(0, 0, -2).Unix(), nil
-}
 
 // AccountStripePending prints a breakdown of balance transactions that have
 // accumulated since the most recent payout — what will flow into the next

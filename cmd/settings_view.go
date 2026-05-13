@@ -70,8 +70,8 @@ func PrintSettings() {
 	if len(updates) == 0 {
 		return
 	}
-	fmt.Printf("%s%d pending update(s) from the bundled defaults:%s\n\n",
-		Fmt.Yellow, len(updates), Fmt.Reset)
+	fmt.Printf("%s%s from the bundled defaults:%s\n\n",
+		Fmt.Yellow, Pluralize(len(updates), "pending update", ""), Fmt.Reset)
 	for _, u := range updates {
 		printPendingUpdate(u)
 	}

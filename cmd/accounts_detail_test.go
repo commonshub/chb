@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	etherscansource "github.com/CommonsHub/chb/sources/etherscan"
 )
@@ -239,10 +240,9 @@ func TestAccountSyncVerificationReportsMissingTransfersByMonth(t *testing.T) {
 	out := captureStdout(t, func() {
 		printAccountSyncVerification(result)
 	})
-	assertContains(t, out, "On-chain/local status for savings")
 	assertContains(t, out, "⚠ mismatch")
-	assertContains(t, out, "On-chain: 115.00 EURe, 3 tx")
-	assertContains(t, out, "Local files: 100.00 EURe, 1 tx")
+	assertContains(t, out, "Onchain data: 3 txs between 2024-01-01 and 2024-02-01, balance: 115.00 EURe")
+	assertContains(t, out, "Local data:   1 tx between 2024-01-01 and 2024-01-01, balance: 100.00 EURe")
 	assertContains(t, out, "2024-01: 1 missing")
 	assertContains(t, out, "0xmissing-jan")
 	assertContains(t, out, "2024-02: 1 missing")
@@ -356,6 +356,40 @@ func TestAccountSourceChangedMonthsUsesTransactionContentOnly(t *testing.T) {
 	changed := accountChangedSourceMonths(&acc, before)
 	if len(changed) != 1 || changed[0] != "2024-01" {
 		t.Fatalf("changed months = %#v, want [2024-01]", changed)
+	}
+}
+
+func TestAccountSyncVerificationRowsAlignColumns(t *testing.T) {
+	now := time.Date(2026, 5, 13, 12, 0, 0, 0, BrusselsTZ())
+	v := &accountSyncVerification{
+		AccountSlug:      "savings",
+		Currency:         "EURe",
+		OnchainBalance:   108454.41,
+		OnchainBalanceOK: true,
+		OnchainTxCount:   697,
+		OnchainFirstTxAt: now.AddDate(-1, 0, 0),
+		OnchainLastTxAt:  now,
+		LocalBalance:     108454.41,
+		LocalTxCount:     697,
+		LocalFirstTxAt:   now.AddDate(-1, 0, 0),
+		LocalLastTxAt:    now,
+		MissingByMonth:   map[string][]missingOnchainTransfer{},
+	}
+
+	rows := accountSyncVerificationSummaryRows(v)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %#v, want 2 rows", rows)
+	}
+	if rows[0][0] != "Onchain data" || rows[1][0] != "Local data" {
+		t.Fatalf("unexpected labels: %#v", rows)
+	}
+	for _, row := range rows {
+		if len(row) != 2 {
+			t.Fatalf("row = %#v, want 2 columns", row)
+		}
+		if !strings.Contains(row[1], "697 txs between 2025-05-13 and 2026-05-13, balance: 108,454.41 EURe") {
+			t.Fatalf("summary = %q, want tx range and balance", row[1])
+		}
 	}
 }
 

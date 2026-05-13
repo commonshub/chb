@@ -121,8 +121,8 @@ func syncMovesFromNostr(kind moveKind, args []string) error {
 
 	UpdateSyncSource("nostr-"+kind.labelPl, false)
 
-	fmt.Printf("\n%s✓ Applied %d %s annotation(s) across %d month(s)%s\n\n",
-		Fmt.Green, applied, kind.label, len(changedMonths), Fmt.Reset)
+	fmt.Printf("\n%s✓ Applied %s across %s%s\n\n",
+		Fmt.Green, Pluralize(applied, kind.label+" annotation", ""), Pluralize(len(changedMonths), "month", ""), Fmt.Reset)
 	return nil
 }
 

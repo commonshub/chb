@@ -88,7 +88,7 @@ func enrichEventsWithTicketSales(dataDir string) {
 		touched++
 	})
 	if touched > 0 {
-		fmt.Printf("  ✓ attached ticket sales to events in %d file(s)\n", touched)
+		fmt.Printf("  ✓ attached ticket sales to events in %s\n", Pluralize(touched, "file", ""))
 	}
 }
 

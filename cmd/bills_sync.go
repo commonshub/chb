@@ -114,7 +114,7 @@ func BillsSync(args []string) (int, error) {
 		return 0, nil
 	}
 
-	odooLog("  %sFetched %d bill(s)%s\n", Fmt.Dim, len(rawBills), Fmt.Reset)
+	odooLog("  %sFetched %s%s\n", Fmt.Dim, Pluralize(len(rawBills), "bill", ""), Fmt.Reset)
 
 	enriched, err := enrichOutgoingInvoices(creds, uid, rawBills, true)
 	if err != nil {
@@ -193,7 +193,7 @@ func BillsSync(args []string) (int, error) {
 		}
 
 		if !force && isBillMonthCacheUnchanged(DataDir(), year, month, publicOut, privateOut) {
-			odooLog("  ⏭ %s: %d bill(s) unchanged\n", ym, len(bills))
+			odooLog("  ⏭ %s: %s unchanged\n", ym, Pluralize(len(bills), "bill", ""))
 			continue
 		}
 
@@ -208,7 +208,7 @@ func BillsSync(args []string) (int, error) {
 			continue
 		}
 
-		odooLog("  ✓ %s: %d bill(s)\n", ym, len(bills))
+		odooLog("  ✓ %s: %s\n", ym, Pluralize(len(bills), "bill", ""))
 		savedBills += len(bills)
 	}
 
@@ -226,7 +226,7 @@ func BillsSync(args []string) (int, error) {
 		}
 		odooSyncLine("bills", fmt.Sprintf("%d bills (%s)", totalBills, detail))
 	} else {
-		fmt.Printf("\n%s✓ Done!%s %d bill(s) synced\n\n", Fmt.Green, Fmt.Reset, savedBills)
+		fmt.Printf("\n%s✓ Done!%s %s synced\n\n", Fmt.Green, Fmt.Reset, Pluralize(savedBills, "bill", ""))
 	}
 	UpdateSyncSource("bills", isFullSync)
 	UpdateSyncActivity(isFullSync)

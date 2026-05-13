@@ -1,10 +1,29 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// Pluralize returns "<n> <noun>" with the noun's number adjusted to match
+// n. When plural is empty, the plural form is `singular + "s"`. Negative
+// counts are pluralized just like positive ones above 1 (e.g. -3 items).
+//
+//	Pluralize(1, "tx", "")          → "1 tx"
+//	Pluralize(3, "tx", "")          → "3 txs"
+//	Pluralize(2, "summary", "summaries") → "2 summaries"
+//	Pluralize(1, "fetch", "fetches")     → "1 fetch"
+func Pluralize(n int, singular, plural string) string {
+	if n == 1 || n == -1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	if plural == "" {
+		plural = singular + "s"
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
 
 const TIMEZONE = "Europe/Brussels"
 

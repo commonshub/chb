@@ -79,7 +79,7 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 	}
 	stats := &odooReconcileStats{DryRun: dryRun}
 	fmt.Printf("\n  %sReconciling journal #%d%s\n", Fmt.Bold, journalID, Fmt.Reset)
-	fmt.Printf("  %s%d unreconciled statement line(s)%s\n\n", Fmt.Dim, len(lines), Fmt.Reset)
+	fmt.Printf("  %s%s%s\n\n", Fmt.Dim, Pluralize(len(lines), "unreconciled statement line", ""), Fmt.Reset)
 	if len(lines) == 0 {
 		return nil
 	}

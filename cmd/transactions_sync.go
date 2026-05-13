@@ -41,6 +41,7 @@ func TransactionsSync(args []string) (int, error) {
 
 	force := HasFlag(args, "--force")
 	noNostr := HasFlag(args, "--no-nostr")
+	accountSyncMode := HasFlag(args, "--account-sync")
 	monthFilter := GetOption(args, "--month")
 	sourceFilter := strings.ToLower(GetOption(args, "--source"))
 	slugFilter := strings.ToLower(GetOption(args, "--slug"))
@@ -84,18 +85,28 @@ func TransactionsSync(args []string) (int, error) {
 		startMonth = DefaultRecentStartMonth(now)
 	}
 
-	fmt.Printf("\n%sSyncing data...%s\n", Fmt.Bold, Fmt.Reset)
-	if sourceFilter != "" {
-		fmt.Printf("  Source: %s\n", sourceFilter)
+	if !accountSyncMode {
+		fmt.Printf("\n%sSyncing data...%s\n", Fmt.Bold, Fmt.Reset)
+		if sourceFilter != "" {
+			fmt.Printf("  Source: %s\n", sourceFilter)
+		}
+		if slugFilter != "" {
+			fmt.Printf("  Account: %s\n", slugFilter)
+		}
+		fmt.Printf("  Date range: %s -> %s\n", startMonth, endMonth)
+		fmt.Printf("  Data dir: %s\n", DataDir())
+		fmt.Println()
 	}
-	if slugFilter != "" {
-		fmt.Printf("  Account: %s\n", slugFilter)
-	}
-	fmt.Printf("  Date range: %s -> %s\n", startMonth, endMonth)
-	fmt.Printf("  Data dir: %s\n", DataDir())
-	fmt.Println()
 
 	totalProcessed := 0
+	defaultIncremental := !force && ((!isSince && !posFound && monthFilter == "") || accountSyncMode)
+	enrichmentRefresh := !accountSyncMode && (force || isSince || posFound || monthFilter != "")
+	blockchainChangedSlugs := map[string]bool{}
+	type nostrFetchJob struct {
+		Account   FinanceAccount
+		Transfers []etherscansource.TokenTransfer
+	}
+	var nostrJobs []nostrFetchJob
 
 	// --- Etherscan / blockchain sync ---
 	if sourceFilter == "" || sourceFilter == "gnosis" || sourceFilter == "celo" || sourceFilter == "etherscan" || sourceFilter == "blockchain" {
@@ -152,9 +163,17 @@ func TransactionsSync(args []string) (int, error) {
 			if apiKey == "" {
 				Warnf("%s⚠ ETHERSCAN_API_KEY not set, skipping blockchain sync%s", Fmt.Yellow, Fmt.Reset)
 			} else {
-				fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
+				if !accountSyncMode {
+					fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
+				}
 				for _, acc := range etherscanAccounts {
-					fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
+					if !accountSyncMode {
+						fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
+						fmt.Printf("    %sAddress:%s %s\n", Fmt.Dim, Fmt.Reset, acc.Address)
+						if acc.Token.Address != "" {
+							fmt.Printf("    %sToken:%s   %s (%s)\n", Fmt.Dim, Fmt.Reset, acc.Token.Symbol, acc.Token.Address)
+						}
+					}
 
 					// Check if we can skip the full fetch by peeking at the latest tx
 					if !force {
@@ -172,7 +191,7 @@ func TransactionsSync(args []string) (int, error) {
 									return etherscansource.RelPath(acc.Chain, filename)
 								}
 								if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
-									fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+									printBlockchainNewTxStatus(0, accountSyncMode, "latest unchanged")
 									time.Sleep(400 * time.Millisecond)
 									continue
 								}
@@ -180,13 +199,27 @@ func TransactionsSync(args []string) (int, error) {
 						}
 					}
 
+					existingKeys := existingTokenTransferKeys(acc)
 					transfers, err := etherscansource.FetchTokenTransfers(etherscanAccount(acc), apiKey)
 					if err != nil {
 						Errorf("    %s✗ Error: %v%s", Fmt.Red, err, Fmt.Reset)
 						continue
 					}
 
-					fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
+					if !accountSyncMode {
+						fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
+					}
+					newTransfers := countNewTokenTransfers(existingKeys, transfers)
+					if newTransfers == 0 && defaultIncremental {
+						printBlockchainNewTxStatus(0, accountSyncMode, "")
+						time.Sleep(400 * time.Millisecond)
+						continue
+					}
+					printBlockchainNewTxStatus(newTransfers, accountSyncMode, "")
+					totalProcessed += newTransfers
+					if newTransfers > 0 || enrichmentRefresh {
+						blockchainChangedSlugs[strings.ToLower(acc.Slug)] = true
+					}
 
 					// Group by month
 					byMonth := etherscansource.GroupByMonth(transfers, BrusselsTZ())
@@ -210,7 +243,7 @@ func TransactionsSync(args []string) (int, error) {
 						filePath := filepath.Join(dataDir, year, month, relPath)
 
 						// Skip if exists and not force
-						if !force && fileExists(filePath) {
+						if !force && fileExists(filePath) && !monthHasNewTokenTransfer(existingKeys, monthTxs) {
 							// But always update current month
 							if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
 								continue
@@ -231,43 +264,14 @@ func TransactionsSync(args []string) (int, error) {
 						}
 
 						saved++
-						totalProcessed += len(monthTxs)
 					}
 
-					if saved > 0 {
+					if saved > 0 && !accountSyncMode {
 						fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
 					}
 
-					// Fetch Nostr metadata for all transfers.
-					// Tx annotations are append-only → safe to filter by `since`.
-					// Address profiles mutate → always pull the full set.
-					if !noNostr && acc.ChainID != 0 && len(transfers) > 0 {
-						fmt.Printf("    %sFetching Nostr metadata...%s", Fmt.Dim, Fmt.Reset)
-						var nostrSince *time.Time
-						if !force && !isSince && !posFound && monthFilter == "" && !lastSyncTime.IsZero() {
-							nostrSince = &lastSyncTime
-							fmt.Printf(" %s(since %s)%s", Fmt.Dim, lastSyncTime.In(BrusselsTZ()).Format(time.RFC3339), Fmt.Reset)
-						}
-						txHashes := make([]string, 0, len(transfers))
-						addressSet := map[string]struct{}{}
-						for _, tx := range transfers {
-							txHashes = append(txHashes, tx.Hash)
-							addressSet[strings.ToLower(tx.From)] = struct{}{}
-							addressSet[strings.ToLower(tx.To)] = struct{}{}
-						}
-						addresses := make([]string, 0, len(addressSet))
-						for a := range addressSet {
-							addresses = append(addresses, a)
-						}
-
-						txMeta, txErr := FetchNostrTxMetadata(acc.ChainID, txHashes, nostrSince)
-						addrMeta, addrErr := FetchNostrAddressMetadata(acc.ChainID, addresses)
-						if txErr != nil || addrErr != nil {
-							Errorf(" %s✗ tx=%v addr=%v%s", Fmt.Red, txErr, addrErr, Fmt.Reset)
-						} else {
-							fmt.Printf(" %s✓ %d tx, %d address annotations%s\n", Fmt.Green, len(txMeta), len(addrMeta), Fmt.Reset)
-							saveNostrMetadataLayers(acc.ChainID, transfers, startMonth, endMonth, txMeta, addrMeta)
-						}
+					if !noNostr && acc.ChainID != 0 && len(transfers) > 0 && shouldRunBlockchainEnrichment(acc.Slug, enrichmentRefresh, blockchainChangedSlugs) {
+						nostrJobs = append(nostrJobs, nostrFetchJob{Account: acc, Transfers: transfers})
 					}
 
 					// Save the latest tx hash so we can skip next time if nothing changed
@@ -540,6 +544,9 @@ func TransactionsSync(args []string) (int, error) {
 			// Auto-include EURe blockchain accounts for Monerium enrichment
 			if acc.Provider == "etherscan" && acc.Address != "" && acc.Token != nil &&
 				strings.EqualFold(acc.Token.Symbol, "EURe") {
+				if !shouldRunBlockchainEnrichment(acc.Slug, enrichmentRefresh, blockchainChangedSlugs) {
+					continue
+				}
 				moneriumAccounts = append(moneriumAccounts, FinanceAccount{
 					Name:     acc.Name + " (Monerium)",
 					Slug:     acc.Slug,
@@ -561,14 +568,18 @@ func TransactionsSync(args []string) (int, error) {
 			if clientID == "" || clientSecret == "" {
 				Warnf("%s⚠ MONERIUM_CLIENT_ID/MONERIUM_CLIENT_SECRET not set, skipping Monerium sync%s", Fmt.Yellow, Fmt.Reset)
 			} else {
-				fmt.Printf("\n%s🏦 Syncing Monerium orders%s\n\n", Fmt.Bold, Fmt.Reset)
+				if !accountSyncMode {
+					fmt.Printf("\n%s🏦 Syncing Monerium orders%s\n\n", Fmt.Bold, Fmt.Reset)
+				}
 
 				token, err := moneriumsource.Authenticate(clientID, clientSecret, moneriumEnv)
 				if err != nil {
 					Errorf("  %s✗ Auth failed: %v%s", Fmt.Red, err, Fmt.Reset)
 				} else {
 					for _, acc := range moneriumAccounts {
-						fmt.Printf("  %s%s%s (%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Address)
+						if !accountSyncMode {
+							fmt.Printf("  %s%s%s (%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Address)
+						}
 
 						orders, err := moneriumsource.FetchOrders(token, acc.Address, moneriumEnv)
 						if err != nil {
@@ -576,7 +587,9 @@ func TransactionsSync(args []string) (int, error) {
 							continue
 						}
 
-						fmt.Printf("    %sFetched %d orders%s\n", Fmt.Dim, len(orders), Fmt.Reset)
+						if !accountSyncMode {
+							fmt.Printf("    %sFetched %d orders%s\n", Fmt.Dim, len(orders), Fmt.Reset)
+						}
 
 						// Check if latest order matches cache — skip if no new data
 						slug := acc.Slug
@@ -591,7 +604,9 @@ func TransactionsSync(args []string) (int, error) {
 							if allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
 								cachedPath := currentMonthCacheFile(DataDir(), relPathFn)
 								if orders[0].ID == moneriumsource.LatestCachedOrderID(cachedPath) {
-									fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+									if !accountSyncMode {
+										fmt.Printf("    %s✓ Up to date%s\n", Fmt.Green, Fmt.Reset)
+									}
 									continue
 								}
 							}
@@ -638,7 +653,9 @@ func TransactionsSync(args []string) (int, error) {
 						}
 
 						if saved > 0 {
-							fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+							if !accountSyncMode {
+								fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+							}
 						}
 					}
 				}
@@ -646,8 +663,56 @@ func TransactionsSync(args []string) (int, error) {
 		}
 	}
 
+	// --- Nostr metadata sync ---
+	// Run after Monerium so the account sync output reads as:
+	// blockchain delta → Monerium enrichment → Nostr metadata.
+	if len(nostrJobs) > 0 {
+		if !accountSyncMode {
+			fmt.Printf("\n%s🔎 Fetching Nostr metadata%s\n\n", Fmt.Bold, Fmt.Reset)
+		}
+		for _, job := range nostrJobs {
+			acc := job.Account
+			transfers := job.Transfers
+			if !accountSyncMode {
+				fmt.Printf("  %s%s%s\n", Fmt.Bold, acc.Name, Fmt.Reset)
+				fmt.Printf("    %sFetching Nostr metadata...%s", Fmt.Dim, Fmt.Reset)
+			}
+			var nostrSince *time.Time
+			if !force && !isSince && !posFound && monthFilter == "" && !lastSyncTime.IsZero() {
+				nostrSince = &lastSyncTime
+				if !accountSyncMode {
+					fmt.Printf(" %s(since %s)%s", Fmt.Dim, lastSyncTime.In(BrusselsTZ()).Format(time.RFC3339), Fmt.Reset)
+				}
+			}
+			txHashes := make([]string, 0, len(transfers))
+			addressSet := map[string]struct{}{}
+			for _, tx := range transfers {
+				txHashes = append(txHashes, tx.Hash)
+				addressSet[strings.ToLower(tx.From)] = struct{}{}
+				addressSet[strings.ToLower(tx.To)] = struct{}{}
+			}
+			addresses := make([]string, 0, len(addressSet))
+			for a := range addressSet {
+				addresses = append(addresses, a)
+			}
+
+			txMeta, txErr := FetchNostrTxMetadata(acc.ChainID, txHashes, nostrSince)
+			addrMeta, addrErr := FetchNostrAddressMetadata(acc.ChainID, addresses)
+			if txErr != nil || addrErr != nil {
+				Errorf(" %s✗ tx=%v addr=%v%s", Fmt.Red, txErr, addrErr, Fmt.Reset)
+			} else {
+				if !accountSyncMode {
+					fmt.Printf(" %s✓ %d tx, %d address annotations%s\n", Fmt.Green, len(txMeta), len(addrMeta), Fmt.Reset)
+				}
+				saveNostrMetadataLayers(acc.ChainID, transfers, startMonth, endMonth, txMeta, addrMeta)
+			}
+		}
+	}
+
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
-	fmt.Printf("\n%s✓ Source sync complete%s: %d transaction(s), %s\n\n", Fmt.Green, Fmt.Reset, totalProcessed, elapsed)
+	if !accountSyncMode {
+		fmt.Printf("\n%s✓ Source sync complete%s: %s, %s\n\n", Fmt.Green, Fmt.Reset, Pluralize(totalProcessed, "transaction", ""), elapsed)
+	}
 	UpdateSyncSource("transactions", isFullSync)
 	UpdateSyncActivity(isFullSync)
 	return totalProcessed, nil
@@ -655,6 +720,86 @@ func TransactionsSync(args []string) (int, error) {
 
 func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, error) {
 	return etherscansource.FetchTokenTransfers(etherscanAccount(acc), apiKey)
+}
+
+func existingTokenTransferKeys(acc FinanceAccount) map[string]bool {
+	out := map[string]bool{}
+	if acc.Token == nil {
+		return out
+	}
+	dataDir := DataDir()
+	filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
+	yearDirs, _ := os.ReadDir(dataDir)
+	for _, yd := range yearDirs {
+		if !yd.IsDir() || len(yd.Name()) != 4 {
+			continue
+		}
+		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, yd.Name()))
+		for _, md := range monthDirs {
+			if !md.IsDir() || len(md.Name()) != 2 {
+				continue
+			}
+			cache, ok := etherscansource.LoadCache(etherscansource.Path(dataDir, yd.Name(), md.Name(), acc.Chain, filename))
+			if !ok {
+				continue
+			}
+			for _, tx := range cache.Transactions {
+				out[tokenTransferKey(tx)] = true
+			}
+		}
+	}
+	return out
+}
+
+func printBlockchainNewTxStatus(n int, accountSyncMode bool, reason string) {
+	if accountSyncMode {
+		fmt.Printf("  %s%-8s%s %d\n", Fmt.Dim, "New tx:", Fmt.Reset, n)
+		return
+	}
+	if n == 0 && reason != "" {
+		fmt.Printf("    %sNew tx:%s 0 %s(%s)%s\n", Fmt.Dim, Fmt.Reset, Fmt.Dim, reason, Fmt.Reset)
+	} else {
+		fmt.Printf("    %sNew tx:%s %d\n", Fmt.Dim, Fmt.Reset, n)
+	}
+	if n == 0 {
+		fmt.Printf("    %s✓ No new tx%s\n", Fmt.Green, Fmt.Reset)
+	}
+}
+
+func monthHasNewTokenTransfer(existing map[string]bool, transfers []etherscansource.TokenTransfer) bool {
+	for _, tx := range transfers {
+		if !existing[tokenTransferKey(tx)] {
+			return true
+		}
+	}
+	return false
+}
+
+func countNewTokenTransfers(existing map[string]bool, transfers []etherscansource.TokenTransfer) int {
+	n := 0
+	for _, tx := range transfers {
+		if !existing[tokenTransferKey(tx)] {
+			n++
+		}
+	}
+	return n
+}
+
+func shouldRunBlockchainEnrichment(slug string, enrichmentRefresh bool, changedSlugs map[string]bool) bool {
+	if enrichmentRefresh {
+		return true
+	}
+	return changedSlugs[strings.ToLower(slug)]
+}
+
+func tokenTransferKey(tx etherscansource.TokenTransfer) string {
+	return strings.ToLower(tx.Hash) + "|" +
+		strings.ToLower(tx.From) + "|" +
+		strings.ToLower(tx.To) + "|" +
+		tx.Value + "|" +
+		tx.TimeStamp + "|" +
+		tx.TokenDecimal + "|" +
+		strings.ToLower(tx.TokenSymbol)
 }
 
 // saveNostrMetadataLayers writes Nostr metadata to two layers:

@@ -94,7 +94,7 @@ func generateMovesWithRules(kind moveKind, args []string) error {
 	for _, n := range changedMonths {
 		total += n
 	}
-	fmt.Printf("  %s✓ generate %s: %d %s updated across %d month(s)%s\n",
-		Fmt.Green, kind.labelPl, total, kind.labelPl, len(changedMonths), Fmt.Reset)
+	fmt.Printf("  %s✓ generate %s: %d %s updated across %s%s\n",
+		Fmt.Green, kind.labelPl, total, kind.labelPl, Pluralize(len(changedMonths), "month", ""), Fmt.Reset)
 	return nil
 }

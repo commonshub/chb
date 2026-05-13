@@ -138,10 +138,10 @@ func (d *calendarSyncDiagnostics) PrintSummary() {
 	}
 	fmt.Printf("\n%sCalendar sync diagnostics%s\n", Fmt.Bold, Fmt.Reset)
 	for _, kind := range sortedDiagnosticKinds(d.errors) {
-		fmt.Printf("  %s%d error(s)%s: %s\n", Fmt.Red, d.errors[kind], Fmt.Reset, kind)
+		fmt.Printf("  %s%s%s: %s\n", Fmt.Red, Pluralize(d.errors[kind], "error", ""), Fmt.Reset, kind)
 	}
 	for _, kind := range sortedDiagnosticKinds(d.warnings) {
-		fmt.Printf("  %s%d warning(s)%s: %s\n", Fmt.Yellow, d.warnings[kind], Fmt.Reset, kind)
+		fmt.Printf("  %s%s%s: %s\n", Fmt.Yellow, Pluralize(d.warnings[kind], "warning", ""), Fmt.Reset, kind)
 	}
 	if path := DiagnosticsLogPath(); path != "" {
 		fmt.Printf("  %sDetails: %s%s\n", Fmt.Dim, path, Fmt.Reset)
@@ -316,8 +316,8 @@ func CalendarsSync(args []string) (int, int, error) {
 		eventsInRange := countICALEventsInMonthRange(events, sinceMonth, untilMonth)
 		publicInRange := countPublicICALEventsInMonthRange(events, sinceMonth, untilMonth, visibility)
 		bookingInRange := countBookingEventsInMonthRange(events, sinceMonth, untilMonth, visibility, roomSource)
-		fmt.Printf("  %s✓%s %s calendar: %d event(s) %s, %d public, %d private (%s/%s, %d in feed)\n",
-			Fmt.Green, Fmt.Reset, cs.Slug, eventsInRange, rangeLabel, publicInRange, bookingInRange, provider, visibility, len(events))
+		fmt.Printf("  %s✓%s %s calendar: %s %s, %d public, %d private (%s/%s, %d in feed)\n",
+			Fmt.Green, Fmt.Reset, cs.Slug, Pluralize(eventsInRange, "event", ""), rangeLabel, publicInRange, bookingInRange, provider, visibility, len(events))
 		fetched = append(fetched, calendarFetch{
 			slug:           cs.Slug,
 			name:           cs.Name,
@@ -393,8 +393,8 @@ func CalendarsSync(args []string) (int, int, error) {
 	for _, events := range eventsByMonth {
 		filteredPublicEvents += len(events)
 	}
-	fmt.Printf("\n📎 Found %d public event(s) %s across %d month(s) to process\n",
-		filteredPublicEvents, rangeLabel, len(sortedMonths))
+	fmt.Printf("\n📎 Found %s %s across %s to process\n",
+		Pluralize(filteredPublicEvents, "public event", ""), rangeLabel, Pluralize(len(sortedMonths), "month", ""))
 
 	// Save public.ics per month (events with URLs only)
 	for _, ym := range sortedMonths {
@@ -944,7 +944,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 
 	// Check if we can skip (same event count, not forced, and existing records are already enriched)
 	if !force && len(existingIDs) == len(roomEvents) && len(existingIDs) > 0 && !existingEventsNeedRefresh(existingEvents) {
-		fmt.Printf("  %s: %d public event(s), unchanged\n", label, len(roomEvents))
+		fmt.Printf("  %s: %s, unchanged\n", label, Pluralize(len(roomEvents), "public event", ""))
 		return nil, nil
 	}
 
@@ -1087,8 +1087,8 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	}
 	data, _ := json.MarshalIndent(ef, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "events.json"), data)
-	fmt.Printf("  %s: %d public event(s), %d page fetch(es), %d cover(s) pending, %d new, wrote %d\n",
-		label, len(roomEvents), needsOGFetch, needsCoverSync, len(newEvents), len(fullEvents))
+	fmt.Printf("  %s: %s, %s, %s pending, %d new, wrote %d\n",
+		label, Pluralize(len(roomEvents), "public event", ""), Pluralize(needsOGFetch, "page fetch", "page fetches"), Pluralize(needsCoverSync, "cover", ""), len(newEvents), len(fullEvents))
 
 	return &monthResult{
 		yearMonth:   fmt.Sprintf("%s-%s", year, month),

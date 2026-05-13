@@ -752,22 +752,7 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	// just this account's entry in the shared balance cache.
 	if refresh {
 		fmt.Printf("\n  %sRefreshing on-chain balance for %s…%s\n", Fmt.Dim, acc.Slug, Fmt.Reset)
-		if v, key, err := refreshAccountBalance(acc); err == nil && key != "" {
-			cache := loadBalanceCache()
-			if cache == nil {
-				cache = &balanceCache{Balances: map[string]float64{}}
-			}
-			if cache.Balances == nil {
-				cache.Balances = map[string]float64{}
-			}
-			cache.Balances[key] = v
-			cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-			saveBalanceCache(cache)
-		} else if err != nil {
-			Warnf("  %s⚠ Failed to refresh: %v%s", Fmt.Yellow, err, Fmt.Reset)
-		} else {
-			Warnf("  %s⚠ No live balance source for this account (provider=%s)%s", Fmt.Yellow, acc.Provider, Fmt.Reset)
-		}
+		refreshAndPersistAccountBalance(acc)
 	}
 
 	// Prefer the cached live on-chain balance (token-scoped) over the
@@ -1642,21 +1627,56 @@ func AccountFetch(slug string, args []string) error {
 	checkpoint := latestAccountSourceCheckpoint(acc)
 	beforeSourceMonths := accountSourceMonthFingerprints(acc)
 	fetchArgs := accountFetchArgsForCheckpoint(*acc, args, checkpoint)
+	if acc.Provider == "etherscan" {
+		for _, line := range accountSyncPlanLines(acc, accountTransactionSource(*acc), checkpoint, accountFetchArgsHasExplicitRange(args)) {
+			fmt.Printf("  %s\n", line)
+		}
+		fmt.Println()
+	}
 	if _, err := TransactionsSync(fetchArgs); err != nil {
 		return err
 	}
 	touchedMonths := accountChangedSourceMonths(acc, beforeSourceMonths)
-	if len(touchedMonths) == 0 {
-		fmt.Printf("\n  %sNo account source months changed; skipping transaction generation.%s\n", Fmt.Dim, Fmt.Reset)
-	} else if err := GenerateTransactionsForMonths(touchedMonths); err != nil {
-		return fmt.Errorf("generate transactions after fetch: %v", err)
+	if len(touchedMonths) > 0 {
+		if err := GenerateTransactionsForMonths(touchedMonths); err != nil {
+			return fmt.Errorf("generate transactions after fetch: %v", err)
+		}
 	}
 	UpdateSyncSource("account:"+strings.ToLower(slug), accountSyncIsFull(args))
+	// Refresh the persisted live-balance cache so a subsequent
+	// `chb accounts <slug>` shows the current on-chain balance without
+	// requiring a separate --refresh call.
+	refreshAndPersistAccountBalance(acc)
 	if verification := verifyAccountLocalAgainstOnchainCache(acc, nil); verification != nil {
 		printAccountSyncVerification(verification)
 	}
-	fmt.Printf("%s✓ Account sync complete%s: %s in %s\n\n", Fmt.Green, Fmt.Reset, acc.Slug, time.Since(startedAt).Round(time.Millisecond))
+	fmt.Printf("%sSync done%s in %s\n\n", Fmt.Green, Fmt.Reset, time.Since(startedAt).Round(time.Millisecond))
 	return nil
+}
+
+// refreshAndPersistAccountBalance pulls the current live balance from
+// the account's source (etherscan / etc.) and writes it into the
+// shared balance cache, so any subsequent `chb accounts` view shows
+// the fresh value without needing --refresh. Soft-fails on errors —
+// the sync itself succeeded and the cache write is opportunistic.
+func refreshAndPersistAccountBalance(acc *AccountConfig) {
+	if acc == nil {
+		return
+	}
+	v, key, err := refreshAccountBalance(acc)
+	if err != nil || key == "" {
+		return
+	}
+	cache := loadBalanceCache()
+	if cache == nil {
+		cache = &balanceCache{Balances: map[string]float64{}}
+	}
+	if cache.Balances == nil {
+		cache.Balances = map[string]float64{}
+	}
+	cache.Balances[key] = v
+	cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
+	saveBalanceCache(cache)
 }
 
 // AccountsFetchAll fetches all configured accounts source → local. It runs
@@ -1700,13 +1720,13 @@ func AccountsFetchAll(args []string) (int, error) {
 	fmt.Println()
 
 	if failed > 0 {
-		return failed, fmt.Errorf("%d account(s) failed", failed)
+		return failed, fmt.Errorf("%s failed", Pluralize(failed, "account", ""))
 	}
 	return 0, nil
 }
 
 func accountFetchArgs(acc AccountConfig, args []string) []string {
-	out := append([]string{"--slug", acc.Slug}, args...)
+	out := append([]string{"--account-sync", "--slug", acc.Slug}, args...)
 	if GetOption(args, "--source") != "" {
 		return out
 	}
@@ -1725,9 +1745,6 @@ func accountFetchArgsForCheckpoint(acc AccountConfig, args []string, checkpoint 
 	if GetOption(out, "--since") == "" {
 		out = append(out, "--since", checkpoint.Month)
 	}
-	if !HasFlag(out, "--force") {
-		out = append(out, "--force")
-	}
 	return out
 }
 
@@ -1743,6 +1760,39 @@ func accountSyncIsFull(args []string) bool {
 	return HasFlag(args, "--history") || GetOption(args, "--since") != ""
 }
 
+func accountSyncPlanLines(acc *AccountConfig, source string, checkpoint accountSourceCheckpoint, explicitRange bool) []string {
+	if acc == nil {
+		return nil
+	}
+	if source == "" {
+		source = accountTransactionSource(*acc)
+	}
+	token := ""
+	if acc.Token != nil {
+		token = acc.Token.Symbol
+		if acc.Token.Address != "" {
+			token += " (" + acc.Token.Address + ")"
+		}
+	}
+	since := "default recent window"
+	if explicitRange {
+		since = "requested range"
+	} else if checkpoint.Exists {
+		since = time.Unix(checkpoint.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02") + " (last tx)"
+	} else if lastSync := LastSyncTime("account:" + strings.ToLower(acc.Slug)); !lastSync.IsZero() {
+		since = lastSync.In(BrusselsTZ()).Format("2006-01-02") + " (last sync)"
+	}
+	lines := []string{
+		fmt.Sprintf("%-8s %s", "Source:", source),
+		fmt.Sprintf("%-8s %s", "Address:", acc.Address),
+	}
+	if token != "" {
+		lines = append(lines, fmt.Sprintf("%-8s %s", "Token:", token))
+	}
+	lines = append(lines, fmt.Sprintf("%-8s %s", "Since:", since))
+	return lines
+}
+
 func accountTransactionSource(acc AccountConfig) string {
 	switch strings.ToLower(strings.TrimSpace(acc.Provider)) {
 	case "stripe":
@@ -1750,6 +1800,9 @@ func accountTransactionSource(acc AccountConfig) string {
 	case "monerium":
 		return "monerium"
 	case "etherscan":
+		if acc.Chain != "" {
+			return strings.ToLower(acc.Chain)
+		}
 		return "etherscan"
 	default:
 		return ""
@@ -2248,33 +2301,25 @@ func printAccountSyncVerification(v *accountSyncVerification) {
 	if v == nil {
 		return
 	}
-	fmt.Printf("\n  %sOn-chain/local status for %s%s\n", Fmt.Bold, v.AccountSlug, Fmt.Reset)
-	onchainLine := fmt.Sprintf("    %sOn-chain:%s %s, %d tx%s",
-		Fmt.Dim, Fmt.Reset,
-		formatAccountDataBalance(v.OnchainBalance, v.Currency),
-		v.OnchainTxCount,
-		accountVerificationRangeLabel(v.OnchainFirstTxAt, v.OnchainLastTxAt))
-	if !v.OnchainBalanceOK && v.LiveBalanceError != nil {
-		onchainLine += fmt.Sprintf("  %s(live unavailable: %v; using raw cache sum)%s", Fmt.Dim, v.LiveBalanceError, Fmt.Reset)
+	fmt.Println()
+	for _, row := range accountSyncVerificationSummaryRows(v) {
+		fmt.Printf("  %s%s%s %s\n", Fmt.Dim, padRight(row[0]+":", 13), Fmt.Reset, row[1])
 	}
-	fmt.Println(onchainLine)
-	fmt.Printf("    %sLocal files:%s %s, %d tx%s\n",
-		Fmt.Dim, Fmt.Reset,
-		formatAccountDataBalance(v.LocalBalance, v.Currency),
-		v.LocalTxCount,
-		accountVerificationRangeLabel(v.LocalFirstTxAt, v.LocalLastTxAt))
+	if !v.OnchainBalanceOK && v.LiveBalanceError != nil {
+		fmt.Printf("  %sOn-chain live balance unavailable: %v; using raw cache sum%s\n", Fmt.Dim, v.LiveBalanceError, Fmt.Reset)
+	}
 
 	if accountSyncVerificationMatches(v) {
-		fmt.Printf("    %s✓ matches%s\n\n", Fmt.Green, Fmt.Reset)
+		fmt.Println()
 		return
 	}
 
-	fmt.Printf("    %s⚠ mismatch%s\n", Fmt.Yellow, Fmt.Reset)
+	fmt.Printf("  %s⚠ mismatch%s\n", Fmt.Yellow, Fmt.Reset)
 	if math.Abs(v.LocalBalance-v.OnchainBalance) >= 0.01 {
-		fmt.Printf("    %sBalance diff:%s %s\n", Fmt.Dim, Fmt.Reset, formatAccountDataBalance(v.LocalBalance-v.OnchainBalance, v.Currency))
+		fmt.Printf("  %sBalance diff:%s %s\n", Fmt.Dim, Fmt.Reset, formatAccountDataBalance(v.LocalBalance-v.OnchainBalance, v.Currency))
 	}
 	if v.LocalTxCount != v.OnchainTxCount {
-		fmt.Printf("    %sTx count diff:%s local %d vs on-chain %d\n", Fmt.Dim, Fmt.Reset, v.LocalTxCount, v.OnchainTxCount)
+		fmt.Printf("  %sTx count diff:%s local %d vs on-chain %d\n", Fmt.Dim, Fmt.Reset, v.LocalTxCount, v.OnchainTxCount)
 	}
 
 	if len(v.Missing) > 0 {
@@ -2304,6 +2349,59 @@ func printAccountSyncVerification(v *accountSyncVerification) {
 		fmt.Printf("      chb generate transactions --since %s\n", v.OldestMonth)
 	}
 	fmt.Printf("      chb accounts %s --refresh\n\n", v.AccountSlug)
+}
+
+func accountSyncVerificationSummaryRows(v *accountSyncVerification) [][]string {
+	if v == nil {
+		return nil
+	}
+	return [][]string{
+		{
+			"Onchain data",
+			accountSyncVerificationSummary(v.OnchainTxCount, v.OnchainFirstTxAt, v.OnchainLastTxAt, v.OnchainBalance, v.Currency),
+		},
+		{
+			"Local data",
+			accountSyncVerificationSummary(v.LocalTxCount, v.LocalFirstTxAt, v.LocalLastTxAt, v.LocalBalance, v.Currency),
+		},
+	}
+}
+
+func accountSyncVerificationSummary(txCount int, first, last time.Time, balance float64, currency string) string {
+	return fmt.Sprintf("%s between %s and %s, balance: %s",
+		Pluralize(txCount, "tx", ""),
+		formatAccountDataDate(first),
+		formatAccountDataDate(last),
+		formatAccountDataBalance(balance, currency))
+}
+
+func accountSyncVerificationRows(v *accountSyncVerification) [][]string {
+	if v == nil {
+		return nil
+	}
+	return [][]string{
+		{
+			"On-chain",
+			formatAccountDataBalance(v.OnchainBalance, v.Currency),
+			Pluralize(v.OnchainTxCount, "tx", ""),
+			formatAccountDataTimestamp(v.OnchainFirstTxAt),
+			formatAccountDataTimestamp(v.OnchainLastTxAt),
+		},
+		{
+			"Local files",
+			formatAccountDataBalance(v.LocalBalance, v.Currency),
+			Pluralize(v.LocalTxCount, "tx", ""),
+			formatAccountDataTimestamp(v.LocalFirstTxAt),
+			formatAccountDataTimestamp(v.LocalLastTxAt),
+		},
+	}
+}
+
+func formatAccountDataDate(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.In(BrusselsTZ()).Format("2006-01-02")
 }
 
 func accountVerificationRangeLabel(first, last time.Time) string {
@@ -2571,6 +2669,24 @@ func odooJournalCurrentBalance(creds *OdooCredentials, uid int, journalID int) (
 	return odooJournalLineSum(creds, uid, journalID)
 }
 
+// odooStatementLineCount returns the number of account.bank.statement.line
+// records on a journal.
+func odooStatementLineCount(creds *OdooCredentials, uid int, journalID int) (int, error) {
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_count",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+		}}, nil)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	if err := json.Unmarshal(result, &n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func odooJournalLineSum(creds *OdooCredentials, uid int, journalID int) (float64, error) {
 	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.bank.statement.line", "read_group",
@@ -2624,10 +2740,22 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		localTxs = filtered
 	}
 
+	// Auto-escalate to history mode when local has more txs than Odoo.
+	// The cursor-based pass only looks at local txs newer than the latest
+	// Odoo line, so older missing txs (e.g. a tx that was deleted in
+	// Odoo, or a gap from an older partial sync) would be invisible.
+	if !useHistory && acc.OdooJournalID != 0 {
+		if odooCount, err := odooStatementLineCount(creds, uid, acc.OdooJournalID); err == nil && len(localTxs) > odooCount {
+			odooLog("  %sDrift detected: local has %s, Odoo has %s — escalating to full history check.%s\n",
+				Fmt.Dim, Pluralize(len(localTxs), "tx", ""), Pluralize(odooCount, "line", ""), Fmt.Reset)
+			useHistory = true
+		}
+	}
+
 	scopeLabel := "latest Odoo line"
 	if useHistory {
 		scopeLabel = "--history"
-		odooLog("  %sHistory mode: checking all %d local transaction(s).%s\n", Fmt.Dim, len(localTxs), Fmt.Reset)
+		odooLog("  %sHistory mode: checking all %s.%s\n", Fmt.Dim, Pluralize(len(localTxs), "local transaction", ""), Fmt.Reset)
 	} else {
 		cursor, err := fetchLatestOdooImportCursor(creds, uid, acc.OdooJournalID)
 		if err != nil {
@@ -2636,8 +2764,8 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		} else if cursor.Found {
 			filtered, matched := filterTransactionsAfterOdooCursor(acc, localTxs, cursor)
 			if matched {
-				odooLog("  %sLatest Odoo import:%s %s %s→ checking %d newer local tx(s)%s\n",
-					Fmt.Dim, Fmt.Reset, cursor.Date, Fmt.Dim, len(filtered), Fmt.Reset)
+				odooLog("  %sLatest Odoo import:%s %s %s→ checking %s%s\n",
+					Fmt.Dim, Fmt.Reset, cursor.Date, Fmt.Dim, Pluralize(len(filtered), "newer local tx", ""), Fmt.Reset)
 				localTxs = filtered
 			} else {
 				Warnf("  %s⚠ Latest Odoo import not found locally (%s), falling back to full duplicate check%s",
@@ -2645,8 +2773,8 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 				useHistory = true
 			}
 		} else {
-			odooLog("  %sNo existing Odoo import found for journal #%d; checking all %d local tx(s).%s\n",
-				Fmt.Dim, acc.OdooJournalID, len(localTxs), Fmt.Reset)
+			odooLog("  %sNo existing Odoo import found for journal #%d; checking all %s.%s\n",
+				Fmt.Dim, acc.OdooJournalID, Pluralize(len(localTxs), "local tx", ""), Fmt.Reset)
 		}
 	}
 
@@ -2660,17 +2788,19 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 	if err != nil {
 		return blockchainOdooSyncResult{}, fmt.Errorf("failed to fetch existing Odoo entries: %v", err)
 	}
-	odooLog("  %sDuplicate check:%s %s, %d candidate tx(s), %d existing id(s)\n",
-		Fmt.Dim, Fmt.Reset, scopeLabel, len(localTxs), len(existingIDs))
+	odooLog("  %sDuplicate check:%s %s, %s, %s\n",
+		Fmt.Dim, Fmt.Reset, scopeLabel, Pluralize(len(localTxs), "candidate tx", ""), Pluralize(len(existingIDs), "existing id", ""))
 
 	var missing []TransactionEntry
 	partnerUpdates := 0
 	for _, tx := range localTxs {
 		importID := buildUniqueImportID(acc, tx)
 		if existingIDs[importID] {
-			if !dryRun && isEVMAddress(tx.Counterparty) {
+			if !dryRun {
 				if updated, err := ensureOdooStatementLinePartnerBank(creds, uid, acc.OdooJournalID, importID, tx); err == nil && updated {
 					partnerUpdates++
+				} else if err != nil {
+					Warnf("  %s⚠ Could not update existing Odoo partner link %s: %v%s", Fmt.Yellow, importID, err, Fmt.Reset)
 				}
 			}
 			continue
@@ -2703,19 +2833,7 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		t := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
 		amt := signedOdooAmountForTransaction(acc, tx)
 
-		paymentRef := tx.Counterparty
-		if tx.Type == "INTERNAL" {
-			paymentRef = "Internal transfer"
-			if tx.Counterparty != "" {
-				paymentRef += ": " + tx.Counterparty
-			}
-		}
-		if paymentRef == "" {
-			paymentRef = txDisplayDescription(tx)
-		}
-		if paymentRef == "" {
-			paymentRef = tx.Provider + " " + strings.ToLower(tx.Type)
-		}
+		paymentRef := buildOdooPaymentRef(tx)
 
 		partnerEmail, _ := tx.Metadata["email"].(string)
 		partnerBankID, partnerID := resolveOdooPartnerBankForTransaction(creds, uid, tx)
@@ -2827,8 +2945,8 @@ func (s *syncStats) print() {
 			Warnf("      %s⚠ %s%s", Fmt.Yellow, a, Fmt.Reset)
 		}
 	}
-	fmt.Printf("    Reconciled:     %d, %d internal transfer(s), %d ambiguous\n",
-		s.LinesReconciled, s.InternalTransfers, s.ReconcileAmbiguous)
+	fmt.Printf("    Reconciled:     %d, %s, %d ambiguous\n",
+		s.LinesReconciled, Pluralize(s.InternalTransfers, "internal transfer", ""), s.ReconcileAmbiguous)
 	if s.ReconcileNoPartner > 0 || s.ReconcileNoMatch > 0 || s.ReconcileErrors > 0 {
 		fmt.Printf("    Unreconciled:   %d no partner, %d no match, %d errors\n",
 			s.ReconcileNoPartner, s.ReconcileNoMatch, s.ReconcileErrors)
@@ -3273,6 +3391,63 @@ func buildOdooNarration(acc *AccountConfig, tx TransactionEntry) string {
 	return string(data)
 }
 
+func buildOdooPaymentRef(tx TransactionEntry) string {
+	paymentRef := tx.Counterparty
+	if tx.Type == "INTERNAL" {
+		paymentRef = "Internal transfer"
+		if tx.Counterparty != "" {
+			paymentRef += ": " + tx.Counterparty
+		}
+	}
+	if paymentRef == "" {
+		paymentRef = txDisplayDescription(tx)
+	}
+	if paymentRef == "" {
+		paymentRef = tx.Provider + " " + strings.ToLower(tx.Type)
+	}
+	return paymentRef
+}
+
+func buildOdooLineSyncUpdate(acc *AccountConfig, tx TransactionEntry, row map[string]interface{}, partnerBankID, partnerID int) map[string]interface{} {
+	update := map[string]interface{}{}
+	if paymentRef := buildOdooPaymentRef(tx); paymentRef != "" && odooString(row["payment_ref"]) != paymentRef {
+		update["payment_ref"] = paymentRef
+	}
+	if narr := buildOdooNarration(acc, tx); narr != "" && odooString(row["narration"]) != narr {
+		update["narration"] = narr
+	}
+	if partnerID > 0 && odooFieldID(row["partner_id"]) != partnerID {
+		update["partner_id"] = partnerID
+	}
+	if partnerBankID > 0 && odooFieldID(row["partner_bank_id"]) != partnerBankID {
+		update["partner_bank_id"] = partnerBankID
+	}
+	return update
+}
+
+func buildMoneriumLineSyncUpdate(acc *AccountConfig, tx TransactionEntry, row map[string]interface{}) map[string]interface{} {
+	if !transactionHasTag(tx, []string{"source", "monerium"}) && stringMetadata(tx.Metadata, "moneriumKind") == "" {
+		return nil
+	}
+	if !isZeroAddressPaymentRef(odooString(row["payment_ref"])) {
+		return nil
+	}
+	paymentRef := buildOdooPaymentRef(tx)
+	if paymentRef == "" || strings.HasPrefix(strings.ToLower(paymentRef), "0x") {
+		return nil
+	}
+	update := map[string]interface{}{"payment_ref": paymentRef}
+	if narr := buildOdooNarration(acc, tx); narr != "" && odooString(row["narration"]) != narr {
+		update["narration"] = narr
+	}
+	return update
+}
+
+func isZeroAddressPaymentRef(ref string) bool {
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	return strings.Contains(ref, "0x0000...0000") || strings.Contains(ref, "0x0000000000000000000000000000000000000000")
+}
+
 // resolveOdooPartner finds or creates a partner in Odoo.
 // Priority: email match → exact name match → skip if ambiguous → create new.
 func resolveOdooPartner(creds *OdooCredentials, uid int, name, email string, cache map[string]int, stats ...*syncStats) int {
@@ -3683,7 +3858,7 @@ func AccountStripePayouts(slug string, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to rebuild payouts cache: %v", err)
 		}
-		fmt.Printf("  %s%d payout(s) cached from source archives%s\n", Fmt.Dim, len(payouts), Fmt.Reset)
+		fmt.Printf("  %s%s cached from source archives%s\n", Fmt.Dim, Pluralize(len(payouts), "payout", ""), Fmt.Reset)
 	}
 
 	cache := stripesource.LoadPayoutsCache(DataDir())

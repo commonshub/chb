@@ -307,7 +307,7 @@ func summarizeSettingsFile(name string, settings *Settings) string {
 		if keys.Name != "" {
 			name = fmt.Sprintf(" (%s)", keys.Name)
 		}
-		return fmt.Sprintf("%s%s, %d relay(s)", npub, name, len(keys.Relays))
+		return fmt.Sprintf("%s%s, %s", npub, name, Pluralize(len(keys.Relays), "relay", ""))
 
 	case "rooms.json":
 		rooms, _ := LoadRooms()
