@@ -83,11 +83,15 @@ func main() {
 		} else {
 			cmd.Calendars(args[1:])
 		}
+	case "fridge":
+		cmd.Fridge(args[1:])
 	case "events":
 		if len(args) > 1 && args[1] == "sync" {
 			exitWithUsage("%s`chb events sync` was removed. Use `chb calendars sync`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		} else if len(args) > 1 && args[1] == "stats" {
 			cmd.EventsStats(args[2:])
+		} else if len(args) > 1 && args[1] == "tickets" {
+			cmd.EventsTickets(args[2:])
 		} else {
 			cmd.EventsList(args[1:])
 		}
