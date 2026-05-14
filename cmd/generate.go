@@ -396,11 +396,11 @@ func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
 				}
 				tx.Metadata["email"] = pii.Email
 			}
-			if pii.IBAN != "" {
+			if iban := normalizeIBAN(pii.IBAN); iban != "" {
 				if tx.Metadata == nil {
 					tx.Metadata = map[string]interface{}{}
 				}
-				tx.Metadata["iban"] = pii.IBAN
+				tx.Metadata["iban"] = iban
 			}
 		}
 	}
@@ -2668,6 +2668,26 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		return transactions[i].Timestamp < transactions[j].Timestamp
 	})
 
+	// Drop transactions explicitly flagged ["t", "ignore"] via a Nostr
+	// annotation — the operator marked them as not-real-business-activity
+	// (test charges, mistaken transfers, refunds whose pair we kept,
+	// etc.) and they should not appear in the public transactions feed
+	// or in any downstream aggregate (counterparties.json, summaries,
+	// reports, etc.).
+	ignoredCount := 0
+	kept := transactions[:0]
+	for _, tx := range transactions {
+		if transactionHasTag(tx, []string{"t", "ignore"}) {
+			ignoredCount++
+			continue
+		}
+		kept = append(kept, tx)
+	}
+	transactions = kept
+	if ignoredCount > 0 {
+		fmt.Printf("    %s↷ skipped %s tagged #ignore%s\n", Fmt.Dim, Pluralize(ignoredCount, "tx", ""), Fmt.Reset)
+	}
+
 	// Split PII from public transactions
 	piiFile := TransactionsPIIFile{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
@@ -2689,8 +2709,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		if email, ok := tx.Metadata["email"].(string); ok && email != "" {
 			piiEmail = email
 		}
-		if iban, ok := tx.Metadata["iban"].(string); ok && iban != "" {
-			piiIBAN = iban
+		if iban, ok := tx.Metadata["iban"].(string); ok {
+			if normalized := normalizeIBAN(iban); normalized != "" {
+				piiIBAN = normalized
+				tx.Metadata["iban"] = normalized
+			}
 		}
 
 		// For Stripe/Monerium, counterparty may be a person's name (PII).

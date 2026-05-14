@@ -668,6 +668,10 @@ func AccountsCommand(args []string) {
 				if err := AccountOdooLink(slug, args[2:]); err != nil {
 					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
 				}
+			case "balance":
+				if err := AccountBalance(slug, args[2:]); err != nil {
+					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
+				}
 			case "payouts":
 				if err := AccountStripePayouts(slug, args[2:]); err != nil {
 					Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
@@ -4241,6 +4245,7 @@ func printAccountsHelp() {
   %schb accounts <slug> sync --dry-run%s    Show what would be synced
   %schb accounts <slug> sync --until YYYYMMDD%s   Stop processing at this date
   %schb accounts <slug> sync --force%s      Re-sync (delete + recreate)
+  %schb accounts <slug> balance [YYYY[/MM[/DD]]]%s   Historical balance at end of period
   %schb accounts <slug> payouts%s           List Stripe payouts
 
 %sENVIRONMENT%s
@@ -4250,6 +4255,7 @@ func printAccountsHelp() {
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,

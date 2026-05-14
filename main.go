@@ -85,6 +85,10 @@ func main() {
 		}
 	case "fridge":
 		cmd.Fridge(args[1:])
+	case "vendors":
+		cmd.Vendors(args[1:])
+	case "customers":
+		cmd.Customers(args[1:])
 	case "events":
 		if len(args) > 1 && args[1] == "sync" {
 			exitWithUsage("%s`chb events sync` was removed. Use `chb calendars sync`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
@@ -141,7 +145,7 @@ func main() {
 			invSub = args[1]
 		}
 		switch invSub {
-		case "sync", "help", "--help", "-h":
+		case "sync":
 			if len(args) > 2 && args[2] == "nostr" {
 				exitWithUsage("%s`chb invoices sync nostr` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			}
@@ -155,7 +159,9 @@ func main() {
 		case "publish":
 			exitWithUsage("%s`chb invoices publish` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:
-			exitWithUsage("%sUsage: chb invoices [sync|categorize] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			if err := cmd.InvoicesList(args[1:]); err != nil {
+				exitWithError(err)
+			}
 		}
 	case "bills":
 		billSub := ""
@@ -163,7 +169,7 @@ func main() {
 			billSub = args[1]
 		}
 		switch billSub {
-		case "sync", "help", "--help", "-h":
+		case "sync":
 			if len(args) > 2 && args[2] == "nostr" {
 				exitWithUsage("%s`chb bills sync nostr` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 			}
@@ -177,7 +183,9 @@ func main() {
 		case "publish":
 			exitWithUsage("%s`chb bills publish` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:
-			exitWithUsage("%sUsage: chb bills [sync|categorize] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			if err := cmd.BillsList(args[1:]); err != nil {
+				exitWithError(err)
+			}
 		}
 	case "messages":
 		if len(args) > 1 && args[1] == "sync" {
@@ -291,7 +299,11 @@ func main() {
 			exitWithUsage("%sUsage: chb nostr sync [scope] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		}
 	case "rules":
-		cmd.RulesCommand(args[1:])
+		if len(args) > 1 && args[1] == "add" {
+			cmd.RulesAdd(args[2:])
+		} else {
+			cmd.RulesCommand(args[1:])
+		}
 	case "accounts":
 		cmd.AccountsCommand(args[1:])
 	case "stats":
