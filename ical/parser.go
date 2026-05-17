@@ -16,6 +16,7 @@ type Event struct {
 	URL         string
 	Start       time.Time
 	End         time.Time
+	AllDay      bool     // DTSTART had VALUE=DATE (no time component)
 	RawLines    []string // Original ICS lines for this event block
 }
 
@@ -32,6 +33,7 @@ func ParseICS(data string) ([]Event, error) {
 	var inEvent bool
 	var lines []string
 	var props map[string]string
+	var propParams map[string]map[string]string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -40,6 +42,7 @@ func ParseICS(data string) ([]Event, error) {
 			inEvent = true
 			lines = []string{line}
 			props = make(map[string]string)
+			propParams = make(map[string]map[string]string)
 			continue
 		}
 
@@ -56,10 +59,10 @@ func ParseICS(data string) ([]Event, error) {
 			}
 
 			if dtstart, ok := props["DTSTART"]; ok {
-				ev.Start = parseICalDate(dtstart)
+				ev.Start, ev.AllDay = parseICalDate(dtstart, propParams["DTSTART"])
 			}
 			if dtend, ok := props["DTEND"]; ok {
-				ev.End = parseICalDate(dtend)
+				ev.End, _ = parseICalDate(dtend, propParams["DTEND"])
 			}
 
 			if !ev.Start.IsZero() {
@@ -86,9 +89,12 @@ func ParseICS(data string) ([]Event, error) {
 			}
 
 			// Parse property
-			key, value := parseProperty(line)
+			key, params, value := parseProperty(line)
 			if key != "" {
 				props[key] = value
+				if len(params) > 0 {
+					propParams[key] = params
+				}
 			}
 		}
 	}
@@ -96,9 +102,9 @@ func ParseICS(data string) ([]Event, error) {
 	return events, scanner.Err()
 }
 
-// parseProperty extracts key and value from an ICS property line
-// Handles "KEY;PARAMS:VALUE" and "KEY:VALUE"
-func parseProperty(line string) (string, string) {
+// parseProperty extracts key, parameters, and value from an ICS property line.
+// Handles "KEY;PARAM1=V1;PARAM2=V2:VALUE" and "KEY:VALUE".
+func parseProperty(line string) (string, map[string]string, string) {
 	// Remove \r
 	line = strings.TrimRight(line, "\r")
 
@@ -111,41 +117,58 @@ func parseProperty(line string) (string, string) {
 		}
 	}
 	if colonIdx < 0 {
-		return "", ""
+		return "", nil, ""
 	}
 
 	keyPart := line[:colonIdx]
 	value := line[colonIdx+1:]
 
-	// Strip parameters (e.g., DTSTART;TZID=Europe/Brussels -> DTSTART)
 	key := keyPart
+	var params map[string]string
 	if semiIdx := strings.Index(keyPart, ";"); semiIdx >= 0 {
 		key = keyPart[:semiIdx]
+		params = make(map[string]string)
+		for _, p := range strings.Split(keyPart[semiIdx+1:], ";") {
+			if eq := strings.Index(p, "="); eq >= 0 {
+				params[strings.TrimSpace(p[:eq])] = strings.Trim(p[eq+1:], `"`)
+			}
+		}
 	}
 
-	return strings.TrimSpace(key), value
+	return strings.TrimSpace(key), params, value
 }
 
-// parseICalDate parses various iCal date/datetime formats
-func parseICalDate(s string) time.Time {
+// parseICalDate parses various iCal date/datetime formats. Returns the parsed
+// time and a flag indicating whether the value represents an all-day date
+// (VALUE=DATE — date with no time component). TZID is honoured for floating
+// (non-UTC) datetimes.
+func parseICalDate(s string, params map[string]string) (time.Time, bool) {
 	s = strings.TrimSpace(s)
 
-	// Try full datetime with Z (UTC)
+	loc := time.UTC
+	if tzid := params["TZID"]; tzid != "" {
+		if l, err := time.LoadLocation(tzid); err == nil {
+			loc = l
+		}
+	}
+
+	// Try full datetime with Z (UTC) — TZID is ignored when Z is present.
 	if t, err := time.Parse("20060102T150405Z", s); err == nil {
-		return t
+		return t, false
 	}
 
-	// Try full datetime without Z (local time)
-	if t, err := time.Parse("20060102T150405", s); err == nil {
-		return t
+	// Try full datetime without Z (floating / TZID-bound local time).
+	if t, err := time.ParseInLocation("20060102T150405", s, loc); err == nil {
+		return t, false
 	}
 
-	// Try date only
-	if t, err := time.Parse("20060102", s); err == nil {
-		return t
+	// Date only — all-day event. Anchor at midnight in the event's local zone
+	// (TZID if present, else UTC) so the calendar date is preserved.
+	if t, err := time.ParseInLocation("20060102", s, loc); err == nil {
+		return t, true
 	}
 
-	return time.Time{}
+	return time.Time{}, false
 }
 
 func unfold(s string) string {
