@@ -2663,6 +2663,27 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		syncTransactionTags(&transactions[i])
 	}
 
+	// Strip the customer name from Stripe public descriptions, replacing
+	// it with a synthesized "ticket <event>" / "<category> <collective>"
+	// summary when those tags are known. The customer name is preserved
+	// in the PII file (loaded with --with-pii) so detail views can still
+	// show it on demand.
+	for i := range transactions {
+		tx := &transactions[i]
+		if tx.Provider != "stripe" {
+			continue
+		}
+		desc := buildPublicStripeDescription(tx)
+		if tx.Metadata == nil {
+			tx.Metadata = map[string]interface{}{}
+		}
+		if desc == "" {
+			delete(tx.Metadata, "description")
+		} else {
+			tx.Metadata["description"] = desc
+		}
+	}
+
 	// Sort by timestamp
 	sort.Slice(transactions, func(i, j int) bool {
 		return transactions[i].Timestamp < transactions[j].Timestamp
@@ -2829,6 +2850,69 @@ func internalTransferHashesFromChainDir(chainDir string) map[string]bool {
 // through safeFirstName because anything labelled "name" risks carrying full
 // names or emails. Other keys pass through unprefixed; existing keys (our own
 // derived values) take precedence so a merchant can't overwrite them.
+// buildPublicStripeDescription returns a clean, PII-free description for
+// a Stripe transaction. Preferred forms, in order:
+//   - "ticket <eventName>" when an event is associated (or just "ticket"
+//     if the name is not yet resolved)
+//   - "<category> <collective>" when both are known (e.g. "donation
+//     openletter", "membership commonshub")
+//   - "<category>" or "<collective>" when only one is set
+//
+// As a last resort, the original Stripe description is kept but with the
+// customer name (tx.Counterparty, still present at this stage) scrubbed
+// so it never reaches the public file.
+func buildPublicStripeDescription(tx *TransactionEntry) string {
+	eventName := firstTransactionTagValue(*tx, "eventName")
+	eventID := firstTransactionTagValue(*tx, "event")
+	if eventID == "" && tx.Event != "" {
+		eventID = tx.Event
+	}
+	if eventID != "" || eventName != "" {
+		if eventName != "" {
+			return "ticket " + eventName
+		}
+		return "ticket"
+	}
+
+	cat := tx.Category
+	coll := tx.Collective
+	switch {
+	case cat != "" && coll != "":
+		return cat + " " + coll
+	case cat != "":
+		return cat
+	case coll != "":
+		return coll
+	}
+
+	desc := stringMetadata(tx.Metadata, "description")
+	if desc == "" {
+		return ""
+	}
+	return scrubCustomerNameFromDescription(desc, tx.Counterparty)
+}
+
+// scrubCustomerNameFromDescription removes a known customer-name token
+// (and the common Stripe connectors that precede it) from a free-text
+// description. Returns the trimmed result; never panics on empty input.
+func scrubCustomerNameFromDescription(desc, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || desc == "" {
+		return desc
+	}
+	// Stripe-style "Donation by NAME", "Payment from NAME", "for NAME",
+	// "- NAME". The name itself is also stripped if it appears bare.
+	for _, prefix := range []string{" by ", " from ", " for ", " - ", ", "} {
+		if i := strings.Index(strings.ToLower(desc), strings.ToLower(prefix+name)); i >= 0 {
+			desc = desc[:i] + desc[i+len(prefix)+len(name):]
+		}
+	}
+	if i := strings.Index(strings.ToLower(desc), strings.ToLower(name)); i >= 0 {
+		desc = desc[:i] + desc[i+len(name):]
+	}
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(desc), "-,;:"))
+}
+
 func foldStripeMetadataValue(metadata map[string]interface{}, k, v string) {
 	if v == "" {
 		return
