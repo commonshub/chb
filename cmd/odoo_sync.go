@@ -463,8 +463,34 @@ func odooFieldName(v interface{}) string {
 	return ""
 }
 
+// resolveJournalIDArg accepts either a numeric Odoo journal ID or an
+// account slug. When given a slug, it looks up the configured account
+// in accounts.json and returns its linked OdooJournalID. Errors clearly
+// if the slug isn't known or isn't linked to a journal.
+func resolveJournalIDArg(arg string) (int, error) {
+	var journalID int
+	if _, err := fmt.Sscanf(arg, "%d", &journalID); err == nil && journalID > 0 {
+		return journalID, nil
+	}
+	acc := findAccountConfigBySlug(arg)
+	if acc == nil {
+		return 0, fmt.Errorf("invalid journal ID or unknown account slug: %s", arg)
+	}
+	if acc.OdooJournalID == 0 {
+		return 0, fmt.Errorf("account %q is not linked to an Odoo journal", acc.Slug)
+	}
+	return acc.OdooJournalID, nil
+}
+
 // OdooJournals lists Odoo journals linked to accounts, or resets a specific journal.
 func OdooJournals(args []string) error {
+	// `--help` (anywhere in args) always wins — print contextual help
+	// and never trigger the underlying side-effecting subcommand.
+	if HasFlag(args, "--help", "-h") {
+		printOdooJournalsContextualHelp(args)
+		return nil
+	}
+
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
 		return err
@@ -480,12 +506,11 @@ func OdooJournals(args []string) error {
 		return odooJournalsSyncAll(args[1:])
 	}
 
-	// Check for `chb odoo journals <id> [sync|--reset]`
+	// Check for `chb odoo journals <id|slug> [sync|--reset]`
 	if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
-		var journalID int
-		fmt.Sscanf(args[0], "%d", &journalID)
-		if journalID == 0 {
-			return fmt.Errorf("invalid journal ID: %s", args[0])
+		journalID, err := resolveJournalIDArg(args[0])
+		if err != nil {
+			return err
 		}
 		if len(args) >= 2 && args[1] == "sync" {
 			syncArgs := args[2:]
@@ -509,6 +534,12 @@ func OdooJournals(args []string) error {
 		}
 		if len(args) >= 2 && args[1] == "reconcile" {
 			return odooJournalReconcile(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
+		}
+		if len(args) >= 2 && args[1] == "lines" {
+			return odooJournalLines(creds, uid, journalID, args[2:])
+		}
+		if len(args) >= 2 && args[1] == "statements" {
+			return odooJournalStatements(creds, uid, journalID, args[2:])
 		}
 		if HasFlag(args, "--reset") {
 			printOdooTargetLine(creds)
@@ -614,20 +645,436 @@ func OdooJournals(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%sCOMMANDS%s\n\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id>%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("%sCOMMANDS%s  (id is an Odoo journal id or an account slug)\n\n", Fmt.Bold, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug>%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sShow details for a specific journal%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id> sync%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> lines [-n N] [--skip N] [--csv]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("    %sList recent statement lines (date, description, partner, account, amount)%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> statements [-n N] [--skip N] [--csv]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("    %sList statements (date, name, # lines, start/end balance), newest first%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> sync%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id> check%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> check%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id> fix%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> fix%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sRepair orphan import IDs in place, remove unmatched lines, fix balances%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id> reconcile [--dry-run] [--yes]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> reconcile [--dry-run] [--yes]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sMatch unreconciled statement lines against open invoices and bills%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id> --reset%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <id|slug> --reset%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", Fmt.Dim, Fmt.Reset)
 
+	return nil
+}
+
+// odooJournalLines lists the most recent statement lines for a journal.
+// Pagination via -n / --skip; --csv switches the output format.
+// Columns: date, description, partner, account (CoA counterpart), amount.
+func odooJournalLines(creds *OdooCredentials, uid int, journalID int, args []string) error {
+	limit := GetNumber(args, []string{"-n", "--limit"}, 30)
+	skip := GetNumber(args, []string{"--skip"}, 0)
+	if limit <= 0 {
+		limit = 30
+	}
+	if skip < 0 {
+		skip = 0
+	}
+	asCSV := HasFlag(args, "--csv")
+
+	currency := "EUR"
+	if linked := linkedAccountForJournal(journalID); linked != nil {
+		currency = accountConfigCurrency(linked)
+	}
+
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+		}},
+		map[string]interface{}{
+			"fields": []string{"id", "date", "payment_ref", "narration", "partner_id", "amount", "move_id"},
+			"order":  "date desc, id desc",
+			"limit":  limit,
+			"offset": skip,
+		})
+	if err != nil {
+		return fmt.Errorf("failed to fetch statement lines: %v", err)
+	}
+
+	type line struct {
+		ID         int         `json:"id"`
+		Date       odooStr     `json:"date"`
+		PaymentRef odooStr     `json:"payment_ref"`
+		Narration  odooStr     `json:"narration"`
+		PartnerID  interface{} `json:"partner_id"`
+		Amount     float64     `json:"amount"`
+		MoveID     interface{} `json:"move_id"`
+	}
+	var lines []line
+	if err := json.Unmarshal(result, &lines); err != nil {
+		return fmt.Errorf("failed to decode statement lines: %v", err)
+	}
+
+	// Resolve the counterpart chart-of-accounts account via the line's
+	// move (account.move.line.account_id), excluding the bank/cash side.
+	accountByMove := map[int]string{}
+	var moveIDs []int
+	for _, l := range lines {
+		if mid := odooFieldID(l.MoveID); mid > 0 {
+			moveIDs = append(moveIDs, mid)
+		}
+	}
+	if len(moveIDs) > 0 {
+		mlResult, mlErr := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move.line", "search_read",
+			[]interface{}{[]interface{}{
+				[]interface{}{"move_id", "in", intsToInterfaces(moveIDs)},
+			}},
+			map[string]interface{}{"fields": []string{"move_id", "account_id", "account_type"}})
+		if mlErr == nil {
+			var mlines []struct {
+				MoveID      interface{} `json:"move_id"`
+				AccountID   interface{} `json:"account_id"`
+				AccountType string      `json:"account_type"`
+			}
+			json.Unmarshal(mlResult, &mlines)
+			for _, ml := range mlines {
+				mid := odooFieldID(ml.MoveID)
+				name := odooFieldName(ml.AccountID)
+				if mid <= 0 || name == "" {
+					continue
+				}
+				// Skip the bank/cash leg — we want the counterpart.
+				if ml.AccountType == "asset_cash" || ml.AccountType == "liability_credit_card" {
+					continue
+				}
+				if _, dup := accountByMove[mid]; !dup {
+					accountByMove[mid] = name
+				}
+			}
+		}
+	}
+
+	cellFor := func(l line) (date, desc, partner, account, amount string) {
+		date = string(l.Date)
+		desc = string(l.PaymentRef)
+		if desc == "" {
+			desc = string(l.Narration)
+		}
+		partner = odooFieldName(l.PartnerID)
+		account = accountByMove[odooFieldID(l.MoveID)]
+		amount = formatBalancePlain(l.Amount, currency)
+		return
+	}
+
+	if asCSV {
+		fmt.Println("date,description,partner,account,amount,currency")
+		for _, l := range lines {
+			date, desc, partner, account, _ := cellFor(l)
+			fmt.Printf("%s,%s,%s,%s,%.2f,%s\n",
+				csvCell(date), csvCell(desc), csvCell(partner), csvCell(account), l.Amount, csvCell(currency))
+		}
+		return nil
+	}
+
+	if len(lines) == 0 {
+		fmt.Printf("\n%sNo statement lines found%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+
+	journalName := OdooJournalName(journalID)
+	if journalName == "" {
+		journalName = fmt.Sprintf("journal #%d", journalID)
+	}
+	fmt.Printf("\n%s%s%s  %sshowing %d line(s), skip %d%s\n\n",
+		Fmt.Bold, journalName, Fmt.Reset, Fmt.Dim, len(lines), skip, Fmt.Reset)
+
+	headers := []string{"Date", "Description", "Partner", "Account", "Amount"}
+	rows := make([][]string, 0, len(lines))
+	var total float64
+	for _, l := range lines {
+		date, desc, partner, account, amount := cellFor(l)
+		rows = append(rows, []string{
+			date,
+			Truncate(desc, 40),
+			Truncate(partner, 24),
+			Truncate(account, 28),
+			amount,
+		})
+		total += l.Amount
+	}
+	totalRow := []string{
+		"",
+		Pluralize(len(lines), "line", ""),
+		"",
+		"",
+		formatBalancePlain(total, currency),
+	}
+	renderTicketsTable(headers, rows, totalRow, map[int]bool{4: true})
+	return nil
+}
+
+// printOdooJournalsContextualHelp inspects the args and prints help
+// for whatever subcommand the user was invoking. Falls back to the
+// generic `chb odoo journals` listing-help when the subcommand isn't
+// recognized. Always silent on side effects — never hits Odoo.
+func printOdooJournalsContextualHelp(args []string) {
+	// Strip the help flag so the rest of args can be used for subcommand
+	// detection.
+	clean := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--help" || a == "-h" {
+			continue
+		}
+		clean = append(clean, a)
+	}
+
+	sub := ""
+	if len(clean) >= 2 {
+		sub = clean[1]
+	} else if len(clean) == 1 {
+		// `chb odoo journals sync --help` — no <id> in front.
+		if clean[0] == "sync" {
+			sub = "sync-all"
+		}
+	}
+
+	f := Fmt
+	switch sub {
+	case "sync":
+		fmt.Printf(`
+%schb odoo journals <id|slug> sync%s — Push local transactions for the linked
+account into the Odoo journal (creates new lines, applies any matched
+%schb odoo rules%s, then walks existing lines and re-applies rules to keep
+them in sync).
+
+%sOPTIONS%s
+  %s--dry-run%s              Preview only; no writes to Odoo
+  %s--force%s                Empty the journal first, then re-import
+  %s--history%s              Re-fetch the full Odoo import-id set (slow)
+  %s--months N%s             Limit to the last N months
+  %s--until YYYYMMDD%s       Only push transactions up to (inclusive) this date
+  %s--skip-reconciliation%s  Don't reconcile created lines (use 'reconcile' later)
+  %s--payout <id>%s          Stripe-only: limit to one payout
+`,
+			f.Bold, f.Reset, f.Cyan, f.Reset,
+			f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+		)
+	case "sync-all":
+		fmt.Printf(`
+%schb odoo journals sync%s — Push every linked account's local transactions
+into its Odoo journal. Same flags as the per-journal form.
+
+%sOPTIONS%s
+  %s--dry-run%s              Preview only; no writes to Odoo
+  %s--months N%s             Limit to the last N months
+`,
+			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+		)
+	case "lines":
+		fmt.Printf(`
+%schb odoo journals <id|slug> lines%s — List recent statement lines from Odoo
+(date, description, partner, account, amount).
+
+%sOPTIONS%s
+  %s-n N%s, %s--limit N%s    Number of lines to show (default 30)
+  %s--skip N%s               Skip the first N lines (pagination)
+  %s--csv%s                  Emit CSV instead of a formatted table
+`,
+			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+		)
+	case "statements":
+		fmt.Printf(`
+%schb odoo journals <id|slug> statements%s — List statements (date, name,
+# lines, start/end balance), newest first.
+
+%sOPTIONS%s
+  %s-n N%s, %s--limit N%s    Number of statements to show (default: all)
+  %s--skip N%s               Skip the first N statements
+  %s--csv%s                  Emit CSV instead of a formatted table
+`,
+			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+		)
+	case "check":
+		fmt.Printf(`
+%schb odoo journals <id|slug> check%s — Report statements whose running
+balance is invalid (start + sum(lines) ≠ end). Read-only.
+`, f.Bold, f.Reset)
+	case "fix":
+		fmt.Printf(`
+%schb odoo journals <id|slug> fix%s — Repair a journal: rewrite orphan
+import-ids, remove unmatched lines, and recompute balances.
+
+%sOPTIONS%s
+  %s--dry-run%s              Preview only; no writes to Odoo
+  %s-y%s, %s--yes%s             Skip the interactive confirmation
+`,
+			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+		)
+	case "reconcile":
+		fmt.Printf(`
+%schb odoo journals <id|slug> reconcile%s — Match unreconciled statement
+lines against open invoices and bills.
+
+%sOPTIONS%s
+  %s--dry-run%s              Preview only; no writes to Odoo
+  %s-y%s, %s--yes%s             Skip the interactive confirmation
+`,
+			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+		)
+	default:
+		// `chb odoo journals --help` or `chb odoo journals <id> --help`.
+		if len(clean) >= 1 {
+			fmt.Printf(`
+%schb odoo journals <id|slug>%s — Show details for one journal.
+
+%sSUBCOMMANDS%s
+  %slines%s        Recent statement lines  (chb odoo journals <id> lines --help)
+  %sstatements%s   Bank statements         (chb odoo journals <id> statements --help)
+  %ssync%s         Push local → Odoo       (chb odoo journals <id> sync --help)
+  %scheck%s        Report invalid balances
+  %sfix%s          Repair the journal      (chb odoo journals <id> fix --help)
+  %sreconcile%s    Match lines vs. invoices/bills (chb odoo journals <id> reconcile --help)
+  %s--reset%s      Empty the journal (delete all statements + lines)
+`,
+				f.Bold, f.Reset,
+				f.Bold, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+				f.Yellow, f.Reset,
+			)
+		} else {
+			fmt.Printf(`
+%schb odoo journals%s — List Odoo journals linked to accounts.
+
+%sCOMMANDS%s
+  %schb odoo journals <id|slug>%s              Show details for one journal
+  %schb odoo journals <id|slug> <subcommand>%s See per-subcommand --help
+  %schb odoo journals sync%s                   Sync every linked journal
+`,
+				f.Bold, f.Reset,
+				f.Bold, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+				f.Cyan, f.Reset,
+			)
+		}
+	}
+}
+
+// odooJournalStatements lists every account.bank.statement bound to
+// the journal, newest first. Date / Statement / # Lines / Start / End.
+// Pagination via -n / --skip; --csv switches the output format.
+func odooJournalStatements(creds *OdooCredentials, uid int, journalID int, args []string) error {
+	limit := GetNumber(args, []string{"-n", "--limit"}, 0)
+	skip := GetNumber(args, []string{"--skip"}, 0)
+	if skip < 0 {
+		skip = 0
+	}
+	asCSV := HasFlag(args, "--csv")
+
+	currency := "EUR"
+	if linked := linkedAccountForJournal(journalID); linked != nil {
+		currency = accountConfigCurrency(linked)
+	}
+
+	opts := map[string]interface{}{
+		"fields": []string{"id", "name", "date", "line_ids", "balance_start", "balance_end_real", "reference"},
+		"order":  "date desc, id desc",
+		"offset": skip,
+	}
+	if limit > 0 {
+		opts["limit"] = limit
+	} else {
+		opts["limit"] = 0 // Odoo: no cap
+	}
+	stmtResult, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+		}}, opts)
+	if err != nil {
+		return fmt.Errorf("failed to fetch statements: %v", err)
+	}
+	var stmts []struct {
+		ID             int     `json:"id"`
+		Name           odooStr `json:"name"`
+		Date           odooStr `json:"date"`
+		Reference      odooStr `json:"reference"`
+		LineIDs        []int   `json:"line_ids"`
+		BalanceStart   float64 `json:"balance_start"`
+		BalanceEndReal float64 `json:"balance_end_real"`
+	}
+	if err := json.Unmarshal(stmtResult, &stmts); err != nil {
+		return fmt.Errorf("failed to decode statements: %v", err)
+	}
+
+	if asCSV {
+		fmt.Println("date,statement,reference,lines,balance_start,balance_end,currency")
+		for _, s := range stmts {
+			fmt.Printf("%s,%s,%s,%d,%.2f,%.2f,%s\n",
+				csvCell(string(s.Date)),
+				csvCell(string(s.Name)),
+				csvCell(string(s.Reference)),
+				len(s.LineIDs),
+				s.BalanceStart, s.BalanceEndReal,
+				csvCell(currency),
+			)
+		}
+		return nil
+	}
+
+	if len(stmts) == 0 {
+		fmt.Printf("\n%sNo statements found%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+
+	journalName := OdooJournalName(journalID)
+	if journalName == "" {
+		journalName = fmt.Sprintf("journal #%d", journalID)
+	}
+	fmt.Printf("\n%s%s%s  %sshowing %d statement(s), skip %d%s\n\n",
+		Fmt.Bold, journalName, Fmt.Reset, Fmt.Dim, len(stmts), skip, Fmt.Reset)
+
+	headers := []string{"Date", "Statement", "Lines", "Start", "End"}
+	rows := make([][]string, 0, len(stmts))
+	for _, s := range stmts {
+		name := string(s.Name)
+		if string(s.Reference) == "open" && !strings.Contains(strings.ToLower(name), "open") {
+			name += " (open)"
+		}
+		rows = append(rows, []string{
+			string(s.Date),
+			Truncate(name, 36),
+			fmt.Sprintf("%d", len(s.LineIDs)),
+			formatBalancePlain(s.BalanceStart, currency),
+			formatBalancePlain(s.BalanceEndReal, currency),
+		})
+	}
+	totalRow := []string{"", Pluralize(len(stmts), "statement", ""), "", "", ""}
+	renderTicketsTable(headers, rows, totalRow, map[int]bool{2: true, 3: true, 4: true})
 	return nil
 }
 
@@ -679,26 +1126,13 @@ func odooJournalDetail(creds *OdooCredentials, uid int, journalID int) error {
 
 	currentBalance, balanceErr := odooJournalCurrentBalance(creds, uid, journalID)
 
-	stmtResult, _ := odooExec(creds.URL, creds.DB, uid, creds.Password,
-		"account.bank.statement", "search_read",
+	stmtCountResult, _ := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement", "search_count",
 		[]interface{}{[]interface{}{
 			[]interface{}{"journal_id", "=", journalID},
-		}},
-		map[string]interface{}{
-			"fields": []string{"id", "name", "date", "line_ids", "balance_start", "balance_end_real", "reference"},
-			"order":  "date desc, id desc",
-			"limit":  0,
-		})
-	var stmts []struct {
-		ID             int     `json:"id"`
-		Name           odooStr `json:"name"`
-		Date           odooStr `json:"date"`
-		Reference      odooStr `json:"reference"`
-		LineIDs        []int   `json:"line_ids"`
-		BalanceStart   float64 `json:"balance_start"`
-		BalanceEndReal float64 `json:"balance_end_real"`
-	}
-	json.Unmarshal(stmtResult, &stmts)
+		}}, nil)
+	var stmtCount int
+	json.Unmarshal(stmtCountResult, &stmtCount)
 
 	journalURL := OdooBankReconciliationURL(creds.URL, journalID)
 	if j.Type != "bank" && j.Type != "cash" {
@@ -720,30 +1154,8 @@ func odooJournalDetail(creds *OdooCredentials, uid int, journalID int) error {
 	}
 	fmt.Printf("  %sStatement lines: %d%s\n", Fmt.Dim, lineCount, Fmt.Reset)
 	fmt.Printf("  %sReconciled lines: %d%s\n", Fmt.Dim, reconciledCount, Fmt.Reset)
-	fmt.Printf("  %sStatements: %d%s\n\n", Fmt.Dim, len(stmts), Fmt.Reset)
-
-	if len(stmts) > 0 {
-		rows := [][]string{}
-		for _, s := range stmts {
-			name := string(s.Name)
-			if string(s.Reference) == "open" && !strings.Contains(strings.ToLower(name), "open") {
-				name += " (open)"
-			}
-			rows = append(rows, []string{
-				string(s.Date),
-				truncate(name, 36),
-				fmt.Sprintf("%d", len(s.LineIDs)),
-				formatBalancePlain(s.BalanceStart, currency),
-				formatBalancePlain(s.BalanceEndReal, currency),
-			})
-		}
-		printAlignedTable(
-			[]string{"Date", "Statement", "Lines", "Start", "End"},
-			rows,
-			map[int]bool{2: true, 3: true, 4: true},
-		)
-		fmt.Println()
-	}
+	fmt.Printf("  %sStatements: %d  %s(see: chb odoo journals %d statements)%s\n\n",
+		Fmt.Dim, stmtCount, Fmt.Dim, journalID, Fmt.Reset)
 
 	if linkedAccount != nil {
 		if missing, err := findLocalTxsMissingFromOdoo(creds, uid, journalID, linkedAccount); err == nil && len(missing) > 0 {

@@ -283,6 +283,14 @@ func main() {
 			if err := cmd.OdooJournals(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "rules":
+			if err := cmd.OdooRulesCommand(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "accounts":
+			if err := cmd.OdooAccountsCommand(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "backup":
 			if err := cmd.OdooBackup(args[2:]); err != nil {
 				exitWithError(err)
