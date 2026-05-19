@@ -249,6 +249,14 @@ func main() {
 			if _, err := cmd.OdooAnalyticSync(catArgs); err != nil {
 				exitWithError(err)
 			}
+		case "partners":
+			partnerArgs := args[2:]
+			if len(partnerArgs) > 0 && partnerArgs[0] == "sync" {
+				partnerArgs = partnerArgs[1:]
+			}
+			if _, err := cmd.OdooPartnersSync(partnerArgs); err != nil {
+				exitWithError(err)
+			}
 		case "invoices":
 			invArgs := args[2:]
 			if len(invArgs) > 0 && invArgs[0] == "sync" {
@@ -267,6 +275,14 @@ func main() {
 			}
 		case "journals":
 			if err := cmd.OdooJournals(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "reconcile":
+			if err := cmd.OdooReconcileCommand(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "get":
+			if err := cmd.OdooGet(args[2:]); err != nil {
 				exitWithError(err)
 			}
 		case "rules":

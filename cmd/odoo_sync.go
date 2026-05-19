@@ -59,6 +59,14 @@ func odooSyncLine(label, status string) {
 	fmt.Printf("  %s%s%s: %s\n", Fmt.Bold, label, Fmt.Reset, status)
 }
 
+func odooItemSyncStatus(count int, singular, detail string) string {
+	status := Pluralize(count, singular, "")
+	if strings.TrimSpace(detail) != "" {
+		status += " (" + strings.TrimSpace(detail) + ")"
+	}
+	return status
+}
+
 // odooSyncHeader prints a parent label (e.g. "journals:") for a group of
 // nested items rendered with odooSyncSubLine.
 func odooSyncHeader(label string) {
@@ -130,7 +138,7 @@ func finalizeJournalRow(row journalSyncRow) bool {
 		Fmt.Bold, w.JIDWidth, idStr, w.SlugWidth, row.Slug, Fmt.Reset,
 		txsStr, row.Balance, status)
 	if row.Mismatch != "" {
-		fmt.Print(row.Mismatch)
+		Warnf("%s", strings.TrimRight(row.Mismatch, "\n"))
 	}
 	return true
 }
@@ -199,7 +207,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 
 	if odooURL == "" || odooLogin == "" || odooPassword == "" {
 		if quietOdooContext() {
-			odooSyncLine("categories", "ODOO env not set — skipped")
+			odooSyncLine("categories", odooItemSyncStatus(0, "category", "issue: ODOO env not set"))
 		} else {
 			Warnf("%s⚠ ODOO_URL/ODOO_LOGIN/ODOO_PASSWORD not set, skipping Odoo sync%s", Fmt.Yellow, Fmt.Reset)
 		}
@@ -433,7 +441,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 	}
 
 	if quietOdooContext() {
-		odooSyncLine("categories", fmt.Sprintf("%d categories", len(analyticAccounts)))
+		odooSyncLine("categories", odooItemSyncStatus(len(analyticAccounts), "category", ""))
 	} else {
 		fmt.Printf("\n  %s✓ %d mappings, saved %d months%s\n", Fmt.Green, totalMapped, saved, Fmt.Reset)
 		fmt.Printf("  %s%d categories (%d with code-based slug), %d analytic lines, %d payment refs, %d bank refs%s\n\n",
@@ -512,17 +520,33 @@ func OdooJournals(args []string) error {
 		if err != nil {
 			return err
 		}
+		if targetArg := GetOption(args, "--merge-with"); targetArg != "" {
+			return odooJournalMerge(creds, uid, journalID, targetArg, HasFlag(args, "--dry-run"), HasFlag(args, "--verbose", "-v"), HasFlag(args, "--yes", "-y"))
+		}
 		if len(args) >= 2 && args[1] == "sync" {
 			syncArgs := args[2:]
 			if HasFlag(syncArgs, "--reset") {
-				printOdooTargetLine(creds)
-				if err := odooJournalReset(creds, uid, journalID); err != nil {
-					return err
+				if odooSyncStageFlagsExplicit(syncArgs) && !HasFlag(syncArgs, "--transactions") {
+					return fmt.Errorf("--reset can only be used with --transactions, or with no stage flags")
 				}
-				syncArgs = filterFlag(syncArgs, "--reset")
-				wasPrinted := odooTargetAlreadyPrinted()
-				setOdooTargetAlreadyPrinted(true)
-				defer setOdooTargetAlreadyPrinted(wasPrinted)
+				if HasFlag(syncArgs, "--dry-run") {
+					// In dry-run, --reset means "simulate an empty journal" without
+					// prompting or deleting anything. AccountOdooPush already treats
+					// --force as reset/rebuild mode.
+					syncArgs = append(filterFlag(syncArgs, "--reset"), "--force")
+				} else {
+					printOdooTargetLine(creds)
+					if err := odooJournalReset(creds, uid, journalID, HasFlag(syncArgs, "--yes", "-y") || HasFlag(syncArgs, "--force")); err != nil {
+						return err
+					}
+					syncArgs = filterFlag(syncArgs, "--reset")
+					if !HasFlag(syncArgs, "--history") {
+						syncArgs = append(syncArgs, "--history")
+					}
+					wasPrinted := odooTargetAlreadyPrinted()
+					setOdooTargetAlreadyPrinted(true)
+					defer setOdooTargetAlreadyPrinted(wasPrinted)
+				}
 			}
 			return odooJournalSync(journalID, syncArgs)
 		}
@@ -532,8 +556,27 @@ func OdooJournals(args []string) error {
 		if len(args) >= 2 && args[1] == "fix" {
 			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
 		}
+		if len(args) >= 2 && args[1] == "merge" {
+			acc := linkedAccountForJournal(journalID)
+			if acc == nil {
+				return fmt.Errorf("journal #%d has no linked account; merge is only defined for accounts that own a local source-of-truth (e.g. kbcbrussels)", journalID)
+			}
+			if acc.Provider != "kbcbrussels" {
+				return fmt.Errorf("`merge` is only implemented for kbcbrussels journals — for provider '%s' use `sync`", acc.Provider)
+			}
+			return mergeKBCJournalWithCSV(creds, uid, journalID, acc,
+				HasFlag(args, "--dry-run"),
+				HasFlag(args, "--yes", "-y"),
+				HasFlag(args, "--delete-orphans"),
+				HasFlag(args, "--verbose", "-v"),
+			)
+		}
 		if len(args) >= 2 && args[1] == "reconcile" {
-			return odooJournalReconcile(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
+			if HasFlag(args[2:], "--from-journal") {
+				reconcileArgs := append([]string{args[0]}, args[2:]...)
+				return OdooReconcileCommand(reconcileArgs)
+			}
+			return odooJournalReconcile(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--verbose", "-v"))
 		}
 		if len(args) >= 2 && args[1] == "lines" {
 			return odooJournalLines(creds, uid, journalID, args[2:])
@@ -543,7 +586,7 @@ func OdooJournals(args []string) error {
 		}
 		if HasFlag(args, "--reset") {
 			printOdooTargetLine(creds)
-			return odooJournalReset(creds, uid, journalID)
+			return odooJournalReset(creds, uid, journalID, HasFlag(args, "--yes", "-y") || HasFlag(args, "--force"))
 		}
 		return odooJournalDetail(creds, uid, journalID)
 	}
@@ -660,6 +703,8 @@ func OdooJournals(args []string) error {
 	fmt.Printf("    %sRepair orphan import IDs in place, remove unmatched lines, fix balances%s\n\n", Fmt.Dim, Fmt.Reset)
 	fmt.Printf("  %s%schb odoo journals <id|slug> reconcile [--dry-run] [--yes]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sMatch unreconciled statement lines against open invoices and bills%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %s%schb odoo journals <source> --merge-with <target> [--dry-run] [--verbose] [--yes]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
+	fmt.Printf("    %sMove reconciliations to the target journal, then delete the source journal%s\n\n", Fmt.Dim, Fmt.Reset)
 	fmt.Printf("  %s%schb odoo journals <id|slug> --reset%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
 	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", Fmt.Dim, Fmt.Reset)
 
@@ -849,22 +894,40 @@ them in sync).
 
 %sOPTIONS%s
   %s--dry-run%s              Preview only; no writes to Odoo
+  %s-n N%s, %s--limit N%s        In dry-run, number of planned lines to show
   %s--force%s                Empty the journal first, then re-import
+  %s--reset%s                Empty the journal first, then sync
+  %s-y%s, %s--yes%s              With --reset, skip the confirmation prompt
   %s--history%s              Re-fetch the full Odoo import-id set (slow)
+  %s--since YYYYMMDD%s       Only push transactions at/after this date
   %s--months N%s             Limit to the last N months
   %s--until YYYYMMDD%s       Only push transactions up to (inclusive) this date
   %s--skip-reconciliation%s  Don't reconcile created lines (use 'reconcile' later)
+  %s--transactions%s         Stripe-only: import statement lines/statements/fees
+  %s--partners%s             Stripe-only: link/create partners and collective tags
+  %s--accounts%s             Stripe-only: apply account rules to journal lines
+  %s--metadata%s             Stripe-only: refresh descriptions and narration metadata
+  %s--reconcile%s            Stripe-only: reconcile journal lines
   %s--payout <id>%s          Stripe-only: limit to one payout
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset,
 			f.Bold, f.Reset,
 			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, // --metadata
 		)
 	case "sync-all":
 		fmt.Printf(`
@@ -930,14 +993,56 @@ import-ids, remove unmatched lines, and recompute balances.
 	case "reconcile":
 		fmt.Printf(`
 %schb odoo journals <id|slug> reconcile%s — Match unreconciled statement
-lines against open invoices and bills.
+lines against open invoices and bills, or move reconciliations from another
+journal onto equivalent lines in this journal.
+
+%sUSAGE%s
+  %schb odoo journals 53 reconcile --dry-run%s
+  %schb odoo journals 53 reconcile --from-journal 30 --dry-run%s
+  %schb odoo journals 53 reconcile --from-journal 30 --yes%s
 
 %sOPTIONS%s
-  %s--dry-run%s              Preview only; no writes to Odoo
-  %s-y%s, %s--yes%s             Skip the interactive confirmation
+  %s--from-journal <id|slug>%s  Source journal whose reconciled lines are moved
+  %s--dry-run%s                 Preview only; no writes to Odoo
+  %s-v%s, %s--verbose%s            Also list skipped/no-match lines
+  %s-y%s, %s--yes%s                Skip the interactive confirmation
 `,
-			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Bold, f.Reset,
+			f.Bold, f.Reset,
+			f.Cyan, f.Reset,
+			f.Cyan, f.Reset,
+			f.Cyan, f.Reset,
+			f.Bold, f.Reset,
 			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+		)
+	case "--merge-with":
+		fmt.Printf(`
+%schb odoo journals <sourceId|slug> --merge-with <targetId|slug>%s — Merge an
+old/source journal into a target journal: move matching reconciliations, report
+which source lines are already present or missing in the target, then empty and
+delete the source journal when applied. Standalone accounting entries still
+referencing the source journal are listed and can be moved too.
+
+%sUSAGE%s
+  %schb odoo journals 48 --merge-with 53 --dry-run --verbose%s
+  %schb odoo journals 48 --merge-with 53 --yes%s
+
+%sOPTIONS%s
+  %s--dry-run%s       Preview only; no writes to Odoo and no confirmation prompt
+  %s-v%s, %s--verbose%s  List skipped, missing, and already-present source lines
+  %s-y%s, %s--yes%s      Skip move confirmation and per-line override prompts
+                 Adding missing lines and deleting the source still ask
+`,
+			f.Bold, f.Reset,
+			f.Bold, f.Reset,
+			f.Cyan, f.Reset,
+			f.Cyan, f.Reset,
+			f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
 			f.Yellow, f.Reset, f.Yellow, f.Reset,
 		)
 	default:
@@ -953,6 +1058,7 @@ lines against open invoices and bills.
   %scheck%s        Report invalid balances
   %sfix%s          Repair the journal      (chb odoo journals <id> fix --help)
   %sreconcile%s    Match lines vs. invoices/bills (chb odoo journals <id> reconcile --help)
+  %s--merge-with%s Move reconciliations to another journal, then delete this journal
   %s--reset%s      Empty the journal (delete all statements + lines)
 `,
 				f.Bold, f.Reset,
@@ -963,6 +1069,7 @@ lines against open invoices and bills.
 				f.Cyan, f.Reset,
 				f.Cyan, f.Reset,
 				f.Cyan, f.Reset,
+				f.Yellow, f.Reset,
 				f.Yellow, f.Reset,
 			)
 		} else {
@@ -1439,11 +1546,13 @@ func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 		return err
 	}
 	if len(issues) == 0 {
-		fmt.Printf("  %s✓ All statements are valid%s\n\n", Fmt.Green, Fmt.Reset)
-		return nil
+		fmt.Printf("  %s✓ All statements are valid%s\n", Fmt.Green, Fmt.Reset)
+	} else {
+		PrintStatementIssues(issues)
+		fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n", Fmt.Dim, journalID, Fmt.Reset)
 	}
-	PrintStatementIssues(issues)
-	fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
+
+	fmt.Println()
 	return nil
 }
 
@@ -2524,6 +2633,7 @@ func deleteStatementLines(creds *OdooCredentials, uid int, ids []int) error {
 	}
 
 	if len(moveIDs) > 0 {
+		moveIDs = uniquePositiveInts(moveIDs)
 		movesIface := intsToInterfaces(moveIDs)
 
 		reconRaw, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
@@ -2544,15 +2654,23 @@ func deleteStatementLines(creds *OdooCredentials, uid int, ids []int) error {
 			}
 		}
 
-		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-			"account.move", "button_draft",
-			[]interface{}{movesIface}, nil); err != nil {
-			return fmt.Errorf("reset moves to draft: %v", err)
+		toDraft, alreadyDraft, err := partitionOdooMovesForDeletion(creds, uid, moveIDs)
+		if err != nil {
+			return fmt.Errorf("read move states: %v", err)
+		}
+		deleteMoveIDs := alreadyDraft
+		if len(toDraft) > 0 {
+			if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "button_draft",
+				[]interface{}{intsToInterfaces(toDraft)}, nil); err != nil {
+				return fmt.Errorf("reset moves to draft: %v", err)
+			}
+			deleteMoveIDs = append(deleteMoveIDs, toDraft...)
 		}
 
 		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			"account.move", "unlink",
-			[]interface{}{movesIface}, nil); err != nil {
+			[]interface{}{intsToInterfaces(uniquePositiveInts(deleteMoveIDs))}, nil); err != nil {
 			return fmt.Errorf("delete moves: %v", err)
 		}
 	}
@@ -2579,6 +2697,7 @@ func setStatementBalanceStart(creds *OdooCredentials, uid int, stmtID int, value
 
 // OdooSyncAll is the meta-command behind `chb odoo sync`. It runs, in order:
 //   - chb odoo categories sync  (fetch analytic categories from Odoo)
+//   - chb odoo partners sync    (fetch partner snapshot from Odoo)
 //   - chb odoo invoices sync    (fetch outgoing invoices from Odoo)
 //   - chb odoo bills sync       (fetch vendor bills from Odoo)
 //   - chb odoo journals sync    (push local transactions into every linked journal)
@@ -2587,6 +2706,42 @@ func setStatementBalanceStart(creds *OdooCredentials, uid int, stmtID int, value
 func OdooSyncAll(args []string) error {
 	if creds, err := ResolveOdooCredentials(); err == nil {
 		fmt.Printf("\n%s🔄 Odoo sync%s  %s%s (db: %s)%s\n\n",
+			Fmt.Bold, Fmt.Reset, Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
+	}
+	BeginDeferredWarnings()
+	defer func() {
+		warnings := EndDeferredWarnings()
+		if len(warnings) == 0 {
+			return
+		}
+		fmt.Printf("\n  %sWarnings%s\n", Fmt.Bold, Fmt.Reset)
+		for _, warning := range warnings {
+			fmt.Printf("%s\n", warning)
+		}
+	}()
+	setQuietOdooContext(true)
+	defer setQuietOdooContext(false)
+
+	step := func(label string, fn func() error) {
+		if err := fn(); err != nil {
+			odooSyncLine(label, fmt.Sprintf("%s✗ %v%s", Fmt.Red, err, Fmt.Reset))
+		}
+	}
+	step("categories", func() error { _, err := OdooAnalyticSync(args); return err })
+	step("partners", func() error { _, err := OdooPartnersSync(args); return err })
+	step("invoices", func() error { _, err := InvoicesSync(args); return err })
+	step("bills", func() error { _, err := BillsSync(args); return err })
+	step("journals", func() error { return odooJournalsSyncAll(args) })
+	fmt.Println()
+	return nil
+}
+
+// OdooProviderSync is the provider-registry sync for Odoo. It only fetches
+// local provider archives; journal pushes remain under `chb odoo sync` and
+// `chb odoo journals ... sync`.
+func OdooProviderSync(args []string) error {
+	if creds, err := ResolveOdooCredentials(); err == nil {
+		fmt.Printf("\n%s🔄 Odoo provider sync%s  %s%s (db: %s)%s\n\n",
 			Fmt.Bold, Fmt.Reset, Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
 	}
 	setQuietOdooContext(true)
@@ -2598,9 +2753,9 @@ func OdooSyncAll(args []string) error {
 		}
 	}
 	step("categories", func() error { _, err := OdooAnalyticSync(args); return err })
+	step("partners", func() error { _, err := OdooPartnersSync(args); return err })
 	step("invoices", func() error { _, err := InvoicesSync(args); return err })
 	step("bills", func() error { _, err := BillsSync(args); return err })
-	step("journals", func() error { return odooJournalsSyncAll(args) })
 	fmt.Println()
 	return nil
 }
@@ -2711,7 +2866,7 @@ func odooJournalsSyncAll(args []string) error {
 	return nil
 }
 
-func odooJournalReset(creds *OdooCredentials, uid int, journalID int) error {
+func odooJournalReset(creds *OdooCredentials, uid int, journalID int, yes bool) error {
 	// Fetch journal name
 	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.journal", "search_read",
@@ -2731,7 +2886,7 @@ func odooJournalReset(creds *OdooCredentials, uid int, journalID int) error {
 	}
 
 	CacheOdooJournalName(journalID, journals[0].Name)
-	return emptyOdooJournal(creds, uid, journalID)
+	return emptyOdooJournal(creds, uid, journalID, yes)
 }
 
 func printOdooTargetLine(creds *OdooCredentials) {
@@ -2747,7 +2902,9 @@ func PrintOdooHelp() {
 	fmt.Printf("\n%schb odoo%s — Odoo integration\n\n", f.Bold, f.Reset)
 	fmt.Printf("%sCOMMANDS%s\n\n", f.Bold, f.Reset)
 	fmt.Printf("  %s%schb odoo sync%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sFetch analytic categories from Odoo%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("    %sFetch Odoo provider data and sync linked journals%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo partners sync%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sFetch Odoo partners into the local provider cache%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sList Odoo journals linked to accounts%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id>%s\n", f.Bold, f.Cyan, f.Reset)
@@ -2756,6 +2913,10 @@ func PrintOdooHelp() {
 	fmt.Printf("    %sSync the linked account's transactions into the journal%s\n", f.Dim, f.Reset)
 	fmt.Printf("    %sBy default starts after the latest Odoo import; use --history for a full duplicate check%s\n", f.Dim, f.Reset)
 	fmt.Printf("    %sUse --skip-reconciliation for fast imports; reconcile later with `chb odoo journals <id> reconcile`%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo get <ref>%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sInspect an Odoo statement line by unique_import_id%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo reconcile <journalId> --from-journal <id>%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sMove reconciliations from an old journal onto matching lines in another journal%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> check%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> fix%s\n", f.Bold, f.Cyan, f.Reset)

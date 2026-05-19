@@ -105,3 +105,57 @@ func TestAccountSyncPlanLinesShowsSourceAddressTokenAndSince(t *testing.T) {
 		}
 	}
 }
+
+func TestStripeOdooCursorSinceLabelShowsResumeDate(t *testing.T) {
+	got := stripeOdooCursorSinceLabel(odooImportCursor{
+		Found:          true,
+		Date:           "2026-05-18",
+		UniqueImportID: "stripe:acct_123:txn_123",
+	})
+	if got != "2026-05-18 (last Odoo line)" {
+		t.Fatalf("stripeOdooCursorSinceLabel() = %q", got)
+	}
+
+	if got := stripeOdooCursorSinceLabel(odooImportCursor{}); got != "" {
+		t.Fatalf("empty cursor label = %q, want empty", got)
+	}
+}
+
+func TestStripeOpenStatementFeeImportID(t *testing.T) {
+	if !stripeOpenStatementFeeImportID("acct_123", "stripe:acct_123:open:206:fees") {
+		t.Fatal("expected rolling open-statement fee import ID to match")
+	}
+	if !stripeOpenStatementFeeImportID("ACCT_123", "STRIPE:acct_123:OPEN:206:FEES") {
+		t.Fatal("expected match to be case-insensitive")
+	}
+	for _, id := range []string{
+		"stripe:acct_123:txn_123",
+		"stripe:acct_123:txn_123:fees",
+		"stripe:acct_other:open:206:fees",
+		"stripe:acct_123:open:fees",
+	} {
+		if stripeOpenStatementFeeImportID("acct_123", id) {
+			t.Fatalf("did not expect %q to match", id)
+		}
+	}
+}
+
+func TestLocalPartnerHasCollectiveTag(t *testing.T) {
+	idx := &odooPartnerIndex{
+		byID: map[int]OdooPartner{
+			42: {ID: 42, CategoryIDs: []int{7, 9}},
+		},
+		categoryIDs: map[string]int{
+			"collective:commons-hub": 9,
+		},
+	}
+	if !localPartnerHasCollectiveTag(idx, 42, "commons-hub") {
+		t.Fatal("expected partner to have collective tag")
+	}
+	if localPartnerHasCollectiveTag(idx, 42, "other") {
+		t.Fatal("did not expect partner to have other tag")
+	}
+	if localPartnerHasCollectiveTag(idx, 99, "commons-hub") {
+		t.Fatal("did not expect unknown partner to have tag")
+	}
+}

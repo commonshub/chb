@@ -479,7 +479,7 @@ func TxHashFromURI(uri string) string {
 //	Clean etherscan:  <chain>:<address>:<hash>:<n>
 //
 //	Broken stripe:    stripe:<account>:stripe:<txId>:<n>
-//	Clean stripe:     stripe:<account>:<txId>:<n>
+//	Clean stripe:     stripe:<account>:<txId>
 //
 // Returns "" for an already-clean or unrecognized form, so callers can
 // distinguish "repair available" from "true orphan" cleanly.
@@ -489,7 +489,10 @@ func CanonicalizeImportID(brokenID string) string {
 		return fmt.Sprintf("%s:%s:%s:%s", parts[0], parts[1], parts[5], parts[6])
 	}
 	if len(parts) == 5 && parts[0] == "stripe" && parts[2] == "stripe" {
-		return fmt.Sprintf("%s:%s:%s:%s", parts[0], parts[1], parts[3], parts[4])
+		return fmt.Sprintf("%s:%s:%s", parts[0], parts[1], parts[3])
+	}
+	if len(parts) == 4 && parts[0] == "stripe" && parts[3] == "0" {
+		return fmt.Sprintf("%s:%s:%s", parts[0], parts[1], parts[2])
 	}
 	return ""
 }

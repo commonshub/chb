@@ -21,7 +21,12 @@ func TestCanonicalizeImportID(t *testing.T) {
 		{
 			name: "stripe broken double-prefix form",
 			in:   "stripe:acct_1Nn0FaFAhaWeDyow:stripe:txn_abc:0",
-			want: "stripe:acct_1Nn0FaFAhaWeDyow:txn_abc:0",
+			want: "stripe:acct_1Nn0FaFAhaWeDyow:txn_abc",
+		},
+		{
+			name: "stripe old indexed form",
+			in:   "stripe:acct_xyz:txn_abc:0",
+			want: "stripe:acct_xyz:txn_abc",
 		},
 		{
 			name: "already clean etherscan form returns empty",
@@ -30,7 +35,7 @@ func TestCanonicalizeImportID(t *testing.T) {
 		},
 		{
 			name: "already clean stripe form returns empty",
-			in:   "stripe:acct_xyz:txn_abc:0",
+			in:   "stripe:acct_xyz:txn_abc",
 			want: "",
 		},
 		{

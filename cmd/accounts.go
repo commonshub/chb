@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	etherscansource "github.com/CommonsHub/chb/providers/etherscan"
 	stripesource "github.com/CommonsHub/chb/providers/stripe"
@@ -104,6 +105,18 @@ type accountOdooSyncSnapshot struct {
 type blockchainOdooSyncResult struct {
 	Summary string
 	Synced  int
+}
+
+type odooSyncPlanRow struct {
+	Action      string
+	Date        string
+	Description string
+	Partner     string
+	Account     string
+	Amount      float64
+	Currency    string
+	Ref         string
+	Reason      string
 }
 
 // fetchTokenBalance fetches the live on-chain token balance. It prefers
@@ -766,7 +779,7 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	// On --refresh, hit the live source for this one account and update
 	// just this account's entry in the shared balance cache.
 	if refresh {
-		fmt.Printf("\n  %sRefreshing on-chain balance for %s…%s\n", Fmt.Dim, acc.Slug, Fmt.Reset)
+		fmt.Printf("\n  %sRefreshing %s balance for %s…%s\n", Fmt.Dim, accountLiveBalanceLabel(acc), acc.Slug, Fmt.Reset)
 		refreshAndPersistAccountBalance(acc)
 	}
 
@@ -1709,28 +1722,58 @@ func AccountsFetchAll(args []string) (int, error) {
 
 	fmt.Printf("\n%s🔄 Syncing accounts%s\n\n", Fmt.Bold, Fmt.Reset)
 
+	type accountFetchResult struct {
+		Account AccountConfig
+		Count   int
+		Output  string
+		Err     error
+	}
+	results := make([]accountFetchResult, 0, len(configs))
 	failed := 0
 	for _, acc := range configs {
 		slugArgs := accountFetchArgs(acc, args)
+		status := newStatusLine()
+		status.Update("accounts: syncing %s...", acc.Slug)
 		output, count, err := captureTransactionsSync(slugArgs)
-		label := acc.Slug
+		status.Clear()
+		results = append(results, accountFetchResult{
+			Account: acc,
+			Count:   count,
+			Output:  output,
+			Err:     err,
+		})
 		if err != nil {
-			Errorf("  %s%s%s: %s✗ %v%s", Fmt.Bold, label, Fmt.Reset, Fmt.Red, err, Fmt.Reset)
-			if strings.TrimSpace(output) != "" {
-				fmt.Print(output)
-			}
 			failed++
 			continue
 		}
-		fmt.Printf("  %s%s%s: %d new transactions\n", Fmt.Bold, label, Fmt.Reset, count)
 		UpdateSyncSource("account:"+strings.ToLower(acc.Slug), accountSyncIsFull(args))
 	}
 
 	// Regenerate the unified per-month transactions.json files ONCE after all
 	// accounts have been fetched, rather than after each account.
-	fmt.Printf("\n  %sRegenerating per-month transactions...%s\n", Fmt.Dim, Fmt.Reset)
-	if err := GenerateTransactions(args); err != nil {
+	status := newStatusLine()
+	status.Update("generated: regenerating per-month transactions...")
+	generateOutput, err := captureGenerateTransactions(args)
+	status.Clear()
+	if err != nil {
 		Errorf("  %s✗ generate: %v%s", Fmt.Red, err, Fmt.Reset)
+		if strings.TrimSpace(generateOutput) != "" {
+			fmt.Print(generateOutput)
+		}
+	} else {
+		odooSyncLine("generated", "per-month transactions refreshed")
+	}
+
+	for _, row := range results {
+		data := formatAccountSyncData(&row.Account)
+		if row.Err != nil {
+			fmt.Printf("  %s%s%s: %s (issue: %v)\n", Fmt.Bold, row.Account.Slug, Fmt.Reset, data, row.Err)
+			if strings.TrimSpace(row.Output) != "" {
+				fmt.Print(row.Output)
+			}
+			continue
+		}
+		fmt.Printf("  %s%s%s: %s (%s)\n", Fmt.Bold, row.Account.Slug, Fmt.Reset, data, accountSyncFetchStatus(row.Count))
 	}
 	fmt.Println()
 
@@ -1738,6 +1781,33 @@ func AccountsFetchAll(args []string) (int, error) {
 		return failed, fmt.Errorf("%s failed", Pluralize(failed, "account", ""))
 	}
 	return 0, nil
+}
+
+func formatAccountSyncData(acc *AccountConfig) string {
+	if acc == nil {
+		return "0 txs, balance: 0.00 EUR"
+	}
+	totals := computeAccountTotals(acc)
+	currency := acc.Currency
+	if currency == "" && acc.Token != nil {
+		currency = acc.Token.Symbol
+	}
+	if currency == "" {
+		currency = "EUR"
+	}
+	if totals == nil {
+		return fmt.Sprintf("0 txs, balance: %s", formatAccountDataBalance(0, currency))
+	}
+	return fmt.Sprintf("%s, balance: %s",
+		Pluralize(totals.TxCount, "tx", ""),
+		formatAccountDataBalance(totals.CurrentBalance, totals.Currency))
+}
+
+func accountSyncFetchStatus(count int) string {
+	if count <= 0 {
+		return "already in sync"
+	}
+	return fmt.Sprintf("%d synced", count)
 }
 
 func accountFetchArgs(acc AccountConfig, args []string) []string {
@@ -1849,6 +1919,25 @@ func captureTransactionsSync(args []string) (string, int, error) {
 	return <-done, count, syncErr
 }
 
+func captureGenerateTransactions(args []string) (string, error) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", GenerateTransactions(args)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	genErr := GenerateTransactions(args)
+	w.Close()
+	os.Stdout = old
+	return <-done, genErr
+}
+
 // quietOdooContext is set by aggregate callers (OdooSyncAll,
 // odooJournalsSyncAll) so per-account sync functions can skip printing
 // the Odoo URL / db line — it's already been shown once by the caller.
@@ -1866,6 +1955,44 @@ func setOdooTargetAlreadyPrinted(v bool) { odooTargetAlreadyPrintedFlag = v }
 
 // AccountOdooPush pushes local transactions to Odoo as bank statement lines.
 // Formerly AccountOdooSync; renamed to make direction explicit.
+type odooSyncStages struct {
+	Transactions bool
+	Partners     bool
+	Accounts     bool
+	Metadata     bool
+	Reconcile    bool
+	Explicit     bool
+}
+
+func parseOdooSyncStages(args []string) odooSyncStages {
+	explicit := odooSyncStageFlagsExplicit(args)
+	if !explicit {
+		return odooSyncStages{
+			Transactions: true,
+			Partners:     true,
+			Accounts:     true,
+			Metadata:     true,
+			Reconcile:    true,
+		}
+	}
+	return odooSyncStages{
+		Transactions: HasFlag(args, "--transactions"),
+		Partners:     HasFlag(args, "--partners"),
+		Accounts:     HasFlag(args, "--accounts"),
+		Metadata:     HasFlag(args, "--metadata"),
+		Reconcile:    HasFlag(args, "--reconcile"),
+		Explicit:     true,
+	}
+}
+
+func odooSyncStageFlagsExplicit(args []string) bool {
+	return HasFlag(args, "--transactions") ||
+		HasFlag(args, "--partners") ||
+		HasFlag(args, "--accounts") ||
+		HasFlag(args, "--metadata") ||
+		HasFlag(args, "--reconcile")
+}
+
 func AccountOdooPush(slug string, args []string) error {
 	configs := LoadAccountConfigs()
 	var acc *AccountConfig
@@ -1896,9 +2023,18 @@ func AccountOdooPush(slug string, args []string) error {
 	dryRun := HasFlag(args, "--dry-run")
 	force := HasFlag(args, "--force")
 	skipReconciliation := HasFlag(args, "--skip-reconciliation")
+	if HasFlag(args, "--account") {
+		return fmt.Errorf("unknown flag --account for journal sync; use --accounts")
+	}
+	stages := parseOdooSyncStages(args)
+	assumeYes := HasFlag(args, "--yes", "-y")
 	payoutFilter := GetOption(args, "--payout")
 	untilStr := GetOption(args, "--until")
 	sinceStr := GetOption(args, "--since")
+	previewLimit := GetNumber(args, []string{"-n", "--limit"}, 30)
+	if previewLimit < 0 {
+		previewLimit = 0
+	}
 
 	// Parse --months N to limit sync window
 	monthsLimit := 0
@@ -1944,18 +2080,44 @@ func AccountOdooPush(slug string, args []string) error {
 	}
 
 	useHistory := HasFlag(args, "--history") || force
-	rescanExisting := useHistory || !sinceDate.IsZero()
-
-	if !quietOdooContext() {
-		printOdooSyncHeader(creds, acc, sinceDate, untilDate, useHistory, sinceStr != "", monthsLimit)
+	rescanExisting := !force && (useHistory || !sinceDate.IsZero())
+	effectiveSinceDate := sinceDate
+	sinceLabelOverride := ""
+	partnerOnly := acc.Provider == "stripe" && stages.Explicit && stages.Partners && !stages.Transactions && !stages.Accounts && !stages.Metadata && !stages.Reconcile
+	accountOnly := acc.Provider == "stripe" && stages.Explicit && stages.Accounts && !stages.Transactions && !stages.Partners && !stages.Metadata && !stages.Reconcile
+	if acc.Provider == "stripe" && stages.Explicit && stages.Partners && !stages.Transactions && sinceStr == "" && !useHistory {
+		partnerSince, found, err := latestStripePartnerStageSinceFromLocalCache(acc.OdooJournalID)
+		if err == nil && !found && !partnerOnly {
+			partnerSince, found, err = latestStripePartnerStageSince(creds, uid, acc.OdooJournalID)
+		}
+		if err != nil {
+			Warnf("  %s⚠ Could not read latest partnered Stripe line, using full partner scan: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			useHistory = true
+			sinceLabelOverride = "full history (partner cursor unavailable)"
+		} else if found {
+			effectiveSinceDate = partnerSince
+			sinceLabelOverride = partnerSince.Format("2006-01-02") + " (last line with partner)"
+		} else {
+			useHistory = true
+			sinceLabelOverride = "full history (no partnered line yet)"
+		}
+	}
+	if sinceLabelOverride == "" && acc.Provider == "stripe" && stages.Transactions && !useHistory && effectiveSinceDate.IsZero() && untilDate.IsZero() {
+		if cursor, err := fetchLatestStripeOdooImportCursor(creds, uid, acc.OdooJournalID, acc.AccountID); err == nil {
+			sinceLabelOverride = stripeOdooCursorSinceLabel(cursor)
+		}
 	}
 
-	localBefore := accountLocalOdooSnapshot(acc, loadAccountTransactionsForOdoo(acc))
+	if !quietOdooContext() && !partnerOnly && !accountOnly {
+		printOdooSyncHeader(creds, acc, effectiveSinceDate, untilDate, useHistory, sinceStr != "", monthsLimit, sinceLabelOverride)
+	}
+
+	localBefore := accountLocalOdooSyncSnapshot(acc)
 
 	// --force: empty the entire journal first. Stripe handles this inside
 	// the sync itself, so we only run the global wipe for non-Stripe paths.
 	if force && !dryRun && acc.Provider != "stripe" {
-		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID); err != nil {
+		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID, true); err != nil {
 			return err
 		}
 	}
@@ -1964,10 +2126,51 @@ func AccountOdooPush(slug string, args []string) error {
 	var summary string
 	syncedCount := 0
 	if acc.Provider == "stripe" {
-		summary, syncErr = syncStripeToOdoo(acc, creds, uid, monthsLimit, dryRun, force, skipReconciliation, payoutFilter, untilDate)
+		if stages.Transactions {
+			summary, syncErr = syncStripeToOdoo(acc, creds, uid, monthsLimit, dryRun, force, skipReconciliation, payoutFilter, effectiveSinceDate, untilDate, previewLimit, stages, useHistory)
+		} else {
+			summary = "transactions skipped"
+		}
+		if syncErr == nil && stages.Explicit && stages.Partners {
+			reviewed, updated, err := syncStripeOdooPartnersStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun, previewLimit, useHistory || sinceStr == "")
+			if err != nil {
+				syncErr = err
+			} else if reviewed > 0 {
+				summary += fmt.Sprintf(", partners %d/%d", updated, reviewed)
+			}
+		}
+		if syncErr == nil && stages.Explicit && stages.Accounts {
+			reviewed, updated, err := syncStripeOdooAccountsStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun)
+			if err != nil {
+				syncErr = err
+			} else if reviewed > 0 {
+				summary += fmt.Sprintf(", accounts %d/%d", updated, reviewed)
+			}
+		}
+		if syncErr == nil && stages.Explicit && stages.Metadata {
+			reviewed, updated, err := syncStripeOdooMetadataStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun, previewLimit)
+			if err != nil {
+				syncErr = err
+			} else if reviewed > 0 {
+				summary += fmt.Sprintf(", metadata %d/%d", updated, reviewed)
+			}
+		}
+		if syncErr == nil && stages.Explicit && stages.Reconcile {
+			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, assumeYes, dryRun, false); err != nil {
+				syncErr = err
+			} else {
+				summary += ", reconcile pass complete"
+			}
+		}
+		if stages.Transactions {
+			syncedCount = parseStripeUploadCount(summary)
+		}
 	} else {
+		if stages.Explicit && (!stages.Transactions || stages.Partners || stages.Accounts || stages.Metadata || stages.Reconcile) {
+			return fmt.Errorf("staged sync flags are currently supported for Stripe journals; use --transactions for this account")
+		}
 		var result blockchainOdooSyncResult
-		result, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, skipReconciliation, sinceDate, untilDate, useHistory)
+		result, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, skipReconciliation, sinceDate, untilDate, useHistory, previewLimit)
 		summary = result.Summary
 		syncedCount = result.Synced
 	}
@@ -1979,7 +2182,7 @@ func AccountOdooPush(slug string, args []string) error {
 	// avoid the cost of fetching every line. Honors --dry-run.
 	reviewedCount := 0
 	updatedCount := 0
-	if syncErr == nil && rescanExisting {
+	if syncErr == nil && stages.Accounts && rescanExisting && !(acc.Provider == "stripe" && stages.Explicit) {
 		reviewed, applied, err := applyOdooRulesToExistingLines(creds, uid, acc, sinceDate, untilDate, dryRun)
 		if err != nil {
 			Warnf("  %s⚠ rule re-apply: %v%s", Fmt.Yellow, err, Fmt.Reset)
@@ -2048,8 +2251,15 @@ func AccountOdooPush(slug string, args []string) error {
 	}
 	if !dryRun {
 		UpdateSyncSource(fmt.Sprintf("odoo:journal:%d", acc.OdooJournalID), false)
+		if acc.Provider == "stripe" && stages.Transactions && syncErr == nil {
+			if count, err := writeOdooJournalLinesCache(creds, uid, acc.OdooJournalID); err != nil {
+				Warnf("  %s⚠ Odoo journal cache: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			} else if !quietOdooContext() {
+				fmt.Printf("  %sCached %d Odoo journal lines in %s%s\n", Fmt.Dim, count, odooJournalLinesCachePath(acc.OdooJournalID), Fmt.Reset)
+			}
+		}
 	}
-	if !quietOdooContext() {
+	if !quietOdooContext() && !partnerOnly && !accountOnly {
 		odooAfter, odooAfterErr := fetchOdooJournalSnapshot(creds, uid, acc.OdooJournalID, accCurrency(acc))
 		// In dry-run nothing was written, so the local snapshot we
 		// captured at the top is the right "what would change against"
@@ -2057,11 +2267,69 @@ func AccountOdooPush(slug string, args []string) error {
 		// post-sync state.
 		localAfter := localBefore
 		if !dryRun {
-			localAfter = accountLocalOdooSnapshot(acc, loadAccountTransactionsForOdoo(acc))
+			localAfter = accountLocalOdooSyncSnapshot(acc)
 		}
 		printOdooSyncSummary(syncedCount, reviewedCount, updatedCount, dryRun, localAfter, odooAfter, odooAfterErr)
+		printOdooSyncNextHints(acc, stages)
 	}
 	return nil
+}
+
+func parseStripeUploadCount(summary string) int {
+	var n int
+	if strings.HasPrefix(summary, "dry-run: ") {
+		_, _ = fmt.Sscanf(summary, "dry-run: %d tx would be uploaded", &n)
+		return n
+	}
+	_, _ = fmt.Sscanf(summary, "%d new", &n)
+	return n
+}
+
+func parseStripeDryRunUploadCount(summary string) int {
+	var n int
+	_, _ = fmt.Sscanf(summary, "dry-run: %d tx would be uploaded", &n)
+	return n
+}
+
+func printOdooSyncNextHints(acc *AccountConfig, stages odooSyncStages) {
+	if acc == nil || acc.Provider != "stripe" || !stages.Explicit {
+		return
+	}
+	var commands []string
+	base := fmt.Sprintf("chb odoo journals %d sync", acc.OdooJournalID)
+	if stages.Transactions {
+		if !stages.Partners {
+			commands = append(commands, base+" --partners")
+		}
+		if !stages.Accounts {
+			commands = append(commands, base+" --accounts")
+		}
+		if !stages.Metadata {
+			commands = append(commands, base+" --metadata")
+		}
+		if !stages.Reconcile {
+			commands = append(commands, fmt.Sprintf("chb odoo journals %d reconcile", acc.OdooJournalID))
+		}
+	} else if stages.Partners && !stages.Accounts {
+		commands = append(commands, base+" --accounts")
+		if !stages.Metadata {
+			commands = append(commands, base+" --metadata")
+		}
+		if !stages.Reconcile {
+			commands = append(commands, fmt.Sprintf("chb odoo journals %d reconcile", acc.OdooJournalID))
+		}
+	} else if stages.Accounts && !stages.Metadata {
+		commands = append(commands, base+" --metadata")
+		if !stages.Reconcile {
+			commands = append(commands, fmt.Sprintf("chb odoo journals %d reconcile", acc.OdooJournalID))
+		}
+	} else if (stages.Accounts || stages.Metadata) && !stages.Reconcile {
+		commands = append(commands, fmt.Sprintf("chb odoo journals %d reconcile", acc.OdooJournalID))
+	}
+	if len(commands) == 0 {
+		return
+	}
+	fmt.Printf("  %sNext:%s %s\n\n", Fmt.Dim, Fmt.Reset, strings.Join(commands, "  →  "))
 }
 
 // verifyJournalBalanceAgainstLive refreshes the live balance cache for this
@@ -2133,10 +2401,8 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 		formatBalance(live, currency), liveLabel,
 		formatBalance(diff, currency),
 		Fmt.Reset)
-	detail += fmt.Sprintf("    %sLikely cause: local cache is behind %s. Try: chb accounts %s sync%s\n",
-		Fmt.Dim, liveLabel, acc.Slug, Fmt.Reset)
-	detail += fmt.Sprintf("    %sIf the local cache is already correct: chb odoo journals %d fix%s\n",
-		Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
+	detail += fmt.Sprintf("    %sHint: chb accounts %s sync  |  chb odoo journals %d fix%s\n",
+		Fmt.Dim, acc.Slug, acc.OdooJournalID, Fmt.Reset)
 	if !quietOdooContext() {
 		Warnf("%s", strings.TrimRight(detail, "\n"))
 	}
@@ -2163,6 +2429,15 @@ func accountLocalOdooSnapshot(acc *AccountConfig, txs []TransactionEntry) accoun
 	}
 	snap.Balance = roundCents(snap.Balance)
 	return snap
+}
+
+func accountLocalOdooSyncSnapshot(acc *AccountConfig) accountOdooSyncSnapshot {
+	if acc != nil && acc.Provider == "stripe" {
+		if snap, ok := stripeOdooLocalSnapshot(acc); ok {
+			return snap
+		}
+	}
+	return accountLocalOdooSnapshot(acc, loadAccountTransactionsForOdoo(acc))
 }
 
 func fetchOdooJournalSnapshot(creds *OdooCredentials, uid int, journalID int, currency string) (accountOdooSyncSnapshot, error) {
@@ -2201,7 +2476,7 @@ func fetchOdooJournalSnapshot(creds *OdooCredentials, uid int, journalID int, cu
 // `chb odoo journals <id> sync` (and the equivalent invocation via
 // AccountOdooPush). Mirrors the `chb accounts <slug> sync` style:
 // each label padded to the same column width.
-func printOdooSyncHeader(creds *OdooCredentials, acc *AccountConfig, since, until time.Time, useHistory, sinceExplicit bool, monthsLimit int) {
+func printOdooSyncHeader(creds *OdooCredentials, acc *AccountConfig, since, until time.Time, useHistory, sinceExplicit bool, monthsLimit int, sinceLabelOverride ...string) {
 	fmt.Println()
 	w := 9 // matches the longest label, "Account: " etc.
 	pad := func(label string) string { return padRight(label+":", w) }
@@ -2217,6 +2492,9 @@ func printOdooSyncHeader(creds *OdooCredentials, acc *AccountConfig, since, unti
 	fmt.Printf("  %s%s%s %s (%s)\n", Fmt.Dim, pad("Account"), Fmt.Reset, acc.Slug, accountSourceURI(acc))
 
 	sinceLine := odooSyncSinceLabel(acc, since, useHistory, sinceExplicit, monthsLimit)
+	if len(sinceLabelOverride) > 0 && strings.TrimSpace(sinceLabelOverride[0]) != "" {
+		sinceLine = strings.TrimSpace(sinceLabelOverride[0])
+	}
 	fmt.Printf("  %s%s%s %s\n", Fmt.Dim, pad("Since"), Fmt.Reset, sinceLine)
 	if !until.IsZero() {
 		fmt.Printf("  %s%s%s %s\n", Fmt.Dim, pad("Until"), Fmt.Reset, until.AddDate(0, 0, -1).Format("2006-01-02"))
@@ -2259,6 +2537,13 @@ func odooSyncSinceLabel(acc *AccountConfig, since time.Time, useHistory, sinceEx
 		return time.Unix(cp.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02") + " (last tx)"
 	}
 	return "default recent window"
+}
+
+func stripeOdooCursorSinceLabel(cursor odooImportCursor) string {
+	if !cursor.Found || strings.TrimSpace(cursor.Date) == "" {
+		return ""
+	}
+	return strings.TrimSpace(cursor.Date) + " (last Odoo line)"
 }
 
 // printOdooSyncSummary prints the standardized post-sync summary:
@@ -2857,7 +3142,7 @@ func odooJournalLineSum(creds *OdooCredentials, uid int, journalID int) (float64
 }
 
 // syncBlockchainToOdoo syncs blockchain/monerium transactions to Odoo (no statements, just lines).
-func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun bool, skipReconciliation bool, sinceDate, untilDate time.Time, useHistory bool) (blockchainOdooSyncResult, error) {
+func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun bool, skipReconciliation bool, sinceDate, untilDate time.Time, useHistory bool, previewLimit int) (blockchainOdooSyncResult, error) {
 	localTxs := loadAccountTransactionsForOdoo(acc)
 	sort.SliceStable(localTxs, func(i, j int) bool {
 		if localTxs[i].Timestamp == localTxs[j].Timestamp {
@@ -2966,6 +3251,11 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 	}
 
 	if len(missing) == 0 {
+		if dryRun {
+			if err := printOdooBlockchainDryRunPlan(creds, uid, acc, localTxs, existingIDs, previewLimit); err != nil {
+				return blockchainOdooSyncResult{}, err
+			}
+		}
 		if partnerUpdates > 0 {
 			return blockchainOdooSyncResult{Summary: fmt.Sprintf("already in sync, %d partner links updated", partnerUpdates)}, nil
 		}
@@ -2973,12 +3263,9 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 	}
 
 	if dryRun {
-		for _, tx := range missing {
-			t := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
-			amt := signedOdooAmountForTransaction(acc, tx)
-			odooLog("    %s  %.2f  %s\n", t.Format("2006-01-02"), amt, tx.Counterparty)
+		if err := printOdooBlockchainDryRunPlan(creds, uid, acc, localTxs, existingIDs, previewLimit); err != nil {
+			return blockchainOdooSyncResult{}, err
 		}
-		odooLog("\n")
 		return blockchainOdooSyncResult{Summary: fmt.Sprintf("dry-run: %d tx would be uploaded", len(missing))}, nil
 	}
 
@@ -2995,7 +3282,7 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		partnerEmail, _ := tx.Metadata["email"].(string)
 		partnerBankID, partnerID := resolveOdooPartnerBankForTransaction(creds, uid, tx)
 		if partnerID == 0 {
-			partnerID = resolveOdooPartner(creds, uid, tx.Counterparty, partnerEmail, partnerCache, stats)
+			partnerID = resolveOdooPartner(creds, uid, tx.Counterparty, partnerEmail, stringMetadata(tx.Metadata, "stripeCustomerId"), tx.Collective, false, partnerCache, stats)
 		}
 
 		matchedRule := MatchOdooRule(odooRules, tx)
@@ -3029,7 +3316,12 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 			"account.bank.statement.line", "create",
 			[]interface{}{[]interface{}{lineData}}, nil)
 		if err != nil {
-			fmt.Printf("  %s✗ %s %s: %v%s\n", Fmt.Red, t.Format("2006-01-02"), paymentRef, err, Fmt.Reset)
+			failure := classifyStatementLineCreateFailure(lineData, err)
+			failures := []statementLineCreateFailure{failure}
+			annotateStatementLineCreateFailures(creds, uid, failures)
+			stats.recordCreateFailures(failures)
+			failure = failures[0]
+			fmt.Printf("  %s✗ %s %s: %s%s\n", Fmt.Red, t.Format("2006-01-02"), paymentRef, failure.Reason, Fmt.Reset)
 			errors++
 			continue
 		}
@@ -3073,20 +3365,201 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 		summary = fmt.Sprintf("%s, %d partner links updated", summary, partnerUpdates)
 	}
 	if errors > 0 {
-		summary = fmt.Sprintf("%d new, %d errors", synced, errors)
+		summary = fmt.Sprintf("%d new, %d failed", synced, errors)
 	}
 	return blockchainOdooSyncResult{Summary: summary, Synced: synced}, nil
+}
+
+func printOdooBlockchainDryRunPlan(creds *OdooCredentials, uid int, acc *AccountConfig, txs []TransactionEntry, existingIDs map[string]bool, limit int) error {
+	if quietOdooContext() {
+		return nil
+	}
+	plan, err := buildOdooBlockchainDryRunPlan(creds, uid, acc, txs, existingIDs, limit)
+	if err != nil {
+		return err
+	}
+	if len(plan) == 0 {
+		odooLog("  %sNo local transactions in selected window.%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+	printOdooDryRunPlanRows(plan, accCurrency(acc))
+	return nil
+}
+
+func printOdooDryRunPlanRows(plan []odooSyncPlanRow, currency string) {
+	headers := []string{"Action", "Date", "Description", "Partner", "Account", "Amount", "Ref"}
+	rows := make([][]string, 0, len(plan))
+	totals := map[string]int{}
+	var amountTotal float64
+	for _, row := range plan {
+		totals[row.Action]++
+		amountTotal += row.Amount
+		desc := row.Description
+		if row.Reason != "" {
+			desc = fmt.Sprintf("%s (%s)", desc, row.Reason)
+		}
+		rows = append(rows, []string{
+			row.Action,
+			row.Date,
+			Truncate(desc, 36),
+			Truncate(row.Partner, 20),
+			Truncate(row.Account, 18),
+			formatBalancePlain(row.Amount, row.Currency),
+			row.Ref,
+		})
+	}
+	totalLabel := Pluralize(len(plan), "planned line", "")
+	var parts []string
+	for _, action := range []string{"create", "update", "skip"} {
+		if totals[action] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", totals[action], action))
+		}
+	}
+	if len(parts) > 0 {
+		totalLabel += " (" + strings.Join(parts, ", ") + ")"
+	}
+	renderTicketsTable(headers, rows, []string{"", "", totalLabel, "", "", formatBalancePlain(amountTotal, currency), ""}, map[int]bool{5: true})
+	odooLog("\n")
+}
+
+func buildOdooBlockchainDryRunPlan(creds *OdooCredentials, uid int, acc *AccountConfig, txs []TransactionEntry, existingIDs map[string]bool, limit int) ([]odooSyncPlanRow, error) {
+	if limit > 0 && len(txs) > limit {
+		txs = txs[:limit]
+	}
+
+	ids := make([]string, 0, len(txs))
+	for _, tx := range txs {
+		if id := buildUniqueImportID(acc, tx); id != "" && existingIDs[id] {
+			ids = append(ids, id)
+		}
+	}
+	existingRows, err := fetchOdooStatementLinesByImportID(creds, uid, ids)
+	if err != nil {
+		return nil, fmt.Errorf("fetch existing Odoo lines for preview: %v", err)
+	}
+
+	odooRules, _ := LoadOdooRules()
+	plan := make([]odooSyncPlanRow, 0, len(txs))
+	for _, tx := range txs {
+		t := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
+		importID := buildUniqueImportID(acc, tx)
+		amount := signedOdooAmountForTransaction(acc, tx)
+		paymentRef := buildOdooPaymentRef(tx)
+		action := "create"
+		reason := ""
+		account := ""
+
+		if matchedRule := MatchOdooRule(odooRules, tx); matchedRule != nil {
+			if matchedRule.Set.AccountCode != "" {
+				account = matchedRule.Set.AccountCode
+			}
+			if matchedRule.Set.PartnerID > 0 {
+				reason = fmt.Sprintf("rule partner #%d", matchedRule.Set.PartnerID)
+			}
+		}
+
+		if existingIDs[importID] {
+			action = "skip"
+			if row := existingRows[importID]; row != nil {
+				update := map[string]interface{}{}
+				if paymentRef != "" && odooString(row["payment_ref"]) != paymentRef {
+					update["payment_ref"] = paymentRef
+				}
+				if narr := buildOdooNarration(acc, tx); narr != "" && odooString(row["narration"]) != narr {
+					update["narration"] = narr
+				}
+				if len(update) > 0 {
+					action = "update"
+					reason = strings.Join(sortedMapKeys(update), ", ")
+				}
+			}
+		}
+
+		plan = append(plan, odooSyncPlanRow{
+			Action:      action,
+			Date:        t.Format("2006-01-02"),
+			Description: paymentRef,
+			Partner:     tx.Counterparty,
+			Account:     account,
+			Amount:      amount,
+			Currency:    accCurrency(acc),
+			Ref:         importID,
+			Reason:      reason,
+		})
+	}
+	return plan, nil
+}
+
+func fetchOdooStatementLinesByImportID(creds *OdooCredentials, uid int, importIDs []string) (map[string]map[string]interface{}, error) {
+	rowsByID := map[string]map[string]interface{}{}
+	if len(importIDs) == 0 {
+		return rowsByID, nil
+	}
+	seen := map[string]bool{}
+	var uniq []string
+	for _, id := range importIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	for start := 0; start < len(uniq); start += 80 {
+		end := start + 80
+		if end > len(uniq) {
+			end = len(uniq)
+		}
+		values := make([]interface{}, 0, end-start)
+		for _, id := range uniq[start:end] {
+			values = append(values, id)
+		}
+		rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+			[]interface{}{[]interface{}{"unique_import_id", "in", values}},
+			[]string{"id", "date", "payment_ref", "narration", "partner_id", "partner_bank_id", "amount", "unique_import_id", "journal_id", "move_id", "statement_id", "create_date", "write_date"},
+			"date desc, id desc",
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if id := odooString(row["unique_import_id"]); id != "" {
+				rowsByID[id] = row
+			}
+		}
+	}
+	return rowsByID, nil
+}
+
+func sortedMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedIntMapKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // syncStats tracks metrics for the sync summary report.
 type syncStats struct {
 	LinesCreated       int
 	LinesSkipped       int
+	LinesFailed        int
+	CreateFailures     map[string]int
+	CreateDetails      []string
 	Statements         int
 	PartnersMatched    int
 	PartnersCreated    int
 	PartnersSkipped    int
-	Ambiguous          []string // "name <email>" entries
+	Ambiguous          []string // partner merge suggestions
 	Charges            int      // number of charge/payment lines (all providers)
 	ChargesGross       float64  // total gross charges
 	Refunds            int      // number of refund lines
@@ -3103,11 +3576,79 @@ type syncStats struct {
 	ReconcileDetails   []string
 }
 
+func (s *syncStats) recordCreateFailures(failures []statementLineCreateFailure) {
+	if s == nil || len(failures) == 0 {
+		return
+	}
+	if s.CreateFailures == nil {
+		s.CreateFailures = map[string]int{}
+	}
+	for _, failure := range failures {
+		reason := failure.Reason
+		if reason == "" {
+			reason = "unknown create error"
+		}
+		s.LinesFailed++
+		s.CreateFailures[reason]++
+		detail := reason
+		if failure.ImportID != "" {
+			detail = failure.ImportID + ": " + reason
+		}
+		if failure.Detail != "" && failure.Detail != reason {
+			detail += " (" + failure.Detail + ")"
+		}
+		s.CreateDetails = append(s.CreateDetails, detail)
+	}
+}
+
+func (s *syncStats) recordPartnerMergeSuggestion(name, email string, selectedID int, candidateIDs []int) {
+	if s == nil || len(candidateIDs) <= 1 {
+		return
+	}
+	label := strings.TrimSpace(name)
+	email = strings.TrimSpace(email)
+	if email != "" {
+		label = fmt.Sprintf("%s <%s>", label, email)
+	}
+	if label == "" {
+		label = "Odoo partner"
+	}
+	suggestion := fmt.Sprintf("%s: linked to oldest partner #%d; consider merging duplicate partners %v", label, selectedID, candidateIDs)
+	for _, existing := range s.Ambiguous {
+		if existing == suggestion {
+			return
+		}
+	}
+	s.PartnersSkipped++
+	s.Ambiguous = append(s.Ambiguous, suggestion)
+}
+
 func (s *syncStats) print() {
 	fmt.Printf("\n  %s── Summary ──%s\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("    Lines:          %d created, %d skipped\n", s.LinesCreated, s.LinesSkipped)
+	lineSummary := fmt.Sprintf("%d created, %d skipped", s.LinesCreated, s.LinesSkipped)
+	if s.LinesFailed > 0 {
+		lineSummary += fmt.Sprintf(", %d failed", s.LinesFailed)
+	}
+	fmt.Printf("    Lines:          %s\n", lineSummary)
+	if len(s.CreateFailures) > 0 {
+		for _, reason := range sortedIntMapKeys(s.CreateFailures) {
+			fmt.Printf("      %s✗ %s: %d%s\n", Fmt.Red, reason, s.CreateFailures[reason], Fmt.Reset)
+		}
+	}
+	if len(s.CreateDetails) > 0 {
+		limit := len(s.CreateDetails)
+		if limit > 10 {
+			limit = 10
+		}
+		for _, detail := range s.CreateDetails[:limit] {
+			Warnf("      %s⚠ %s%s", Fmt.Yellow, detail, Fmt.Reset)
+		}
+		if len(s.CreateDetails) > limit {
+			Warnf("      %s⚠ ... %d more create failure(s)%s", Fmt.Yellow, len(s.CreateDetails)-limit, Fmt.Reset)
+		}
+	}
 	fmt.Printf("    Statements:     %d\n", s.Statements)
-	fmt.Printf("    Partners:       %d matched, %d created, %d ambiguous\n",
+	fmt.Printf("    Partners:       %d matched, %d created, %d merge suggested\n",
 		s.PartnersMatched, s.PartnersCreated, s.PartnersSkipped)
 	if len(s.Ambiguous) > 0 {
 		for _, a := range s.Ambiguous {
@@ -3143,6 +3684,74 @@ func (s *syncStats) print() {
 	fmt.Println()
 }
 
+func (s *syncStats) printStripeCompact() {
+	lineSummary := fmt.Sprintf("%d created, %d skipped", s.LinesCreated, s.LinesSkipped)
+	if s.LinesFailed > 0 {
+		lineSummary += fmt.Sprintf(", %d failed", s.LinesFailed)
+	}
+	parts := []string{lineSummary, Pluralize(s.Statements, "statement", "")}
+	if s.PartnersMatched > 0 || s.PartnersCreated > 0 || s.PartnersSkipped > 0 {
+		parts = append(parts, fmt.Sprintf("partners %d matched/%d created/%d merge suggested", s.PartnersMatched, s.PartnersCreated, s.PartnersSkipped))
+	}
+	if s.LinesReconciled > 0 || s.InternalTransfers > 0 || s.ReconcileAmbiguous > 0 {
+		parts = append(parts, fmt.Sprintf("reconciled %d, %d transfer, %d ambiguous", s.LinesReconciled, s.InternalTransfers, s.ReconcileAmbiguous))
+	}
+	fmt.Printf("  %sSummary:%s %s\n", Fmt.Bold, Fmt.Reset, strings.Join(parts, "; "))
+
+	hasStripeBreakdown := s.Charges > 0 || s.Refunds > 0 || s.ChargeFees > 0 || s.StripeFees > 0 || math.Abs(s.PayoutsTotal) > 0.005
+	if hasStripeBreakdown {
+		net := s.ChargesGross + s.RefundsTotal - s.ChargeFees - s.StripeFees + s.PayoutsTotal
+		breakdown := []string{
+			fmt.Sprintf("%d charges %s", s.Charges, fmtEURSigned(s.ChargesGross)),
+		}
+		if s.Refunds > 0 {
+			breakdown = append(breakdown, fmt.Sprintf("%d refunds %s", s.Refunds, fmtEURSigned(s.RefundsTotal)))
+		}
+		if s.ChargeFees > 0 {
+			breakdown = append(breakdown, fmt.Sprintf("charge fees -%s", fmtEUR(s.ChargeFees)))
+		}
+		if s.StripeFees > 0 {
+			breakdown = append(breakdown, fmt.Sprintf("Stripe fees -%s", fmtEUR(s.StripeFees)))
+		}
+		if math.Abs(s.PayoutsTotal) > 0.005 {
+			breakdown = append(breakdown, fmt.Sprintf("payouts %s", fmtEURSigned(s.PayoutsTotal)))
+		}
+		breakdown = append(breakdown, "balance "+fmtEURSigned(net))
+		fmt.Printf("  %sBreakdown:%s %s\n", Fmt.Dim, Fmt.Reset, strings.Join(breakdown, "; "))
+	}
+	if len(s.CreateFailures) > 0 {
+		for _, reason := range sortedIntMapKeys(s.CreateFailures) {
+			fmt.Printf("    %s✗ %s: %d%s\n", Fmt.Red, reason, s.CreateFailures[reason], Fmt.Reset)
+		}
+	}
+	if len(s.CreateDetails) > 0 {
+		limit := len(s.CreateDetails)
+		if limit > 10 {
+			limit = 10
+		}
+		for _, detail := range s.CreateDetails[:limit] {
+			Warnf("    %s⚠ %s%s", Fmt.Yellow, detail, Fmt.Reset)
+		}
+		if len(s.CreateDetails) > limit {
+			Warnf("    %s⚠ ... %d more create failure(s)%s", Fmt.Yellow, len(s.CreateDetails)-limit, Fmt.Reset)
+		}
+	}
+	if len(s.Ambiguous) > 0 {
+		for _, a := range s.Ambiguous {
+			Warnf("    %s⚠ %s%s", Fmt.Yellow, a, Fmt.Reset)
+		}
+	}
+	if s.ReconcileNoPartner > 0 || s.ReconcileNoMatch > 0 || s.ReconcileErrors > 0 {
+		fmt.Printf("  %sUnreconciled:%s %d no partner, %d no match, %d errors\n",
+			Fmt.Dim, Fmt.Reset, s.ReconcileNoPartner, s.ReconcileNoMatch, s.ReconcileErrors)
+	}
+	if len(s.ReconcileDetails) > 0 {
+		for _, detail := range s.ReconcileDetails {
+			Warnf("    %s⚠ %s%s", Fmt.Yellow, detail, Fmt.Reset)
+		}
+	}
+}
+
 // syncStripeToOdoo syncs Stripe balance transactions into Odoo, grouping
 // them into bank statements bounded by automatic payouts. See
 // stripe_odoo_sync.go for the detailed model.
@@ -3151,9 +3760,43 @@ func (s *syncStats) print() {
 // the journal state. untilDate (if set) stops processing at that moment.
 // payoutFilter is rejected with an error (targeted-payout resync is not
 // supported in this model).
-func syncStripeToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun, force bool, skipReconciliation bool, payoutFilter string, untilDate time.Time) (string, error) {
+func syncStripeToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun, force bool, skipReconciliation bool, payoutFilter string, opts ...interface{}) (string, error) {
 	_ = monthsLimit
-	return syncStripeChronological(acc, creds, uid, dryRun, force, skipReconciliation, payoutFilter, untilDate)
+	var sinceDate, untilDate time.Time
+	previewLimit := 30
+	stages := odooSyncStages{
+		Transactions: true,
+		Partners:     true,
+		Accounts:     true,
+		Reconcile:    true,
+	}
+	useHistory := false
+	if len(opts) == 1 {
+		untilDate, _ = opts[0].(time.Time)
+	} else {
+		if len(opts) > 0 {
+			sinceDate, _ = opts[0].(time.Time)
+		}
+		if len(opts) > 1 {
+			untilDate, _ = opts[1].(time.Time)
+		}
+		if len(opts) > 2 {
+			if n, ok := opts[2].(int); ok {
+				previewLimit = n
+			}
+		}
+		if len(opts) > 3 {
+			if s, ok := opts[3].(odooSyncStages); ok {
+				stages = s
+			}
+		}
+		if len(opts) > 4 {
+			if h, ok := opts[4].(bool); ok {
+				useHistory = h
+			}
+		}
+	}
+	return syncStripeChronological(acc, creds, uid, dryRun, force, skipReconciliation, payoutFilter, sinceDate, untilDate, previewLimit, stages, useHistory)
 }
 
 // warnInvalidStatements runs the statement invariant check and prints a warning
@@ -3170,9 +3813,24 @@ func warnInvalidStatements(creds *OdooCredentials, uid int, journalID int) {
 	fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
 }
 
+type statementLineCreateFailure struct {
+	ImportID string
+	Reason   string
+	Detail   string
+	// ConflictJournalID is the Odoo journal that already owns this
+	// unique_import_id, when the failure is a cross-journal collision.
+	// Zero when the failure is something else.
+	ConflictJournalID int
+}
+
+type statementLineCreateResult struct {
+	IDs      []int
+	Failures []statementLineCreateFailure
+}
+
 // batchCreateStatementLines creates multiple statement lines through Odoo.
-// Returns the number of successfully created lines. Skips duplicates silently.
-// Falls back to one-by-one on chunk failure.
+// Returns the number of successfully created lines. Falls back to one-by-one
+// on chunk failure.
 func batchCreateStatementLines(creds *OdooCredentials, uid int, lines []map[string]interface{}) (int, error) {
 	ids, err := batchCreateStatementLinesWithIDs(creds, uid, lines)
 	return len(ids), err
@@ -3183,8 +3841,13 @@ func batchCreateStatementLinesWithIDs(creds *OdooCredentials, uid int, lines []m
 }
 
 func batchCreateStatementLinesWithProgress(creds *OdooCredentials, uid int, lines []map[string]interface{}, reason string) ([]int, error) {
+	result, err := batchCreateStatementLinesWithProgressReport(creds, uid, lines, reason)
+	return result.IDs, err
+}
+
+func batchCreateStatementLinesWithProgressReport(creds *OdooCredentials, uid int, lines []map[string]interface{}, reason string) (statementLineCreateResult, error) {
 	if len(lines) == 0 {
-		return nil, nil
+		return statementLineCreateResult{}, nil
 	}
 
 	const chunkSize = 100
@@ -3194,24 +3857,26 @@ func batchCreateStatementLinesWithProgress(creds *OdooCredentials, uid int, line
 		defer status.Clear()
 	}
 
-	var createdIDs []int
+	var result statementLineCreateResult
 	for start := 0; start < len(lines); start += chunkSize {
 		end := start + chunkSize
 		if end > len(lines) {
 			end = len(lines)
 		}
 
-		chunkIDs := createStatementLineChunk(creds, uid, lines[start:end])
-		createdIDs = append(createdIDs, chunkIDs...)
+		chunkResult := createStatementLineChunk(creds, uid, lines[start:end])
+		result.IDs = append(result.IDs, chunkResult.IDs...)
+		result.Failures = append(result.Failures, chunkResult.Failures...)
 
 		if !quietOdooContext() && len(lines) > chunkSize {
 			status.Update("Creating statement lines in Odoo %d/%d%s", end, len(lines), formatProgressReason(reason))
 		}
 	}
-	return createdIDs, nil
+	annotateStatementLineCreateFailures(creds, uid, result.Failures)
+	return result, nil
 }
 
-func createStatementLineChunk(creds *OdooCredentials, uid int, lines []map[string]interface{}) []int {
+func createStatementLineChunk(creds *OdooCredentials, uid int, lines []map[string]interface{}) statementLineCreateResult {
 	records := make([]interface{}, len(lines))
 	for i, l := range lines {
 		records[i] = l
@@ -3221,20 +3886,70 @@ func createStatementLineChunk(creds *OdooCredentials, uid int, lines []map[strin
 		"account.bank.statement.line", "create",
 		[]interface{}{records}, nil)
 	if err == nil {
-		return parseOdooCreatedIDs(result)
+		return statementLineCreateResult{IDs: parseOdooCreatedIDs(result)}
 	}
 
-	// Chunk failed (likely duplicate import IDs) — fall back to one-by-one.
-	var createdIDs []int
+	// Chunk failed (often duplicate import IDs) — fall back to one-by-one so
+	// successful rows still import and failed rows can be reported precisely.
+	var out statementLineCreateResult
 	for _, l := range lines {
 		result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			"account.bank.statement.line", "create",
 			[]interface{}{[]interface{}{l}}, nil)
 		if err == nil {
-			createdIDs = append(createdIDs, parseOdooCreatedIDs(result)...)
+			out.IDs = append(out.IDs, parseOdooCreatedIDs(result)...)
+			continue
+		}
+		out.Failures = append(out.Failures, classifyStatementLineCreateFailure(l, err))
+	}
+	return out
+}
+
+func classifyStatementLineCreateFailure(line map[string]interface{}, err error) statementLineCreateFailure {
+	importID := ""
+	if v, ok := line["unique_import_id"].(string); ok {
+		importID = v
+	}
+	detail := ""
+	if err != nil {
+		detail = strings.TrimSpace(err.Error())
+	}
+	reason := "Odoo create error"
+	lower := strings.ToLower(detail)
+	switch {
+	case strings.Contains(lower, "imported only once") ||
+		strings.Contains(lower, "unique_import_id") ||
+		strings.Contains(lower, "unique import") ||
+		strings.Contains(lower, "already exists"):
+		reason = "reference already exists in Odoo"
+	case strings.Contains(lower, "access") || strings.Contains(lower, "permission"):
+		reason = "Odoo permission error"
+	case strings.Contains(lower, "mandatory") || strings.Contains(lower, "required"):
+		reason = "missing required Odoo field"
+	}
+	return statementLineCreateFailure{ImportID: importID, Reason: reason, Detail: detail}
+}
+
+func annotateStatementLineCreateFailures(creds *OdooCredentials, uid int, failures []statementLineCreateFailure) {
+	var ids []string
+	for _, failure := range failures {
+		if failure.ImportID != "" && failure.Reason == "reference already exists in Odoo" {
+			ids = append(ids, failure.ImportID)
 		}
 	}
-	return createdIDs
+	if len(ids) == 0 {
+		return
+	}
+	journals, err := fetchImportIDJournals(creds, uid, ids)
+	if err != nil {
+		return
+	}
+	for i := range failures {
+		if journalID := journals[failures[i].ImportID]; journalID > 0 {
+			failures[i].ConflictJournalID = journalID
+			failures[i].Reason = fmt.Sprintf("reference already exists in journal #%d", journalID)
+		}
+	}
 }
 
 func formatProgressReason(reason string) string {
@@ -3318,7 +4033,7 @@ func createOrAdoptStatementLine(creds *OdooCredentials, uid int, lineData map[st
 // emptyOdooJournal deletes all statement lines and statements for a journal after confirmation.
 // In Odoo, each bank statement line auto-creates a journal entry (account.move).
 // To delete: unreconcile → reset move to draft → delete move (which deletes the statement line).
-func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int) error {
+func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int, yes bool) error {
 	journalName := OdooJournalName(journalID)
 	if journalName == "" {
 		if name, err := FetchAndCacheOdooJournalName(creds, uid, journalID); err == nil && name != "" {
@@ -3340,17 +4055,18 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int) error {
 	json.Unmarshal(countResult, &count)
 
 	if count == 0 {
-		fmt.Printf("  %sJournal '%s' is already empty%s\n\n", Fmt.Dim, journalName, Fmt.Reset)
-		return nil
-	}
-
-	Warnf("  %s⚠ This will delete %d statement lines from journal '%s'%s", Fmt.Yellow, count, journalName, Fmt.Reset)
-	fmt.Printf("  %sType 'yes' to confirm: %s", Fmt.Bold, Fmt.Reset)
-	reader := bufio.NewReader(os.Stdin)
-	confirm, _ := reader.ReadString('\n')
-	confirm = strings.TrimSpace(confirm)
-	if confirm != "yes" {
-		return fmt.Errorf("cancelled")
+		fmt.Printf("  %sJournal '%s' has no statement lines to reset%s\n", Fmt.Dim, journalName, Fmt.Reset)
+	} else if !yes {
+		Warnf("  %s⚠ This will delete %d statement lines from journal '%s'%s", Fmt.Yellow, count, journalName, Fmt.Reset)
+		fmt.Printf("  %sType 'yes' to confirm: %s", Fmt.Bold, Fmt.Reset)
+		reader := bufio.NewReader(os.Stdin)
+		confirm, _ := reader.ReadString('\n')
+		confirm = strings.TrimSpace(confirm)
+		if confirm != "yes" {
+			return fmt.Errorf("cancelled")
+		}
+	} else {
+		Warnf("  %s⚠ Deleting %d statement lines from journal '%s'%s", Fmt.Yellow, count, journalName, Fmt.Reset)
 	}
 
 	status := newStatusLine()
@@ -3389,6 +4105,7 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int) error {
 	}
 
 	if len(moveIDs) > 0 {
+		moveIDs = uniquePositiveInts(moveIDs)
 		moveIDsIface := intsToInterfaces(moveIDs)
 
 		// Find reconciled move lines for these moves and remove reconciliation.
@@ -3416,20 +4133,36 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int) error {
 			}
 		}
 
-		// Step 2: Reset moves to draft
-		err = runOdooIDChunks(status, "Resetting moves to draft", moveIDs, 200, func(chunk []interface{}) error {
-			_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-				"account.move", "button_draft",
-				[]interface{}{chunk}, nil)
-			return err
-		})
-		if err != nil {
+		// Step 2: Reset posted/cancelled moves to draft. Odoo rejects
+		// button_draft when draft moves are present in the same call, so
+		// split by current state first.
+		movesToDraft, draftMoves, stateErr := partitionOdooMovesForDeletion(creds, uid, moveIDs)
+		if stateErr != nil {
 			status.Clear()
-			Warnf("  %s⚠ Failed to reset moves to draft: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			Warnf("  %s⚠ Failed to read move states before deletion: %v%s", Fmt.Yellow, stateErr, Fmt.Reset)
+			movesToDraft = moveIDs
+			draftMoves = nil
+		}
+		if len(movesToDraft) > 0 {
+			err = runOdooIDChunks(status, "Resetting posted moves to draft", movesToDraft, 200, func(chunk []interface{}) error {
+				_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+					"account.move", "button_draft",
+					[]interface{}{chunk}, nil)
+				return err
+			})
+			if err != nil {
+				status.Clear()
+				Warnf("  %s⚠ Failed to reset moves to draft: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			} else {
+				draftMoves = uniquePositiveInts(append(draftMoves, movesToDraft...))
+			}
+		}
+		if len(draftMoves) == 0 {
+			draftMoves = moveIDs
 		}
 
 		// Step 3: Delete the moves (this cascades to delete statement lines)
-		err = runOdooIDChunks(status, "Deleting statement line moves", moveIDs, 200, func(chunk []interface{}) error {
+		err = runOdooIDChunks(status, "Deleting statement line moves", draftMoves, 200, func(chunk []interface{}) error {
 			_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 				"account.move", "unlink",
 				[]interface{}{chunk}, nil)
@@ -3489,8 +4222,32 @@ func emptyOdooJournal(creds *OdooCredentials, uid int, journalID int) error {
 	}
 
 	status.Clear()
-	fmt.Printf("  %s✓ Emptied journal '%s' (%d lines deleted)%s\n\n", Fmt.Green, journalName, count, Fmt.Reset)
+	if count == 0 {
+		fmt.Printf("  %s✓ Reset journal '%s' (already empty)%s\n\n", Fmt.Green, journalName, Fmt.Reset)
+	} else {
+		fmt.Printf("  %s✓ Emptied journal '%s' (%d lines deleted)%s\n\n", Fmt.Green, journalName, count, Fmt.Reset)
+	}
 	return nil
+}
+
+func partitionOdooMovesForDeletion(creds *OdooCredentials, uid int, moveIDs []int) (toDraft []int, alreadyDraft []int, err error) {
+	if len(moveIDs) == 0 {
+		return nil, nil, nil
+	}
+	rows, err := odooReadMapsByIDs(creds, uid, "account.move", uniquePositiveInts(moveIDs), []string{"state"})
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, row := range rows {
+		id := odooInt(row["id"])
+		switch odooString(row["state"]) {
+		case "draft":
+			alreadyDraft = append(alreadyDraft, id)
+		default:
+			toDraft = append(toDraft, id)
+		}
+	}
+	return toDraft, alreadyDraft, nil
 }
 
 func runOdooIDChunks(status *statusLine, label string, ids []int, chunkSize int, fn func([]interface{}) error) error {
@@ -3622,29 +4379,39 @@ func isZeroAddressPaymentRef(ref string) bool {
 
 // resolveOdooPartner finds or creates a partner in Odoo.
 // Priority: email match → exact name match → skip if ambiguous → create new.
-func resolveOdooPartner(creds *OdooCredentials, uid int, name, email string, cache map[string]int, stats ...*syncStats) int {
+func resolveOdooPartner(creds *OdooCredentials, uid int, name, email, stripeCustomerID, collective string, normalizeName bool, cache map[string]int, stats ...*syncStats) int {
 	var st *syncStats
 	if len(stats) > 0 {
 		st = stats[0]
+	}
+	if normalizeName {
+		name = normalizeStripePartnerName(name, email)
+	} else {
+		name = strings.TrimSpace(name)
+	}
+	email = strings.TrimSpace(email)
+	stripeCustomerID = strings.TrimSpace(stripeCustomerID)
+	collective = normalizeTransactionTagSlug(collective)
+	if name != "" {
+		name = titleCaseName(name)
 	}
 	if name == "" && email == "" {
 		return 0
 	}
 
 	// Check cache first (keyed by email if available, else name)
-	cacheKey := email
+	cacheKey := strings.ToLower(email)
 	if cacheKey == "" {
 		cacheKey = name
 	}
 	if id, ok := cache[cacheKey]; ok {
+		if id > 0 {
+			_ = ensureOdooPartnerCollectiveTag(creds, uid, id, collective)
+		}
 		return id
 	}
 
-	type partner struct {
-		ID    int         `json:"id"`
-		Name  string      `json:"name"`
-		Email interface{} `json:"email"`
-	}
+	lookupFields := odooPartnerLookupFields(creds, uid)
 
 	// 1. Search by email (most reliable, email is unique-ish)
 	if email != "" {
@@ -3654,18 +4421,31 @@ func resolveOdooPartner(creds *OdooCredentials, uid int, name, email string, cac
 				[]interface{}{"email", "=", email},
 			}},
 			map[string]interface{}{
-				"fields": []string{"id", "name", "email"},
-				"limit":  1,
+				"fields": lookupFields,
+				"limit":  5,
+				"order":  "id asc",
 			})
 		if err == nil {
-			var partners []partner
+			var partners []map[string]interface{}
 			json.Unmarshal(result, &partners)
-			if len(partners) > 0 {
-				cache[cacheKey] = partners[0].ID
+			if len(partners) == 1 {
+				id := odooInt(partners[0]["id"])
+				updateOdooPartnerFromStripe(creds, uid, id, partners[0], name, email, stripeCustomerID, collective)
+				cache[cacheKey] = id
 				if st != nil {
 					st.PartnersMatched++
 				}
-				return partners[0].ID
+				return id
+			}
+			if len(partners) > 1 {
+				id := odooInt(partners[0]["id"])
+				updateOdooPartnerFromStripe(creds, uid, id, partners[0], name, email, stripeCustomerID, collective)
+				cache[cacheKey] = id
+				if st != nil {
+					st.PartnersMatched++
+					st.recordPartnerMergeSuggestion(name, email, id, odooPartnerRowIDs(partners))
+				}
+				return id
 			}
 		}
 	}
@@ -3678,35 +4458,31 @@ func resolveOdooPartner(creds *OdooCredentials, uid int, name, email string, cac
 				[]interface{}{"name", "=", name},
 			}},
 			map[string]interface{}{
-				"fields": []string{"id", "name", "email"},
+				"fields": lookupFields,
 				"limit":  5,
+				"order":  "id asc",
 			})
 		if err == nil {
-			var partners []partner
+			var partners []map[string]interface{}
 			json.Unmarshal(result, &partners)
 			if len(partners) == 1 {
-				existingEmail, _ := partners[0].Email.(string)
-				if email != "" && existingEmail == "" {
-					odooExec(creds.URL, creds.DB, uid, creds.Password,
-						"res.partner", "write",
-						[]interface{}{[]interface{}{partners[0].ID}, map[string]interface{}{
-							"email": email,
-						}}, nil)
-				}
-				cache[cacheKey] = partners[0].ID
+				id := odooInt(partners[0]["id"])
+				updateOdooPartnerFromStripe(creds, uid, id, partners[0], name, email, stripeCustomerID, collective)
+				cache[cacheKey] = id
 				if st != nil {
 					st.PartnersMatched++
 				}
-				return partners[0].ID
+				return id
 			}
 			if len(partners) > 1 {
-				cache[cacheKey] = 0
+				id := odooInt(partners[0]["id"])
+				updateOdooPartnerFromStripe(creds, uid, id, partners[0], name, email, stripeCustomerID, collective)
+				cache[cacheKey] = id
 				if st != nil {
-					st.PartnersSkipped++
-					entry := fmt.Sprintf("%s <%s>", name, email)
-					st.Ambiguous = append(st.Ambiguous, entry)
+					st.PartnersMatched++
+					st.recordPartnerMergeSuggestion(name, email, id, odooPartnerRowIDs(partners))
 				}
-				return 0
+				return id
 			}
 		}
 	}
@@ -3720,6 +4496,15 @@ func resolveOdooPartner(creds *OdooCredentials, uid int, name, email string, cac
 	}
 	if email != "" {
 		partnerData["email"] = email
+	}
+	for k, v := range odooPartnerDefaultLanguageValues(creds, uid) {
+		partnerData[k] = v
+	}
+	for k, v := range odooPartnerStripeCustomerValues(creds, uid, nil, stripeCustomerID) {
+		partnerData[k] = v
+	}
+	for k, v := range odooPartnerCollectiveValues(creds, uid, nil, collective) {
+		partnerData[k] = v
 	}
 	createResult, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"res.partner", "create",
@@ -3737,6 +4522,234 @@ func resolveOdooPartner(creds *OdooCredentials, uid int, name, email string, cac
 	}
 
 	return 0
+}
+
+func odooPartnerLookupFields(creds *OdooCredentials, uid int) []string {
+	fields := []string{"id", "name", "email"}
+	for _, field := range []string{"ref", "comment", "x_stripe_customer_id", "stripe_customer_id", "x_studio_stripe_customer_id"} {
+		if odooModelHasField(creds, uid, "res.partner", field) {
+			fields = append(fields, field)
+		}
+	}
+	if odooModelHasField(creds, uid, "res.partner", "category_id") {
+		fields = append(fields, "category_id")
+	}
+	return fields
+}
+
+func updateOdooPartnerFromStripe(creds *OdooCredentials, uid, partnerID int, existing map[string]interface{}, name, email, stripeCustomerID, collective string) {
+	if partnerID <= 0 {
+		return
+	}
+	values := map[string]interface{}{}
+	existingName := odooString(existing["name"])
+	if name != "" && existingName != name && (existingName == "" || strings.Contains(existingName, "@") || titleCaseName(existingName) == name) {
+		values["name"] = name
+	}
+	if email != "" && odooString(existing["email"]) == "" {
+		values["email"] = email
+	}
+	for k, v := range odooPartnerStripeCustomerValues(creds, uid, existing, stripeCustomerID) {
+		values[k] = v
+	}
+	for k, v := range odooPartnerCollectiveValues(creds, uid, existing, collective) {
+		values[k] = v
+	}
+	if len(values) == 0 {
+		return
+	}
+	_, _ = odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"res.partner", "write",
+		[]interface{}{[]interface{}{partnerID}, values}, nil)
+}
+
+func odooPartnerRowIDs(rows []map[string]interface{}) []int {
+	ids := make([]int, 0, len(rows))
+	seen := map[int]bool{}
+	for _, row := range rows {
+		id := odooInt(row["id"])
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+func odooPartnerStripeCustomerValues(creds *OdooCredentials, uid int, existing map[string]interface{}, stripeCustomerID string) map[string]interface{} {
+	values := map[string]interface{}{}
+	if strings.TrimSpace(stripeCustomerID) == "" || !strings.HasPrefix(stripeCustomerID, "cus_") {
+		return values
+	}
+	for _, field := range []string{"x_stripe_customer_id", "stripe_customer_id", "x_studio_stripe_customer_id"} {
+		if odooModelHasField(creds, uid, "res.partner", field) {
+			if existing == nil || odooString(existing[field]) != stripeCustomerID {
+				values[field] = stripeCustomerID
+			}
+			return values
+		}
+	}
+	if odooModelHasField(creds, uid, "res.partner", "ref") {
+		if existing == nil || strings.TrimSpace(odooString(existing["ref"])) == "" {
+			values["ref"] = stripeCustomerID
+		}
+	}
+	return values
+}
+
+func odooPartnerDefaultLanguageValues(creds *OdooCredentials, uid int) map[string]interface{} {
+	values := map[string]interface{}{}
+	if !odooModelHasField(creds, uid, "res.partner", "lang") {
+		return values
+	}
+	if !odooLanguageCodeAvailable(creds, uid, "en_GB") {
+		return values
+	}
+	values["lang"] = "en_GB"
+	return values
+}
+
+func odooLanguageCodeAvailable(creds *OdooCredentials, uid int, code string) bool {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return false
+	}
+	rows, err := odooSearchReadAllMaps(creds, uid, "res.lang",
+		[]interface{}{
+			[]interface{}{"code", "=", code},
+			[]interface{}{"active", "=", true},
+		},
+		[]string{"id"},
+		"id asc",
+	)
+	return err == nil && len(rows) > 0
+}
+
+func odooPartnerCollectiveValues(creds *OdooCredentials, uid int, existing map[string]interface{}, collective string) map[string]interface{} {
+	values := map[string]interface{}{}
+	collective = normalizeTransactionTagSlug(collective)
+	if collective == "" || !odooModelHasField(creds, uid, "res.partner", "category_id") {
+		return values
+	}
+	tagID := findOrCreateOdooPartnerCollectiveTag(creds, uid, collective)
+	if tagID == 0 {
+		return values
+	}
+	if existing != nil {
+		for _, id := range odooIDList(existing["category_id"]) {
+			if id == tagID {
+				return values
+			}
+		}
+	}
+	values["category_id"] = []interface{}{[]interface{}{4, tagID}}
+	return values
+}
+
+func findOrCreateOdooPartnerCollectiveTag(creds *OdooCredentials, uid int, collective string) int {
+	collective = normalizeTransactionTagSlug(collective)
+	if collective == "" {
+		return 0
+	}
+	name := odooPartnerCollectiveTagName(collective)
+	rows, err := odooSearchReadAllMaps(creds, uid, "res.partner.category",
+		[]interface{}{[]interface{}{"name", "=", name}},
+		[]string{"id", "name"},
+		"id asc",
+	)
+	if err == nil && len(rows) > 0 {
+		return odooInt(rows[0]["id"])
+	}
+	legacyName := "Collective: " + collective
+	rows, err = odooSearchReadAllMaps(creds, uid, "res.partner.category",
+		[]interface{}{[]interface{}{"name", "=", legacyName}},
+		[]string{"id", "name"},
+		"id asc",
+	)
+	if err == nil && len(rows) > 0 {
+		id := odooInt(rows[0]["id"])
+		if id > 0 {
+			_, _ = odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"res.partner.category", "write",
+				[]interface{}{[]interface{}{id}, map[string]interface{}{"name": name}}, nil)
+			return id
+		}
+	}
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"res.partner.category", "create",
+		[]interface{}{[]interface{}{map[string]interface{}{"name": name}}}, nil)
+	if err != nil {
+		Warnf("  %s⚠ Could not create Odoo partner tag %q: %v%s", Fmt.Yellow, name, err, Fmt.Reset)
+		return 0
+	}
+	ids := parseOdooCreatedIDs(result)
+	if len(ids) == 0 {
+		return 0
+	}
+	return ids[0]
+}
+
+func odooPartnerCollectiveTagName(collective string) string {
+	collective = normalizeTransactionTagSlug(collective)
+	if collective == "" {
+		return ""
+	}
+	return "collective:" + collective
+}
+
+func ensureOdooPartnerCollectiveTag(creds *OdooCredentials, uid, partnerID int, collective string) error {
+	if partnerID <= 0 {
+		return nil
+	}
+	values := odooPartnerCollectiveValues(creds, uid, nil, collective)
+	if len(values) == 0 {
+		return nil
+	}
+	_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"res.partner", "write",
+		[]interface{}{[]interface{}{partnerID}, values}, nil)
+	return err
+}
+
+func odooModelHasField(creds *OdooCredentials, uid int, model, field string) bool {
+	fields, err := odooAvailableFields(creds, uid, model)
+	return err == nil && fields[field]
+}
+
+func normalizeStripePartnerName(name, email string) string {
+	name = strings.TrimSpace(name)
+	if strings.Contains(name, "@") {
+		name = strings.TrimSpace(strings.SplitN(name, "@", 2)[0])
+	}
+	if name == "" && strings.Contains(email, "@") {
+		name = strings.TrimSpace(strings.SplitN(email, "@", 2)[0])
+	}
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" {
+		return ""
+	}
+	return titleCaseName(name)
+}
+
+func titleCaseName(s string) string {
+	words := strings.Fields(strings.ToLower(s))
+	for i, word := range words {
+		runes := []rune(word)
+		if len(runes) == 0 {
+			continue
+		}
+		runes[0] = unicode.ToTitle(runes[0])
+		for j := 1; j < len(runes); j++ {
+			prev := runes[j-1]
+			if prev == '-' || prev == '\'' {
+				runes[j] = unicode.ToTitle(runes[j])
+			}
+		}
+		words[i] = string(runes)
+	}
+	return strings.Join(words, " ")
 }
 
 // loadAccountTransactions loads all non-INTERNAL transactions for a specific account.
@@ -3888,7 +4901,7 @@ func internalTransactionDirectionFromRaw(acc *AccountConfig, tx TransactionEntry
 
 // buildUniqueImportID creates the dedup key for Odoo.
 // Blockchain format (matching odoo-web3): {chain}:{walletAddress}:{txHash}:{logIndex}
-// Stripe format:                          stripe:{accountId}:{txn_id}:0
+// Stripe format:                          stripe:{accountId}:{txn_id}
 func buildUniqueImportID(acc *AccountConfig, tx TransactionEntry) string {
 	if acc.Provider == "stripe" {
 		accountID := acc.AccountID
@@ -3899,7 +4912,7 @@ func buildUniqueImportID(acc *AccountConfig, tx TransactionEntry) string {
 		if txnID == "" {
 			txnID = tx.ID
 		}
-		return fmt.Sprintf("stripe:%s:%s:0", strings.ToLower(accountID), strings.ToLower(txnID))
+		return fmt.Sprintf("stripe:%s:%s", strings.ToLower(accountID), strings.ToLower(txnID))
 	}
 
 	chain := acc.Chain
@@ -4120,6 +5133,16 @@ func fetchOdooImportIDs(odooURL, db string, uid int, password string, journalID 
 }
 
 func fetchLatestOdooImportCursor(creds *OdooCredentials, uid int, journalID int) (odooImportCursor, error) {
+	return fetchLatestOdooImportCursorFiltered(creds, uid, journalID, nil)
+}
+
+func fetchLatestStripeOdooImportCursor(creds *OdooCredentials, uid int, journalID int, accountID string) (odooImportCursor, error) {
+	return fetchLatestOdooImportCursorFiltered(creds, uid, journalID, func(importID string) bool {
+		return stripeOpenStatementFeeImportID(accountID, importID)
+	})
+}
+
+func fetchLatestOdooImportCursorFiltered(creds *OdooCredentials, uid int, journalID int, skip func(string) bool) (odooImportCursor, error) {
 	data, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.bank.statement.line", "search_read",
 		[]interface{}{[]interface{}{
@@ -4129,7 +5152,7 @@ func fetchLatestOdooImportCursor(creds *OdooCredentials, uid int, journalID int)
 		map[string]interface{}{
 			"fields": []string{"date", "unique_import_id"},
 			"order":  "date desc, id desc",
-			"limit":  1,
+			"limit":  100,
 		})
 	if err != nil {
 		return odooImportCursor{}, err
@@ -4144,11 +5167,36 @@ func fetchLatestOdooImportCursor(creds *OdooCredentials, uid int, journalID int)
 	if len(lines) == 0 {
 		return odooImportCursor{}, nil
 	}
-	importID, _ := lines[0].UniqueImportID.(string)
-	if importID == "" {
-		return odooImportCursor{}, nil
+	for _, line := range lines {
+		importID, _ := line.UniqueImportID.(string)
+		if importID == "" || (skip != nil && skip(importID)) {
+			continue
+		}
+		return odooImportCursor{Found: true, UniqueImportID: importID, Date: line.Date}, nil
 	}
-	return odooImportCursor{Found: true, UniqueImportID: importID, Date: lines[0].Date}, nil
+	return odooImportCursor{}, nil
+}
+
+func stripeOpenStatementFeeImportID(accountID, importID string) bool {
+	accountID = strings.ToLower(strings.TrimSpace(accountID))
+	importID = strings.ToLower(strings.TrimSpace(importID))
+	if accountID == "" || importID == "" {
+		return false
+	}
+	prefix := "stripe:" + accountID + ":open:"
+	if !strings.HasPrefix(importID, prefix) || !strings.HasSuffix(importID, ":fees") {
+		return false
+	}
+	statementID := strings.TrimSuffix(strings.TrimPrefix(importID, prefix), ":fees")
+	if statementID == "" {
+		return false
+	}
+	for _, r := range statementID {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func fetchOdooImportIDsForTransactions(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig, txs []TransactionEntry) (map[string]bool, error) {
@@ -4374,6 +5422,11 @@ func printAccountSlugHelp(slug string) {
 	fmt.Printf("  %s--dry-run%s          Preview what would be synced\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--force%s            Re-sync (delete existing data first)\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--skip-reconciliation%s  Import lines without matching them to invoices/moves\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--transactions%s     Stripe-only: import statement lines/statements/fees\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--partners%s         Stripe-only: link/create partners and collective tags\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--accounts%s         Stripe-only: apply account rules to journal lines\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--metadata%s         Stripe-only: refresh descriptions and narration metadata\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--reconcile%s        Stripe-only: reconcile journal lines\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--until YYYYMMDD%s   Stop processing at this date\n", f.Yellow, f.Reset)
 	fmt.Println()
 
