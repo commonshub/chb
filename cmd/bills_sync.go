@@ -42,7 +42,7 @@ func BillsSync(args []string) (int, error) {
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
 		if quietOdooContext() {
-			odooSyncLine("bills", fmt.Sprintf("skipped (%v)", err))
+			odooSyncLine("bills", odooItemSyncStatus(0, "bill", fmt.Sprintf("issue: %v", err)))
 		} else {
 			Warnf("%s⚠ %v, skipping bills sync%s", Fmt.Yellow, err, Fmt.Reset)
 		}
@@ -105,7 +105,7 @@ func BillsSync(args []string) (int, error) {
 
 	if incremental && len(rawBills) == 0 {
 		if quietOdooContext() {
-			odooSyncLine("bills", "already in sync")
+			odooSyncLine("bills", odooItemSyncStatus(countCachedOdooDocs(cachedByMonth), "bill", "already in sync"))
 		} else {
 			fmt.Printf("  %s✓ Up to date%s\n\n", Fmt.Green, Fmt.Reset)
 		}
@@ -224,7 +224,7 @@ func BillsSync(args []string) (int, error) {
 		} else {
 			detail = fmt.Sprintf("%d new", newCount)
 		}
-		odooSyncLine("bills", fmt.Sprintf("%d bills (%s)", totalBills, detail))
+		odooSyncLine("bills", odooItemSyncStatus(totalBills, "bill", detail))
 	} else {
 		fmt.Printf("\n%s✓ Done!%s %s synced\n\n", Fmt.Green, Fmt.Reset, Pluralize(savedBills, "bill", ""))
 	}

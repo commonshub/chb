@@ -159,7 +159,7 @@ func providerCommandSpecs() []providerCommandSpec {
 			Name:        "odoo",
 			Description: "Odoo invoices, bills, attachments, and accounting metadata.",
 			Commands:    []string{"sync", "generate"},
-			Sync:        OdooSyncAll,
+			Sync:        OdooProviderSync,
 			Generate:    GenerateMembers,
 		},
 		{

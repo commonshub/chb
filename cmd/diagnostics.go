@@ -16,6 +16,8 @@ var (
 	diagnosticsPath     string
 	diagnosticsWarnings int
 	diagnosticsErrors   int
+	deferWarningEcho    bool
+	deferredWarnings    []string
 	ansiPattern         = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 )
 
@@ -56,6 +58,22 @@ func PrintDiagnosticsSummary() {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%s%s%s\n", Fmt.Dim, summary, Fmt.Reset)
+}
+
+func BeginDeferredWarnings() {
+	diagnosticsMu.Lock()
+	defer diagnosticsMu.Unlock()
+	deferWarningEcho = true
+	deferredWarnings = nil
+}
+
+func EndDeferredWarnings() []string {
+	diagnosticsMu.Lock()
+	defer diagnosticsMu.Unlock()
+	deferWarningEcho = false
+	out := append([]string(nil), deferredWarnings...)
+	deferredWarnings = nil
+	return out
 }
 
 func Fatalf(format string, args ...interface{}) {
@@ -99,7 +117,9 @@ func writeDiagnostic(level string, echo bool, format string, args ...interface{}
 		diagnosticsErrors++
 	}
 
-	if echo {
+	if echo && level == "warning" && deferWarningEcho {
+		deferredWarnings = append(deferredWarnings, message)
+	} else if echo {
 		fmt.Fprintf(os.Stderr, "%s\n", message)
 	}
 

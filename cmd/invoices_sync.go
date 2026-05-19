@@ -267,7 +267,7 @@ func InvoicesSync(args []string) (int, error) {
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
 		if quietOdooContext() {
-			odooSyncLine("invoices", fmt.Sprintf("skipped (%v)", err))
+			odooSyncLine("invoices", odooItemSyncStatus(0, "invoice", fmt.Sprintf("issue: %v", err)))
 		} else {
 			Warnf("%s⚠ %v, skipping invoices sync%s", Fmt.Yellow, err, Fmt.Reset)
 		}
@@ -330,7 +330,7 @@ func InvoicesSync(args []string) (int, error) {
 
 	if incremental && len(rawInvoices) == 0 {
 		if quietOdooContext() {
-			odooSyncLine("invoices", "already in sync")
+			odooSyncLine("invoices", odooItemSyncStatus(countCachedOdooDocs(cachedByMonth), "invoice", "already in sync"))
 		} else {
 			fmt.Printf("  %s✓ Up to date%s\n\n", Fmt.Green, Fmt.Reset)
 		}
@@ -449,7 +449,7 @@ func InvoicesSync(args []string) (int, error) {
 		} else {
 			detail = fmt.Sprintf("%d new", newCount)
 		}
-		odooSyncLine("invoices", fmt.Sprintf("%d invoices (%s)", totalInvoices, detail))
+		odooSyncLine("invoices", odooItemSyncStatus(totalInvoices, "invoice", detail))
 	} else {
 		fmt.Printf("\n%s✓ Done!%s %s synced\n\n", Fmt.Green, Fmt.Reset, Pluralize(savedInvoices, "invoice", ""))
 	}
@@ -612,7 +612,7 @@ func odooFilterReadableFields(creds *OdooCredentials, uid int, model string, fie
 		skipped = append(skipped, field)
 	}
 
-	if len(skipped) > 0 {
+	if len(skipped) > 0 && !quietOdooContext() {
 		fmt.Printf("    %s%s: skipping unsupported fields: %s%s\n", Fmt.Dim, model, strings.Join(skipped, ", "), Fmt.Reset)
 	}
 
@@ -1324,6 +1324,14 @@ func loadCachedInvoiceMonths(dataDir, startMonth, endMonth string) map[string]ma
 		}
 	}
 	return result
+}
+
+func countCachedOdooDocs(months map[string]map[int]OdooOutgoingInvoice) int {
+	total := 0
+	for _, docs := range months {
+		total += len(docs)
+	}
+	return total
 }
 
 func isInvoiceMonthCacheUnchanged(dataDir, year, month string, nextPublic OdooOutgoingInvoicesFile, nextPrivate OdooOutgoingInvoicesPrivateFile) bool {
