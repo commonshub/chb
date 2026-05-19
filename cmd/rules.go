@@ -131,7 +131,15 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 
 	if m.IBAN != "" {
 		txIBAN := normalizeIBAN(stringMetadata(tx.Metadata, "iban"))
-		if txIBAN == "" || txIBAN != normalizeIBAN(m.IBAN) {
+		if txIBAN == "" {
+			return false
+		}
+		pattern := normalizeIBAN(m.IBAN)
+		if strings.ContainsAny(pattern, "*?") {
+			if !globMatch(strings.ToLower(pattern), strings.ToLower(txIBAN)) {
+				return false
+			}
+		} else if txIBAN != pattern {
 			return false
 		}
 	}

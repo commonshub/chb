@@ -100,7 +100,7 @@ func MatchOdooRule(rules []OdooRule, tx TransactionEntry) *OdooRule {
 		default:
 			continue // unknown direction — never matches
 		}
-		if r.Match.Category == "" && r.Match.Collective == "" {
+		if r.Match.Category == "" && r.Match.Collective == "" && r.Match.Direction == "" {
 			continue // a rule with no match criteria is a no-op
 		}
 		return &rules[i]

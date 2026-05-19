@@ -447,6 +447,29 @@ func BuildBlockchainURI(chainID int, txHash string) string {
 	return fmt.Sprintf("ethereum:%d:tx:%s", chainID, strings.ToLower(txHash))
 }
 
+// BuildIBANTxURI creates a NIP-73-style URI for a bank transaction. The
+// hash is the row-derived identifier from the CSV export — short, stable,
+// and unique per (iban, row) pair. Used by manual/CSV providers like
+// kbcbrussels.
+func BuildIBANTxURI(iban, hash string) string {
+	iban = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(iban), " ", ""))
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if iban == "" || hash == "" {
+		return ""
+	}
+	return fmt.Sprintf("iban:%s:tx:%s", iban, hash)
+}
+
+// BuildIBANAccountURI returns the URI identifying an IBAN-keyed account.
+// Used as TransactionEntry.AccountID for bank txs.
+func BuildIBANAccountURI(iban string) string {
+	iban = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(iban), " ", ""))
+	if iban == "" {
+		return ""
+	}
+	return "iban:" + iban
+}
+
 // TxHashFromURI extracts the raw transaction hash / id from a NIP-73
 // transaction URI. Returns "" for unrecognized forms. This is the
 // inverse of BuildBlockchainURI / BuildStripeURI and is used at load

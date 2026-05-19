@@ -567,7 +567,6 @@ func OdooJournals(args []string) error {
 			return mergeKBCJournalWithCSV(creds, uid, journalID, acc,
 				HasFlag(args, "--dry-run"),
 				HasFlag(args, "--yes", "-y"),
-				HasFlag(args, "--delete-orphans"),
 				HasFlag(args, "--verbose", "-v"),
 			)
 		}
@@ -1538,7 +1537,9 @@ func displayWidth(s string) int {
 }
 
 // odooJournalCheck reports statements in the journal that violate Odoo's
-// running-balance / chain-continuity invariants.
+// running-balance / chain-continuity invariants. For journals linked to
+// manual / CSV providers (kbcbrussels), it additionally compares Odoo
+// against the CSV source-of-truth: missing rows, count, balance.
 func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 	fmt.Printf("\n  %sChecking journal #%d…%s\n", Fmt.Dim, journalID, Fmt.Reset)
 	issues, err := CheckOdooJournalStatements(creds, uid, journalID)
@@ -1552,6 +1553,11 @@ func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 		fmt.Printf("  %sTo fix: chb odoo journals %d fix%s\n", Fmt.Dim, journalID, Fmt.Reset)
 	}
 
+	if acc := linkedAccountForJournal(journalID); acc != nil && acc.Provider == "kbcbrussels" {
+		if err := checkKBCBrusselsJournalAgainstCSV(creds, uid, journalID, acc); err != nil {
+			return err
+		}
+	}
 	fmt.Println()
 	return nil
 }

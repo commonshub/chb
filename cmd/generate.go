@@ -14,6 +14,7 @@ import (
 
 	discordsource "github.com/CommonsHub/chb/providers/discord"
 	etherscansource "github.com/CommonsHub/chb/providers/etherscan"
+	kbcbrusselssource "github.com/CommonsHub/chb/providers/kbcbrussels"
 	moneriumsource "github.com/CommonsHub/chb/providers/monerium"
 	nostrsource "github.com/CommonsHub/chb/providers/nostr"
 	odoosource "github.com/CommonsHub/chb/providers/odoo"
@@ -2053,7 +2054,13 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	if _, err := os.Stat(moneriumDir); os.IsNotExist(err) {
 		moneriumExists = false
 	}
-	if len(stripePaths) == 0 && !etherscanExists && !moneriumExists {
+	// kbcbrussels is a manual CSV provider: a single rolling export sits
+	// under latest/providers/kbcbrussels/ and the generator filters rows
+	// by booking month. There's no per-month archive to stat — we let the
+	// loader return nothing for accounts/months with no matching rows.
+	kbcAccounts := kbcAccountsByIBAN()
+	kbcEnabled := len(kbcAccounts) > 0
+	if len(stripePaths) == 0 && !etherscanExists && !moneriumExists && !kbcEnabled {
 		return 0
 	}
 
@@ -2481,6 +2488,30 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// Check for known chain directories
 	for _, chain := range []string{"celo", "gnosis", "ethereum"} {
 		processChainDir(chain)
+	}
+
+	// Process KBC Brussels CSV rows. The provider has no API — the
+	// operator drops one CSV in latest/providers/kbcbrussels/ and the
+	// loader filters by booking month. `year == "latest"` is the
+	// rebuild-everything mode used by `chb generate latest`.
+	if kbcEnabled {
+		for iban, acc := range kbcAccounts {
+			var rows []kbcbrusselssource.Transaction
+			var err error
+			if year == "latest" && month == "" {
+				rows, err = kbcbrusselssource.LoadTransactionsForIBAN(dataDir, iban)
+			} else {
+				rows, err = kbcbrusselssource.LoadTransactionsForMonth(dataDir, iban, year, month)
+			}
+			if err != nil {
+				fmt.Printf("    %s⚠ kbcbrussels %s: %v%s\n", Fmt.Yellow, iban, err, Fmt.Reset)
+				continue
+			}
+			for _, row := range rows {
+				entry := kbcRowToTransactionEntry(acc, row)
+				transactions = append(transactions, entry)
+			}
+		}
 	}
 
 	if len(transactions) == 0 {

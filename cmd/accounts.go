@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	etherscansource "github.com/CommonsHub/chb/providers/etherscan"
+	kbcbrusselssource "github.com/CommonsHub/chb/providers/kbcbrussels"
 	stripesource "github.com/CommonsHub/chb/providers/stripe"
 )
 
@@ -309,7 +310,33 @@ func refreshAccountBalance(acc *AccountConfig) (float64, string, error) {
 		}
 		return v, key, nil
 	}
+	if acc.Provider == "kbcbrussels" && acc.IBAN != "" {
+		v, _, ok := kbcLatestBalance(acc.IBAN)
+		if !ok {
+			return 0, "", fmt.Errorf("no CSV export found for %s under %s", acc.IBAN, kbcbrusselssource.LatestDir(DataDir()))
+		}
+		return v, strings.ToLower(acc.IBAN), nil
+	}
 	return 0, "", nil
+}
+
+// kbcLatestBalance returns the running balance + timestamp of the most
+// recent row in the local CSV for the given IBAN. The CSV's running
+// balance is the bank's authoritative figure — it always matches the
+// account's actual balance at that row's date.
+func kbcLatestBalance(iban string) (balance float64, ts int64, ok bool) {
+	rows, err := kbcbrusselssource.LoadTransactionsForIBAN(DataDir(), iban)
+	if err != nil || len(rows) == 0 {
+		return 0, 0, false
+	}
+	latest := rows[0]
+	for _, r := range rows[1:] {
+		if r.Timestamp > latest.Timestamp ||
+			(r.Timestamp == latest.Timestamp && r.Hash > latest.Hash) {
+			latest = r
+		}
+	}
+	return latest.Balance, latest.Timestamp, true
 }
 
 // fetchLiveBalances fetches on-chain + Stripe balances for all accounts and caches them.
@@ -331,6 +358,10 @@ func fetchLiveBalances(configs []AccountConfig) map[string]float64 {
 					key = "stripe"
 				}
 				balances[key] = balance
+			}
+		} else if acc.Provider == "kbcbrussels" && acc.IBAN != "" {
+			if v, _, ok := kbcLatestBalance(acc.IBAN); ok {
+				balances[strings.ToLower(acc.IBAN)] = v
 			}
 		}
 	}
@@ -789,7 +820,7 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	hasBalance := false
 	var balanceSource string
 	if cache := loadBalanceCache(); cache != nil {
-		for _, key := range []string{acc.Address, acc.AccountID, acc.Slug} {
+		for _, key := range []string{acc.Address, acc.AccountID, acc.IBAN, acc.Slug} {
 			if key == "" {
 				continue
 			}
@@ -982,6 +1013,14 @@ func printAccountOnlineLink(acc *AccountConfig, indent string) {
 		if _, url := accountOnlineLink(acc); url != "" {
 			printAccountField(indent, "URL", url)
 		}
+	case "kbcbrussels":
+		if acc.IBAN == "" {
+			return
+		}
+		printAccountField(indent, "Address", "iban "+acc.IBAN)
+		if _, url := accountOnlineLink(acc); url != "" {
+			printAccountField(indent, "URL", url)
+		}
 	}
 }
 
@@ -1014,6 +1053,13 @@ func accountOnlineLink(acc *AccountConfig) (string, string) {
 			}
 		}
 		return fmt.Sprintf("%s %s", acc.Chain, acc.Address), url
+	case "kbcbrussels":
+		if acc.IBAN == "" {
+			return "", ""
+		}
+		// KBC Brussels doesn't have a per-account public URL; the IBAN is
+		// the only canonical handle we can expose here.
+		return "iban " + acc.IBAN, ""
 	}
 	return "", ""
 }
@@ -1270,7 +1316,7 @@ func Accounts(args []string) {
 		// Use live balance: check by address, then accountId, then slug
 		var balance float64
 		hasBalance := false
-		for _, key := range []string{acc.Address, acc.AccountID, acc.Slug} {
+		for _, key := range []string{acc.Address, acc.AccountID, acc.IBAN, acc.Slug} {
 			if key == "" {
 				continue
 			}
@@ -1651,6 +1697,18 @@ func AccountFetch(slug string, args []string) error {
 	}
 	if acc == nil {
 		return fmt.Errorf("account '%s' not found", slug)
+	}
+	// Manual / CSV provider: no upstream API to call. Re-generate every
+	// month touched by the CSV so monthly transactions.json files catch
+	// up with anything the operator dropped under latest/providers/.
+	if acc.Provider == "kbcbrussels" {
+		if err := syncKBCAccount(acc); err != nil {
+			return err
+		}
+		UpdateSyncSource("account:"+strings.ToLower(slug), true)
+		refreshAndPersistAccountBalance(acc)
+		fmt.Printf("%sSync done%s in %s\n\n", Fmt.Green, Fmt.Reset, time.Since(startedAt).Round(time.Millisecond))
+		return nil
 	}
 	checkpoint := latestAccountSourceCheckpoint(acc)
 	beforeSourceMonths := accountSourceMonthFingerprints(acc)
@@ -2618,6 +2676,8 @@ func accountLiveBalanceLabel(acc *AccountConfig) string {
 		return "Stripe API"
 	case acc.Provider == "etherscan" && acc.Token != nil:
 		return fmt.Sprintf("on-chain %s/%s", acc.Chain, acc.Token.Symbol)
+	case acc.Provider == "kbcbrussels":
+		return "KBC CSV"
 	case acc.Provider != "":
 		return acc.Provider
 	default:
@@ -4750,6 +4810,14 @@ func loadAccountTransactionsForOdoo(acc *AccountConfig) []TransactionEntry {
 
 func loadAccountTransactionsWithOptions(acc *AccountConfig, includeInternal bool) []TransactionEntry {
 	dataDir := DataDir()
+	// kbcbrussels has a single rolling CSV in latest/providers/kbcbrussels/
+	// — the per-month generated files only exist when the operator (or
+	// another provider) has triggered generation for that month. Read the
+	// CSV directly so the account view always sees every row, regardless
+	// of which months have been generated.
+	if acc != nil && acc.Provider == "kbcbrussels" && acc.IBAN != "" {
+		return loadKBCAccountTransactions(acc)
+	}
 	var result []TransactionEntry
 
 	yearDirs, _ := os.ReadDir(dataDir)
@@ -4900,6 +4968,18 @@ func buildUniqueImportID(acc *AccountConfig, tx TransactionEntry) string {
 			txnID = tx.ID
 		}
 		return fmt.Sprintf("stripe:%s:%s", strings.ToLower(accountID), strings.ToLower(txnID))
+	}
+
+	if acc.Provider == "kbcbrussels" {
+		iban := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(acc.IBAN), " ", ""))
+		if iban == "" {
+			iban = strings.ToLower(acc.Slug)
+		}
+		hash := tx.TxHash
+		if hash == "" {
+			hash = tx.ID
+		}
+		return fmt.Sprintf("kbcbrussels:%s:%s", iban, strings.ToLower(hash))
 	}
 
 	chain := acc.Chain

@@ -18,11 +18,12 @@ import (
 type AccountConfig struct {
 	Name          string `json:"name"`
 	Slug          string `json:"slug"`
-	Provider      string `json:"provider"`        // stripe, etherscan, monerium
+	Provider      string `json:"provider"`        // stripe, etherscan, monerium, kbcbrussels
 	Chain         string `json:"chain,omitempty"` // gnosis, celo, ethereum
 	ChainID       int    `json:"chainId,omitempty"`
 	Address       string `json:"address,omitempty"`       // wallet address
 	AccountID     string `json:"accountId,omitempty"`     // stripe account ID
+	IBAN          string `json:"iban,omitempty"`          // bank account IBAN (kbcbrussels, …)
 	Currency      string `json:"currency,omitempty"`      // EUR, EURe, etc.
 	WalletType    string `json:"walletType,omitempty"`    // "eoa" or "safe"
 	OdooJournalID int    `json:"odooJournalId,omitempty"` // linked Odoo bank journal ID
