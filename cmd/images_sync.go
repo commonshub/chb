@@ -51,7 +51,12 @@ func ImagesSync(args []string) (int, error) {
 
 	// Determine time range
 	startMonth, isHistory := ResolveSinceMonth(args, "messages")
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	endMonth := ""
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
+	if posFound {
+		startMonth = posStartMonth
+		endMonth = posEndMonth
+	}
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
@@ -65,7 +70,7 @@ func ImagesSync(args []string) (int, error) {
 	skippedEventCovers := 0
 	eventCoverDomains := map[string]int{}
 
-	scopes := collectImageSyncScopes(dataDir, years, posYear, posMonth, posFound, startMonth, isHistory)
+	scopes := collectImageSyncScopes(dataDir, years, startMonth, endMonth, isHistory)
 	for _, scope := range scopes {
 		if discordToken != "" {
 			d, s := syncDiscordImages(dataDir, scope.Year, scope.Month, scope.Label, discordToken, force)
@@ -492,7 +497,7 @@ func fileExistsWithPrefix(dir, prefix string) bool {
 	return false
 }
 
-func collectImageSyncScopes(dataDir string, years []string, posYear, posMonth string, posFound bool, startMonth string, isHistory bool) []imageSyncScope {
+func collectImageSyncScopes(dataDir string, years []string, startMonth, endMonth string, isHistory bool) []imageSyncScope {
 	var scopes []imageSyncScope
 	seen := map[string]bool{}
 
@@ -505,19 +510,14 @@ func collectImageSyncScopes(dataDir string, years []string, posYear, posMonth st
 		scopes = append(scopes, imageSyncScope{Year: year, Month: month, Label: label})
 	}
 
-	if posFound || startMonth != "" {
+	if startMonth != "" {
 		for _, year := range years {
 			for _, month := range getAvailableMonths(dataDir, year) {
 				ym := fmt.Sprintf("%s-%s", year, month)
-				if posFound {
-					if posMonth != "" && (year != posYear || month != posMonth) {
-						continue
-					}
-					if posMonth == "" && year != posYear {
-						continue
-					}
-				}
 				if startMonth != "" && ym < startMonth {
+					continue
+				}
+				if endMonth != "" && ym > endMonth {
 					continue
 				}
 				addScope(year, month, year+"-"+month)
@@ -608,7 +608,7 @@ func printImagesSyncHelp() {
 %sOPTIONS%s
   %s<year>%s               Process all months of the given year (e.g. 2025)
   %s<year/month>%s         Process a specific month (e.g. 2025/11)
-  %s--since%s <YYYY/MM>    Process from a specific month to now
+  %s--since%s <date>       Process from a specific date to now
   %s--history%s            Process all available months
   %s--force%s              Re-download even if files already exist
   %s--help, -h%s           Show this help

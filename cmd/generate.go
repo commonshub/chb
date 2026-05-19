@@ -620,10 +620,15 @@ func Generate(args []string) error {
 
 	dataDir := DataDir()
 	now := time.Now().In(BrusselsTZ())
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 	startMonth, isHistory := ResolveSinceMonth(args, "")
+	endMonth := ""
 	if !isHistory && !posFound {
 		startMonth = DefaultRecentStartMonth(now)
+	}
+	if posFound {
+		startMonth = posStartMonth
+		endMonth = posEndMonth
 	}
 
 	fmt.Printf("\n%s🔧 Generating derived data files...%s\n", Fmt.Bold, Fmt.Reset)
@@ -639,7 +644,7 @@ func Generate(args []string) error {
 
 	fmt.Printf("📋 Found %s: %s\n\n", Pluralize(len(years), "year", ""), strings.Join(years, ", "))
 
-	scopes := collectGenerateScopes(dataDir, years, posYear, posMonth, posFound, startMonth)
+	scopes := collectGenerateScopes(dataDir, years, startMonth, endMonth)
 	scopeYears := uniqueGenerateScopeYears(scopes)
 	if len(scopes) > 0 {
 		first := scopes[0].Year + "-" + scopes[0].Month
@@ -818,17 +823,22 @@ func GenerateTransactions(args []string) error {
 	startedAt := time.Now()
 	dataDir := DataDir()
 	now := time.Now().In(BrusselsTZ())
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 	startMonth, isHistory := ResolveSinceMonth(args, "")
+	endMonth := ""
 	if !isHistory && !posFound {
 		startMonth = DefaultRecentStartMonth(now)
+	}
+	if posFound {
+		startMonth = posStartMonth
+		endMonth = posEndMonth
 	}
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
 		return nil
 	}
-	scopes := collectGenerateScopes(dataDir, years, posYear, posMonth, posFound, startMonth)
+	scopes := collectGenerateScopes(dataDir, years, startMonth, endMonth)
 	return generateTransactionScopes(dataDir, scopes, startedAt)
 }
 
@@ -949,16 +959,21 @@ func GenerateEvents(args []string) error {
 func GenerateMessages(args []string) error {
 	dataDir := DataDir()
 	now := time.Now().In(BrusselsTZ())
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 	startMonth, isHistory := ResolveSinceMonth(args, "")
+	endMonth := ""
 	if !isHistory && !posFound {
 		startMonth = DefaultRecentStartMonth(now)
+	}
+	if posFound {
+		startMonth = posStartMonth
+		endMonth = posEndMonth
 	}
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
 		return nil
 	}
-	scopes := collectGenerateScopes(dataDir, years, posYear, posMonth, posFound, startMonth)
+	scopes := collectGenerateScopes(dataDir, years, startMonth, endMonth)
 
 	fmt.Printf("\n%s📸 Generating images...%s\n", Fmt.Bold, Fmt.Reset)
 	total := 0
@@ -984,16 +999,21 @@ func GenerateMessages(args []string) error {
 func GenerateMembers(args []string) error {
 	dataDir := DataDir()
 	now := time.Now().In(BrusselsTZ())
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 	startMonth, isHistory := ResolveSinceMonth(args, "")
+	endMonth := ""
 	if !isHistory && !posFound {
 		startMonth = DefaultRecentStartMonth(now)
+	}
+	if posFound {
+		startMonth = posStartMonth
+		endMonth = posEndMonth
 	}
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
 		return nil
 	}
-	scopes := collectGenerateScopes(dataDir, years, posYear, posMonth, posFound, startMonth)
+	scopes := collectGenerateScopes(dataDir, years, startMonth, endMonth)
 
 	fmt.Printf("\n%s👥 Generating members...%s\n", Fmt.Bold, Fmt.Reset)
 	generateMembersGo(dataDir, scopes)
@@ -1013,20 +1033,15 @@ type generateScope struct {
 	Month string
 }
 
-func collectGenerateScopes(dataDir string, years []string, posYear, posMonth string, posFound bool, startMonth string) []generateScope {
+func collectGenerateScopes(dataDir string, years []string, startMonth, endMonth string) []generateScope {
 	var scopes []generateScope
 	for _, year := range years {
 		for _, month := range getAvailableMonths(dataDir, year) {
 			ym := year + "-" + month
-			if posFound {
-				if posMonth != "" && ym != posYear+"-"+posMonth {
-					continue
-				}
-				if posMonth == "" && !strings.HasPrefix(ym, posYear+"-") {
-					continue
-				}
-			}
 			if startMonth != "" && ym < startMonth {
+				continue
+			}
+			if endMonth != "" && ym > endMonth {
 				continue
 			}
 			scopes = append(scopes, generateScope{Year: year, Month: month})
@@ -3386,7 +3401,7 @@ to produce derived data files needed by the website:
 %sOPTIONS%s
   %s<year>%s               Generate for a specific year
   %s<year/month>%s         Generate for a specific month
-  %s--since%s <YYYY/MM>    Generate from a specific month onward
+  %s--since%s <date>       Generate from a specific date onward
   %s--history%s            Regenerate all months
   %s--help, -h%s           Show this help
 

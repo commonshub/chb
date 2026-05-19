@@ -2044,37 +2044,24 @@ func AccountOdooPush(slug string, args []string) error {
 		}
 	}
 
-	// Parse --until YYYY[MM[DD]] to cutoff date
+	// Parse --until as an exclusive cutoff at the end of the requested period.
 	var untilDate time.Time
 	if untilStr != "" {
-		untilStr = strings.ReplaceAll(untilStr, "/", "")
-		untilStr = strings.ReplaceAll(untilStr, "-", "")
-		switch len(untilStr) {
-		case 4: // YYYY → end of year
-			y, _ := strconv.Atoi(untilStr)
-			untilDate = time.Date(y+1, 1, 1, 0, 0, 0, 0, BrusselsTZ())
-		case 6: // YYYYMM → end of month
-			y, _ := strconv.Atoi(untilStr[:4])
-			m, _ := strconv.Atoi(untilStr[4:6])
-			untilDate = time.Date(y, time.Month(m)+1, 1, 0, 0, 0, 0, BrusselsTZ())
-		case 8: // YYYYMMDD → end of day
-			y, _ := strconv.Atoi(untilStr[:4])
-			m, _ := strconv.Atoi(untilStr[4:6])
-			d, _ := strconv.Atoi(untilStr[6:8])
-			untilDate = time.Date(y, time.Month(m), d+1, 0, 0, 0, 0, BrusselsTZ())
-		default:
-			return fmt.Errorf("invalid --until format: %s (use YYYY, YYYYMM, or YYYYMMDD)", untilStr)
+		t, ok := ParseDateEndExclusive(untilStr)
+		if !ok {
+			return fmt.Errorf("invalid --until format: %s (use %s)", untilStr, DateFormatHelp)
 		}
+		untilDate = t
 	}
 
-	// Parse --since YYYY[MM[DD]]: include only txs at/after this date.
+	// Parse --since: include only txs at/after this date start.
 	// Setting --since (like --history) also enables the rule re-apply
 	// pass over already-imported lines within the window.
 	var sinceDate time.Time
 	if sinceStr != "" {
 		t, ok := ParseSinceDate(sinceStr)
 		if !ok {
-			return fmt.Errorf("invalid --since format: %s (use YYYY, YYYYMM, or YYYYMMDD)", sinceStr)
+			return fmt.Errorf("invalid --since format: %s (use %s)", sinceStr, DateFormatHelp)
 		}
 		sinceDate = t
 	}
@@ -5427,7 +5414,7 @@ func printAccountSlugHelp(slug string) {
 	fmt.Printf("  %s--accounts%s         Stripe-only: apply account rules to journal lines\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--metadata%s         Stripe-only: refresh descriptions and narration metadata\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--reconcile%s        Stripe-only: reconcile journal lines\n", f.Yellow, f.Reset)
-	fmt.Printf("  %s--until YYYYMMDD%s   Stop processing at this date\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--until <date>%s     Stop processing at this date end\n", f.Yellow, f.Reset)
 	fmt.Println()
 
 	// Show examples
@@ -5454,7 +5441,7 @@ func printAccountsHelp() {
   %schb accounts <slug> link%s              Link account to an Odoo bank journal
   %schb accounts <slug> sync%s              Sync transactions to linked Odoo journal
   %schb accounts <slug> sync --dry-run%s    Show what would be synced
-  %schb accounts <slug> sync --until YYYYMMDD%s   Stop processing at this date
+  %schb accounts <slug> sync --until 2026-03%s    Stop processing at this date end
   %schb accounts <slug> sync --force%s      Re-sync (delete + recreate)
   %schb accounts <slug> balance [YYYY[/MM[/DD]]]%s   Historical balance at end of period
   %schb accounts <slug> payouts%s           List Stripe payouts

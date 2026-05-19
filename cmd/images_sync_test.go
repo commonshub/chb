@@ -6,7 +6,7 @@ import (
 
 func TestCollectImageSyncScopesDefault(t *testing.T) {
 	dataDir := t.TempDir()
-	scopes := collectImageSyncScopes(dataDir, nil, "", "", false, "", false)
+	scopes := collectImageSyncScopes(dataDir, nil, "", "", false)
 	if len(scopes) != 3 {
 		t.Fatalf("expected 3 scopes, got %d", len(scopes))
 	}
@@ -17,7 +17,7 @@ func TestCollectImageSyncScopesDefault(t *testing.T) {
 
 func TestCollectImageSyncScopesHistoryIncludesLatest(t *testing.T) {
 	dataDir := t.TempDir()
-	scopes := collectImageSyncScopes(dataDir, []string{"2024"}, "", "", false, "2024-01", true)
+	scopes := collectImageSyncScopes(dataDir, []string{"2024"}, "2024-01", "", true)
 	if len(scopes) != 1 || scopes[0].Year != "latest" {
 		t.Fatalf("expected latest scope when no month dirs exist, got %+v", scopes)
 	}

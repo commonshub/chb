@@ -531,26 +531,16 @@ func getMemberMonths(args []string) []yearMonth {
 	// Check --month=YYYY-MM (members-specific alias)
 	monthArg := GetOption(args, "--month")
 	if monthArg != "" {
-		parts := strings.Split(monthArg, "-")
-		if len(parts) == 2 {
-			y, _ := strconv.Atoi(parts[0])
-			m, _ := strconv.Atoi(parts[1])
-			return []yearMonth{{y, m}}
+		startMonth, endMonth, ok := ParseMonthRangeValue(monthArg)
+		if ok {
+			return yearMonthsFromRange(startMonth, endMonth)
 		}
 	}
 
 	// Shared sync semantics: positional year[/month], --since, --history
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 	if posFound {
-		var months []yearMonth
-		if posMonth != "" {
-			return []yearMonth{{mustAtoi(posYear), mustAtoi(posMonth)}}
-		}
-		year := mustAtoi(posYear)
-		for month := 1; month <= 12; month++ {
-			months = append(months, yearMonth{year, month})
-		}
-		return months
+		return yearMonthsFromRange(posStartMonth, posEndMonth)
 	}
 
 	if sinceMonth, isSince := ResolveSinceMonth(args, filepath.Join("generated", "members.json")); isSince {
@@ -584,6 +574,18 @@ func getMemberMonths(args []string) []yearMonth {
 	}
 
 	return []yearMonth{{now.Year(), int(now.Month())}}
+}
+
+func yearMonthsFromRange(startMonth, endMonth string) []yearMonth {
+	var months []yearMonth
+	for _, ym := range ExpandMonthRange(startMonth, endMonth) {
+		parts := strings.Split(ym, "-")
+		if len(parts) != 2 {
+			continue
+		}
+		months = append(months, yearMonth{mustAtoi(parts[0]), mustAtoi(parts[1])})
+	}
+	return months
 }
 
 func parseYearMonthValue(ym string) yearMonth {
@@ -637,7 +639,7 @@ func printMembersSyncHelp() {
   %schb members sync%s [options]
 
 %sOPTIONS%s
-  %s--month%s <YYYY-MM>    Fetch specific month only
+  %s--month%s <date-range> Fetch a specific date/month/year range
   %s--backfill%s           Process all months since 2024-06
   %s--stripe-only%s        Only fetch from Stripe
   %s--odoo-only%s          Only fetch from Odoo

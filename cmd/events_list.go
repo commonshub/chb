@@ -252,18 +252,18 @@ func parseEventListFilter(args []string, now time.Time) (eventListFilter, error)
 	if sinceStr := GetOption(args, "--since"); sinceStr != "" {
 		d, ok := parseEventListDate(sinceStr)
 		if !ok {
-			return filter, fmt.Errorf("invalid --since value %q (expected YYYYMMDD)", sinceStr)
+			return filter, fmt.Errorf("invalid --since value %q (expected %s)", sinceStr, DateFormatHelp)
 		}
 		filter.Since = d
 		filter.HasSince = true
 	}
 
 	if untilStr := GetOption(args, "--until"); untilStr != "" {
-		d, ok := parseEventListDate(untilStr)
+		end, ok := ParseDateEndExclusive(untilStr)
 		if !ok {
-			return filter, fmt.Errorf("invalid --until value %q (expected YYYYMMDD)", untilStr)
+			return filter, fmt.Errorf("invalid --until value %q (expected %s)", untilStr, DateFormatHelp)
 		}
-		filter.Until = d.Add(24*time.Hour - time.Second)
+		filter.Until = end.Add(-time.Second)
 		filter.HasUntil = true
 	}
 
@@ -297,15 +297,11 @@ func (filter eventListFilter) monthMayMatch(year, month string) bool {
 }
 
 func parseEventListDate(s string) (time.Time, bool) {
-	clean := strings.ReplaceAll(s, "-", "")
-	if len(clean) != 8 {
+	spec, ok := ParseDateSpec(s)
+	if !ok {
 		return time.Time{}, false
 	}
-	t, err := time.ParseInLocation("20060102", clean, BrusselsTZ())
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
+	return spec.Start, true
 }
 
 func eventDayStart(t time.Time) time.Time {

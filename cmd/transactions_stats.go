@@ -19,8 +19,8 @@ func TransactionsStats(args []string) {
 	jsonOut := GetOption(args, "--format") == "json"
 	dataDir := DataDir()
 
-	// Parse optional year/month filter
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	// Parse optional date/month/year range filter
+	startMonth, endMonth, posFound := ParseMonthRangeArg(args)
 
 	type sourceStats struct {
 		Count    int     `json:"count"`
@@ -31,11 +31,11 @@ func TransactionsStats(args []string) {
 	}
 
 	type monthStats struct {
-		Month   string                 `json:"month"`
-		Count   int                    `json:"count"`
-		In      float64                `json:"in"`
-		Out     float64                `json:"out"`
-		Net     float64                `json:"net"`
+		Month   string                  `json:"month"`
+		Count   int                     `json:"count"`
+		In      float64                 `json:"in"`
+		Out     float64                 `json:"out"`
+		Net     float64                 `json:"net"`
 		Sources map[string]*sourceStats `json:"sources"`
 	}
 
@@ -52,11 +52,6 @@ func TransactionsStats(args []string) {
 		}
 		year := yd.Name()
 
-		// Year filter
-		if posFound && posMonth == "" && year != posYear {
-			continue
-		}
-
 		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, year))
 		for _, md := range monthDirs {
 			if !md.IsDir() || len(md.Name()) != 2 {
@@ -65,8 +60,7 @@ func TransactionsStats(args []string) {
 			month := md.Name()
 			ym := year + "-" + month
 
-			// Month filter
-			if posFound && posMonth != "" && (year != posYear || month != posMonth) {
+			if posFound && (ym < startMonth || ym > endMonth) {
 				continue
 			}
 
@@ -171,11 +165,11 @@ func TransactionsStats(args []string) {
 
 	if jsonOut {
 		out := struct {
-			Total  int            `json:"total"`
-			In     float64        `json:"in"`
-			Out    float64        `json:"out"`
-			Net    float64        `json:"net"`
-			Months []*monthStats  `json:"months"`
+			Total  int           `json:"total"`
+			In     float64       `json:"in"`
+			Out    float64       `json:"out"`
+			Net    float64       `json:"net"`
+			Months []*monthStats `json:"months"`
 		}{
 			Total:  totalCount,
 			In:     totalIn,

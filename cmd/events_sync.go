@@ -106,10 +106,9 @@ func CalendarsSync(args []string) (int, int, error) {
 
 	force := HasFlag(args, "--force")
 	debug := HasFlag(args, "--debug")
-	sinceStr := GetOption(args, "--since")
 
-	// Positional year/month arg (e.g. "2025" or "2025/11")
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	// Positional date/month/year range arg (e.g. "2025", "2025/11", "2025/Q1")
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 
 	dataDir := DataDir()
 	runCache := newEventSyncRunCache(dataDir, debug)
@@ -129,20 +128,11 @@ func CalendarsSync(args []string) (int, int, error) {
 	isFullSync := false
 
 	if posFound {
-		if posMonth != "" {
-			sinceMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
-			untilMonth = sinceMonth
-		} else {
-			sinceMonth = fmt.Sprintf("%s-01", posYear)
-			untilMonth = fmt.Sprintf("%s-12", posYear)
-		}
+		sinceMonth = posStartMonth
+		untilMonth = posEndMonth
 	} else if isSince {
 		sinceMonth = resolvedSince
 		isFullSync = true
-	} else if sinceStr != "" {
-		if d, ok := ParseSinceDate(sinceStr); ok {
-			sinceMonth = fmt.Sprintf("%d-%02d", d.Year(), d.Month())
-		}
 	}
 
 	// Default: keep the recent window plus upcoming events.

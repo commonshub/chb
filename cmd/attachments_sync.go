@@ -32,7 +32,12 @@ func AttachmentsSync(args []string) (int, error) {
 	dataDir := DataDir()
 	force := HasFlag(args, "--force")
 	startMonth, isHistory := ResolveSinceMonth(args, odoosource.RelPath())
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	endMonth := ""
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
+	if posFound {
+		startMonth = posStartMonth
+		endMonth = posEndMonth
+	}
 
 	years := getAvailableYears(dataDir)
 	if len(years) == 0 {
@@ -52,7 +57,7 @@ func AttachmentsSync(args []string) (int, error) {
 	totalSkipped := 0
 	domainCounts := map[string]int{}
 
-	for _, scope := range collectAttachmentSyncScopes(dataDir, years, posYear, posMonth, posFound, startMonth, isHistory) {
+	for _, scope := range collectAttachmentSyncScopes(dataDir, years, startMonth, endMonth, isHistory) {
 		invoiceRes, err := syncInvoiceAttachmentMonth(dataDir, scope.Year, scope.Month, force, creds, uid)
 		if err != nil {
 			Warnf("  %s⚠ %s invoices: %v%s", Fmt.Yellow, scope.Label, err, Fmt.Reset)
@@ -89,7 +94,7 @@ func AttachmentsSync(args []string) (int, error) {
 	return totalDownloaded, nil
 }
 
-func collectAttachmentSyncScopes(dataDir string, years []string, posYear, posMonth string, posFound bool, startMonth string, isHistory bool) []imageSyncScope {
+func collectAttachmentSyncScopes(dataDir string, years []string, startMonth, endMonth string, isHistory bool) []imageSyncScope {
 	var scopes []imageSyncScope
 	seen := map[string]bool{}
 
@@ -102,19 +107,14 @@ func collectAttachmentSyncScopes(dataDir string, years []string, posYear, posMon
 		scopes = append(scopes, imageSyncScope{Year: year, Month: month, Label: label})
 	}
 
-	if posFound || startMonth != "" {
+	if startMonth != "" {
 		for _, year := range years {
 			for _, month := range getAvailableMonths(dataDir, year) {
 				ym := fmt.Sprintf("%s-%s", year, month)
-				if posFound {
-					if posMonth != "" && (year != posYear || month != posMonth) {
-						continue
-					}
-					if posMonth == "" && year != posYear {
-						continue
-					}
-				}
 				if startMonth != "" && ym < startMonth {
+					continue
+				}
+				if endMonth != "" && ym > endMonth {
 					continue
 				}
 				addScope(year, month, year+"-"+month)
@@ -335,7 +335,7 @@ func printAttachmentsSyncHelp() {
 %sOPTIONS%s
   %s<year>%s               Process all months of the given year (e.g. 2025)
   %s<year/month>%s         Process a specific month (e.g. 2025/11)
-  %s--since%s <YYYY/MM>    Process from a specific month to now
+  %s--since%s <date>       Process from a specific date to now
   %s--history%s            Process all available months
   %s--force%s              Re-download even if files already exist
   %s--help, -h%s           Show this help

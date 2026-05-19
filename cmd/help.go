@@ -40,7 +40,7 @@ func PrintHelp(version string) {
   %ssync%s                Sync all providers
   %sgenerate%s            Generate derived data files (contributors, images, etc.)
   %smembers sync%s        Fetch membership data from Stripe/Odoo
-  %sreport%s <period>     Generate monthly/yearly report
+  %sreport%s <date-range>  Generate monthly/yearly report
   %sstats%s               Show data directory size and breakdown
   %sdoctor%s              Audit DATA_DIR integrity and suggest fixes
   %stools%s               Run debugging helpers
@@ -209,7 +209,7 @@ func PrintToolsHelp() {
   %schb tools getUrlMetadata%s https://example.com/event
   %schb tools getUrlMetadata%s https://example.com/event --verbose
   %schb tools getUrlMetadata%s https://example.com/event --debug
-`,
+	`,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
@@ -302,9 +302,8 @@ invoices/bills/attachments (Odoo), messages (Discord), members (Stripe/Odoo)
 
 %sTIME RANGE%s
   %s(no args)%s            Sync previous month + current month (and future events)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/11)
-  %s<year>%s               Sync all months of a given year (e.g. 2025)
-  %s--since%s YYYY/MM      Sync from a specific month to now (also: YYYYMM)
+  %s<date-range>%s         Sync a date/month/year range (e.g. 2025/11, 2025/Q4)
+  %s--since%s <date>       Sync from a date to now
   %s--history%s            Sync from earliest cached month (or 2024/01 if fresh)
 
 %sOPTIONS%s
@@ -342,12 +341,11 @@ invoices/bills/attachments (Odoo), messages (Discord), members (Stripe/Odoo)
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
@@ -371,17 +369,23 @@ func PrintEventsHelp() {
 
 %sUSAGE%s
   %schb events%s [options]
+  %schb events stats%s [year[/month]]   Event counts/attendance summary
+  %schb events tickets%s [year[/month]] Ticket-sale summary (gross/fees/VAT/net)
 
 %sOPTIONS%s
   %s-n%s <count>           Number of events to show (default: 10)
-  %s--since%s <YYYYMMDD>   Events from this date, sorted oldest first
-  %s--until%s <YYYYMMDD>   Events up to this date, sorted newest first
+  %s--since%s <date>       Events from this date, sorted oldest first
+  %s--until%s <date>       Events up to this date, sorted newest first
   %s--skip%s <count>       Skip first N events
   %s--all%s                Show all events (no date filter)
   %s--help, -h%s           Show this help
+
+See %schb events stats --help%s and %schb events tickets --help%s for subcommand options.
 `,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
@@ -390,6 +394,8 @@ func PrintEventsHelp() {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 	)
 }
 
@@ -431,9 +437,8 @@ func PrintCalendarsSyncHelp() {
   %schb calendars sync%s [year[/month]] [options]
 
 %sOPTIONS%s
-  %s<year>%s               Sync all months of the given year (e.g. 2025)
-  %s<year/month>%s         Sync a specific month (e.g. 2025/11)
-  %s--since%s <YYYYMMDD>   Start syncing from this date (default: previous month)
+  %s<date-range>%s         Sync a date/month/year range (e.g. 2025/11, 2025/Q4)
+  %s--since%s <date>       Start syncing from this date (default: previous month)
   %s--force%s              Re-fetch even if cached data exists
   %s--debug%s              Write debug.<domain>.log for OG fetch issues
   %s--history%s            Rebuild entire event history
@@ -455,7 +460,6 @@ func PrintCalendarsSyncHelp() {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 	)
 }
@@ -471,7 +475,7 @@ func PrintBookingsHelp() {
 %sOPTIONS%s
   %s-n%s <count>           Number of bookings to show (default: 10)
   %s--skip%s <count>       Skip first N bookings
-  %s--date%s <YYYYMMDD>    Show bookings for a specific date
+  %s--date%s <date-range>  Show bookings for a date/month/year range
   %s--room%s <slug>        Filter by room slug
   %s--all%s                Show all bookings (no date filter)
   %s--help, -h%s           Show this help

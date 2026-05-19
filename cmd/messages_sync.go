@@ -43,8 +43,16 @@ func MessagesSync(args []string) (int, error) {
 	monthFilter := GetOption(args, "--month")
 	channelFilter := GetOption(args, "--channel")
 
-	// Positional year/month arg (e.g. "2025" or "2025/03")
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	// Positional date/month/year range arg (e.g. "2025", "2025/03", "2025/Q1")
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
+	monthStart, monthEnd := "", ""
+	if monthFilter != "" {
+		var ok bool
+		monthStart, monthEnd, ok = ParseMonthRangeValue(monthFilter)
+		if !ok {
+			return 0, fmt.Errorf("invalid --month value %q (expected %s)", monthFilter, DateRangeFormatHelp)
+		}
+	}
 
 	// Check --since / --history
 	resolvedSince, isSince := ResolveSinceMonth(args, "messages")
@@ -110,7 +118,7 @@ func MessagesSync(args []string) (int, error) {
 		for _, ym := range monthsToSave {
 			monthMsgs := byMonth[ym]
 
-			if monthFilter != "" && ym != monthFilter {
+			if monthFilter != "" && (ym < monthStart || ym > monthEnd) {
 				continue
 			}
 			if defaultRecentWindow && ym < recentStartMonth {
@@ -121,16 +129,8 @@ func MessagesSync(args []string) (int, error) {
 				continue
 			}
 			// Positional year/month filter
-			if posFound {
-				if posMonth != "" {
-					if ym != fmt.Sprintf("%s-%s", posYear, posMonth) {
-						continue
-					}
-				} else {
-					if !strings.HasPrefix(ym, posYear+"-") {
-						continue
-					}
-				}
+			if posFound && (ym < posStartMonth || ym > posEndMonth) {
+				continue
 			}
 
 			parts := strings.Split(ym, "-")
@@ -355,14 +355,13 @@ func printMessagesSyncHelp() {
 
 %sTIME RANGE%s
   %s(no args)%s              Fetch current month + previous month
-  %s<year/month>%s           Only save messages from that month (e.g. 2025/03)
-  %s<year>%s                 Only save messages from that year (e.g. 2025)
-  %s--since%s YYYY/MM        Only save messages from that month onward (also: YYYYMM)
+  %s<date-range>%s           Only save messages from that range (e.g. 2025/03, 2025/Q1)
+  %s--since%s <date>         Only save messages from that date onward
   %s--history%s              Paginate backwards, stop at oldest cached month
 
 %sFILTERING%s
   %s--channel%s <id|name>    Fetch a specific channel only
-  %s--month%s <YYYY-MM>      Alias for year/month positional arg
+  %s--month%s <date-range>   Alias for date-range positional arg
 
 %sOPTIONS%s
   %s--force%s                Re-fetch and overwrite cached months
@@ -396,7 +395,6 @@ func printMessagesSyncHelp() {
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Dim, f.Reset,
-		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

@@ -53,8 +53,8 @@ func TransactionsSync(args []string) (int, error) {
 		fmt.Sscanf(limitStr, "%d", &fetchLimit)
 	}
 
-	// Positional year/month arg (e.g. "2025" or "2025/03")
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	// Positional date/month/year range arg (e.g. "2025", "2025/03", "2025/Q1")
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 
 	// Determine which months to process
 	now := time.Now().In(BrusselsTZ())
@@ -69,16 +69,14 @@ func TransactionsSync(args []string) (int, error) {
 		startMonth = sinceMonth
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
 	} else if posFound {
-		if posMonth != "" {
-			startMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
-			endMonth = startMonth
-		} else {
-			startMonth = fmt.Sprintf("%s-01", posYear)
-			endMonth = fmt.Sprintf("%s-12", posYear)
-		}
+		startMonth = posStartMonth
+		endMonth = posEndMonth
 	} else if monthFilter != "" {
-		startMonth = monthFilter
-		endMonth = monthFilter
+		var ok bool
+		startMonth, endMonth, ok = ParseMonthRangeValue(monthFilter)
+		if !ok {
+			return 0, fmt.Errorf("invalid --month value %q (expected %s)", monthFilter, DateRangeFormatHelp)
+		}
 	} else {
 		// Default: keep syncs bounded to the recent window.
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
@@ -1109,10 +1107,9 @@ func printTransactionsSyncHelp() {
   %schb transactions sync%s [year[/month]] [options]
 
 %sOPTIONS%s
-  %s<year>%s                  Sync all months of a year (e.g. 2025)
-  %s<year/month>%s            Sync a specific month (e.g. 2025/03)
+  %s<date-range>%s            Sync a date/month/year range (e.g. 2025/03, 2025/Q1)
   %s--source%s <name>         Sync only: gnosis, celo, stripe, monerium
-  %s--month%s <YYYY-MM>       Alias for year/month filter
+  %s--month%s <date-range>    Alias for date-range filter
   %s--force%s                 Re-fetch even if cached
   %s--no-nostr%s              Skip Nostr metadata fetch
   %s--help, -h%s              Show this help
@@ -1145,13 +1142,12 @@ func printTransactionsSyncHelp() {
 		f.Bold, f.Reset, // 2: USAGE
 		f.Cyan, f.Reset, // 3: chb transactions sync
 		f.Bold, f.Reset, // 4: OPTIONS
-		f.Yellow, f.Reset, // 5: <year>
-		f.Yellow, f.Reset, // 6: <year/month>
-		f.Yellow, f.Reset, // 7: --source
-		f.Yellow, f.Reset, // 8: --month
-		f.Yellow, f.Reset, // 9: --force
-		f.Yellow, f.Reset, // 10: --no-nostr
-		f.Yellow, f.Reset, // 11: --help
+		f.Yellow, f.Reset, // 5: <date-range>
+		f.Yellow, f.Reset, // 6: --source
+		f.Yellow, f.Reset, // 7: --month
+		f.Yellow, f.Reset, // 8: --force
+		f.Yellow, f.Reset, // 9: --no-nostr
+		f.Yellow, f.Reset, // 10: --help
 		f.Bold, f.Reset, // 12: SOURCES
 		f.Cyan, f.Reset, // 13: gnosis
 		f.Cyan, f.Reset, // 14: celo

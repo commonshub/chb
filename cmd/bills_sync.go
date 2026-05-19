@@ -50,7 +50,7 @@ func BillsSync(args []string) (int, error) {
 	}
 
 	force := HasFlag(args, "--force")
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
 	now := time.Now().In(BrusselsTZ())
 
 	var startMonth, endMonth string
@@ -62,13 +62,8 @@ func BillsSync(args []string) (int, error) {
 		startMonth = sinceMonth
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
 	} else if posFound {
-		if posMonth != "" {
-			startMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
-			endMonth = startMonth
-		} else {
-			startMonth = fmt.Sprintf("%s-01", posYear)
-			endMonth = fmt.Sprintf("%s-12", posYear)
-		}
+		startMonth = posStartMonth
+		endMonth = posEndMonth
 	} else {
 		startMonth = DefaultRecentStartMonth(now)
 		endMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
@@ -403,7 +398,7 @@ func printBillsSyncHelp() {
 %sOPTIONS%s
   %s<year>%s               Sync all months of a year (e.g. 2025)
   %s<year/month>%s         Sync a specific month (e.g. 2025/03)
-  %s--since%s YYYY/MM      Sync from a specific month to now
+  %s--since%s <date>       Sync from a specific date to now
   %s--history%s            Sync bill history from the oldest cached month
   %s--force%s              Re-fetch and overwrite cached month files
   %s--help, -h%s           Show this help

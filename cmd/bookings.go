@@ -130,9 +130,9 @@ func BookingsList(args []string) {
 
 	var filterDate, filterDateEnd time.Time
 	if dateStr != "" {
-		if d, ok := ParseSinceDate(dateStr); ok {
-			filterDate = d
-			filterDateEnd = d.AddDate(0, 0, 1)
+		if spec, ok := ParseDateSpec(dateStr); ok {
+			filterDate = spec.Start
+			filterDateEnd = spec.End
 		}
 	}
 

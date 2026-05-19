@@ -314,13 +314,13 @@ func virtualSpreadEntry(in InboundSpread, year, month string, tz *time.Location)
 		Category:         in.Category,
 		Collective:       in.Collective,
 		Metadata: map[string]interface{}{
-			"virtualSource":      true,
-			"sourceURI":          in.URI,
-			"sourceNaturalYM":    in.NaturalYM,
-			"sourceTxID":         in.TxID,
-			"spreadAllocation":   in.Amount,
-			"spreadTotal":        in.Total,
-			"description":        in.Description,
+			"virtualSource":    true,
+			"sourceURI":        in.URI,
+			"sourceNaturalYM":  in.NaturalYM,
+			"sourceTxID":       in.TxID,
+			"spreadAllocation": in.Amount,
+			"spreadTotal":      in.Total,
+			"description":      in.Description,
 		},
 	}
 	return tx
@@ -2637,17 +2637,17 @@ func parseTxListFlags(args []string) (TxFilter, int, int, error) {
 	if s := GetOption(args, "--since"); s != "" {
 		t, ok := ParseSinceDate(s)
 		if !ok {
-			return f, 0, 0, fmt.Errorf("invalid --since value %q (expected YYYYMMDD)", s)
+			return f, 0, 0, fmt.Errorf("invalid --since value %q (expected %s)", s, DateFormatHelp)
 		}
 		f.Since = t
 	}
 	if s := GetOption(args, "--until"); s != "" {
-		t, ok := ParseSinceDate(s)
+		t, ok := ParseDateEndExclusive(s)
 		if !ok {
-			return f, 0, 0, fmt.Errorf("invalid --until value %q (expected YYYYMMDD)", s)
+			return f, 0, 0, fmt.Errorf("invalid --until value %q (expected %s)", s, DateFormatHelp)
 		}
-		// --until is inclusive: extend to the very end of that day.
-		f.Until = t.Add(24*time.Hour - time.Second)
+		// --until is inclusive: use the last second before the parsed date ends.
+		f.Until = t.Add(-time.Second)
 	}
 
 	limit := GetNumber(args, []string{"-n", "--limit"}, -1)
@@ -2718,8 +2718,8 @@ func printTransactionsBrowserHelp() {
   %s--payment-link <id>%s  Match tag ["paymentLink", id]
   %s--tag <spec>%s         Match #tag, #key:value, or #[key:long value]
   %s--tags <a,b>%s         Match several tag specs
-  %s--since YYYYMMDD%s     Inclusive lower bound on transaction date
-  %s--until YYYYMMDD%s     Inclusive upper bound on transaction date
+  %s--since <date>%s       Inclusive lower bound on transaction date
+  %s--until <date>%s       Inclusive upper bound on transaction date
   %s-n N%s                 Limit to N transactions (most recent first)
   %s--skip N%s             Skip the first N matches before applying -n
   %s--json%s               Emit JSON instead of launching the interactive browser

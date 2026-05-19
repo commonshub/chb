@@ -311,18 +311,15 @@ func parseCalendarSummaryDateOption(value, label string, until bool) (string, st
 	if value == "" {
 		return "", "", nil
 	}
-	if y, m, ok := ParseSinceMonth(value); ok {
-		month := y + "-" + m
+	spec, ok := ParseDateValue(value)
+	if ok {
 		if until {
-			t, _ := time.Parse("2006-01-02", y+"-"+m+"-01")
-			return month, t.AddDate(0, 1, -1).Format("2006-01-02"), nil
+			end := spec.End.AddDate(0, 0, -1)
+			return spec.EndMonth, end.Format("2006-01-02"), nil
 		}
-		return month, y + "-" + m + "-01", nil
+		return spec.StartMonth, spec.Start.Format("2006-01-02"), nil
 	}
-	if d, ok := ParseSinceDate(value); ok {
-		return fmt.Sprintf("%d-%02d", d.Year(), d.Month()), d.Format("2006-01-02"), nil
-	}
-	return "", "", fmt.Errorf("invalid %s value %q (expected YYYY/MM, YYYYMM, or YYYYMMDD)", label, value)
+	return "", "", fmt.Errorf("invalid %s value %q (expected %s)", label, value, DateFormatHelp)
 }
 
 func dataMonths(dataDir string) []calendarMonth {

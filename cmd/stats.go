@@ -29,16 +29,16 @@ func Stats(args []string) {
 	}
 
 	dataDir := DataDir()
-	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	startMonth, endMonth, posFound := ParseMonthRangeArg(args)
 
 	// Header
 	displayPath := dataDir
 	if posFound {
-		label := posYear
-		displayPath = filepath.Join(dataDir, posYear)
-		if posMonth != "" {
-			label += "/" + posMonth
-			displayPath = filepath.Join(dataDir, posYear, posMonth)
+		label := startMonth
+		displayPath = filepath.Join(dataDir, strings.ReplaceAll(startMonth, "-", string(os.PathSeparator)))
+		if endMonth != "" && endMonth != startMonth {
+			label += " → " + endMonth
+			displayPath = dataDir
 		}
 		fmt.Printf("\n%s📊 Stats for %s%s\n", Fmt.Bold, label, Fmt.Reset)
 	} else {
@@ -85,10 +85,6 @@ func Stats(args []string) {
 		if _, err := strconv.Atoi(year); err != nil || len(year) != 4 {
 			continue
 		}
-		if posFound && posMonth == "" && year != posYear {
-			continue
-		}
-
 		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, year))
 		for _, md := range monthDirs {
 			if !md.IsDir() {
@@ -98,7 +94,8 @@ func Stats(args []string) {
 			if _, err := strconv.Atoi(month); err != nil || len(month) != 2 {
 				continue
 			}
-			if posFound && posMonth != "" && (year != posYear || month != posMonth) {
+			ym := year + "-" + month
+			if posFound && (ym < startMonth || ym > endMonth) {
 				continue
 			}
 
