@@ -601,6 +601,9 @@ func OdooJournals(args []string) error {
 		if len(args) >= 2 && args[1] == "statements" {
 			return odooJournalStatements(creds, uid, journalID, args[2:])
 		}
+		if len(args) >= 2 && args[1] == "pull" {
+			return odooJournalPull(creds, uid, journalID)
+		}
 		if HasFlag(args, "--reset") {
 			printOdooTargetLine(creds)
 			return odooJournalReset(creds, uid, journalID, HasFlag(args, "--yes", "-y") || HasFlag(args, "--force"))
@@ -1201,6 +1204,22 @@ func odooJournalStatements(creds *OdooCredentials, uid int, journalID int, args 
 	}
 	totalRow := []string{"", Pluralize(len(stmts), "statement", ""), "", "", ""}
 	renderTicketsTable(headers, rows, totalRow, map[int]bool{2: true, 3: true, 4: true})
+	return nil
+}
+
+// odooJournalPull refreshes the local journal-lines cache for one
+// journal. Lighter than the full `chb odoo pull` when the operator just
+// wants to re-sync state for a specific journal — e.g. after a manual
+// edit in the Odoo UI or after `chb odoo journals <id> --reset`.
+func odooJournalPull(creds *OdooCredentials, uid int, journalID int) error {
+	printOdooTargetLine(creds)
+	fmt.Printf("\n  %sRefreshing local cache for journal #%d...%s\n", Fmt.Dim, journalID, Fmt.Reset)
+	count, err := writeOdooJournalLinesCache(creds, uid, journalID)
+	if err != nil {
+		return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
+	}
+	fmt.Printf("  %s✓ Cached %d statement line%s for journal #%d%s\n\n",
+		Fmt.Green, count, plural(count), journalID, Fmt.Reset)
 	return nil
 }
 
@@ -2997,7 +3016,17 @@ func odooJournalReset(creds *OdooCredentials, uid int, journalID int, yes bool) 
 	}
 
 	CacheOdooJournalName(journalID, journals[0].Name)
-	return emptyOdooJournal(creds, uid, journalID, yes)
+	if err := emptyOdooJournal(creds, uid, journalID, yes); err != nil {
+		return err
+	}
+	// Refresh the local journal-lines cache so the next push's freshness
+	// check sees the now-empty Odoo state instead of pre-reset cached lines
+	// (which would otherwise abort with "out of sync"). Soft-fail with a
+	// warning — the reset itself succeeded.
+	if _, err := writeOdooJournalLinesCache(creds, uid, journalID); err != nil {
+		Warnf("  %s⚠ Could not refresh local cache for journal #%d after reset: %v%s", Fmt.Yellow, journalID, err, Fmt.Reset)
+	}
+	return nil
 }
 
 func printOdooTargetLine(creds *OdooCredentials) {
