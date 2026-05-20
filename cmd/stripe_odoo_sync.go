@@ -2622,8 +2622,9 @@ func odooMoveIsPosted(creds *OdooCredentials, uid int, moveID int) (bool, error)
 }
 
 type counterpartMoveLineInfo struct {
-	LineID    int
-	AccountID int
+	LineID      int
+	AccountID   int
+	AccountType string // "asset_receivable", "liability_payable", "income", "expense", …
 }
 
 func fetchCounterpartAccountIDsByMoveID(creds *OdooCredentials, uid int, moveIDs []int) (map[int]int, error) {
@@ -2658,8 +2659,9 @@ func fetchCounterpartMoveLinesByMoveID(creds *OdooCredentials, uid int, moveIDs 
 			continue
 		}
 		result[moveID] = counterpartMoveLineInfo{
-			LineID:    odooInt(row["id"]),
-			AccountID: odooFieldID(row["account_id"]),
+			LineID:      odooInt(row["id"]),
+			AccountID:   odooFieldID(row["account_id"]),
+			AccountType: t,
 		}
 	}
 	return result, nil

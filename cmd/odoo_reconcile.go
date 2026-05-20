@@ -93,6 +93,27 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 	if len(lines) == 0 {
 		return nil
 	}
+
+	// Pre-pass: lines whose counterpart is already on A/R or A/P were
+	// over-categorized by a previous push (typically a catch-all mapping
+	// rule). Reconcile can't match them against invoices because the
+	// counterpart is a free-floating credit/debit instead of suspense.
+	// Reset those back to the journal's suspense account so the regular
+	// reconcile flow below can replace it with the real invoice match.
+	resetCount, err := resetOverCategorizedToSuspense(creds, uid, journalID, lines, dryRun, verbose)
+	if err != nil {
+		return fmt.Errorf("reset over-categorized lines: %v", err)
+	}
+	if resetCount > 0 {
+		// Re-fetch — the lines we just reset now have a different
+		// counterpart account, and the reference-match step downstream
+		// needs the fresh state.
+		lines, err = fetchJournalUnreconciledStatementLines(creds, uid, journalID)
+		if err != nil {
+			return err
+		}
+	}
+
 	referenceCandidates, err := fetchOpenMoveCandidatesByReferenceForStatementLines(creds, uid, lines)
 	if err != nil {
 		return err
@@ -335,6 +356,86 @@ func tryReconcileStatementLineWithReferenceCandidates(creds *OdooCredentials, ui
 		Message:           "reconciled",
 		CandidateMoveName: candidateDisplayName(candidate),
 	}
+}
+
+// resetOverCategorizedToSuspense finds unreconciled lines whose
+// counterpart move.line is already on an A/R or A/P account (likely set
+// by a catch-all OdooMapping rule) and rewrites the counterpart back to
+// the journal's suspense account. That makes the line eligible for the
+// normal reconcile flow that follows.
+//
+// Returns the number of lines reset (0 on no-op or dry-run).
+func resetOverCategorizedToSuspense(creds *OdooCredentials, uid int, journalID int, lines []odooStatementLineForReconcile, dryRun, verbose bool) (int, error) {
+	if len(lines) == 0 {
+		return 0, nil
+	}
+	moveIDs := make([]int, 0, len(lines))
+	moveByID := map[int]int{} // move_id → bank-statement-line id, for the verbose log
+	for _, ln := range lines {
+		if ln.MoveID > 0 {
+			moveIDs = append(moveIDs, ln.MoveID)
+			moveByID[ln.MoveID] = ln.ID
+		}
+	}
+	if len(moveIDs) == 0 {
+		return 0, nil
+	}
+
+	counterparts, err := fetchCounterpartMoveLinesByMoveID(creds, uid, moveIDs)
+	if err != nil {
+		return 0, err
+	}
+
+	movesToReset := make([]int, 0)
+	counterpartsToReset := make([]int, 0)
+	for moveID, info := range counterparts {
+		switch info.AccountType {
+		case "asset_receivable", "liability_payable":
+			movesToReset = append(movesToReset, moveID)
+			counterpartsToReset = append(counterpartsToReset, info.LineID)
+			if verbose {
+				fmt.Printf("  %s↻ resetting line #%d (move #%d, counterpart on %s)%s\n",
+					Fmt.Dim, moveByID[moveID], moveID, info.AccountType, Fmt.Reset)
+			}
+		}
+	}
+	if len(movesToReset) == 0 {
+		return 0, nil
+	}
+	fmt.Printf("  %s↻ %s over-categorized to A/R or A/P — resetting to suspense before matching against invoices…%s\n",
+		Fmt.Yellow, Pluralize(len(movesToReset), "line is", "lines are"), Fmt.Reset)
+	if dryRun {
+		return 0, nil
+	}
+
+	suspenseID, err := fetchJournalSuspenseAccount(creds, uid, journalID)
+	if err != nil {
+		return 0, err
+	}
+	if suspenseID == 0 {
+		return 0, fmt.Errorf("journal #%d has no suspense account configured", journalID)
+	}
+	// Reuse the batched draft → write → repost helper — counterpart
+	// already known per move, so we can skip the per-line read.
+	if err := applyOdooMappingAccountBatch(creds, uid, movesToReset, counterpartsToReset, suspenseID, "suspense", nil); err != nil {
+		return 0, fmt.Errorf("apply suspense: %v", err)
+	}
+	return len(movesToReset), nil
+}
+
+// fetchJournalSuspenseAccount reads the journal's suspense_account_id —
+// the account Odoo uses as the counterpart for newly-created bank
+// statement lines until they get reconciled. Used to revert
+// over-categorized lines back to the natural pre-reconcile state.
+func fetchJournalSuspenseAccount(creds *OdooCredentials, uid int, journalID int) (int, error) {
+	rows, err := odooReadMapsByIDs(creds, uid, "account.journal", []int{journalID}, []string{"id", "suspense_account_id"})
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("journal #%d not found", journalID)
+	}
+	return odooFieldID(rows[0]["suspense_account_id"]), nil
 }
 
 func fetchJournalUnreconciledStatementLines(creds *OdooCredentials, uid int, journalID int) ([]odooStatementLineForReconcile, error) {
