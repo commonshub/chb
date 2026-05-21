@@ -1790,28 +1790,25 @@ func AccountFetch(slug string, args []string) error {
 
 // reconcileAutoThreshold caps the auto-reconcile-after-push behaviour. At
 // or below this many newly-created lines, the post-push reconcile runs
-// automatically; above it, the operator must pass --reconcile explicitly.
-// Calibrated for the typical hourly cron rhythm (0–5 new lines) where
-// auto-reconcile is essentially free, while keeping large back-fills
-// (initial migration, journal reset+re-push) under explicit operator
-// control to avoid accidental partner/account mass-edits.
+// automatically; above it the operator runs `chb odoo journals N
+// reconcile` explicitly. Calibrated for the typical hourly cron rhythm
+// (0–5 new lines) where auto-reconcile is essentially free, while
+// keeping large back-fills (initial migration, journal reset+re-push)
+// under explicit operator control to avoid accidental partner/account
+// mass-edits.
 const reconcileAutoThreshold = 20
 
-// shouldReconcileAfterPush encodes the policy: --skip-reconcile wins
-// over everything, --reconcile forces it, and otherwise the count
-// decides. When skipped because of the threshold, prints a hint so the
-// operator knows the lines need a follow-up step.
+// shouldReconcileAfterPush encodes the policy: --skip-reconcile opts
+// out; otherwise the new-line count decides. When skipped because of
+// the threshold, prints a hint pointing at the dedicated reconcile verb.
 func shouldReconcileAfterPush(args []string, newLines int, label string) bool {
 	if HasFlag(args, "--skip-reconcile", "--skip-reconciliation") {
 		return false
 	}
-	if HasFlag(args, "--reconcile") {
-		return true
-	}
 	if newLines <= reconcileAutoThreshold {
 		return true
 	}
-	fmt.Printf("  %s↳ %d new lines exceeds the auto-reconcile threshold of %d; re-run with --reconcile to reconcile them%s\n",
+	fmt.Printf("  %s↳ %d new lines exceeds the auto-reconcile threshold of %d; run `chb odoo journals <id> reconcile` to reconcile them%s\n",
 		Fmt.Dim, newLines, reconcileAutoThreshold, Fmt.Reset)
 	return false
 }
@@ -2377,7 +2374,6 @@ func parseOdooSyncStages(args []string) odooSyncStages {
 		Partners:     HasFlag(args, "--partners"),
 		Accounts:     HasFlag(args, "--accounts"),
 		Metadata:     HasFlag(args, "--metadata"),
-		Reconcile:    HasFlag(args, "--reconcile"),
 		Explicit:     true,
 	}
 }
@@ -2386,8 +2382,7 @@ func odooSyncStageFlagsExplicit(args []string) bool {
 	return HasFlag(args, "--transactions") ||
 		HasFlag(args, "--partners") ||
 		HasFlag(args, "--accounts") ||
-		HasFlag(args, "--metadata") ||
-		HasFlag(args, "--reconcile")
+		HasFlag(args, "--metadata")
 }
 
 func AccountOdooPush(slug string, args []string) error {
@@ -2423,23 +2418,25 @@ func AccountOdooPush(slug string, args []string) error {
 
 	dryRun := HasFlag(args, "--dry-run")
 	force := HasFlag(args, "--force")
+	if !dryRun {
+		printOdooWriteBannerOnce(creds.URL, creds.DB)
+	}
 	// Reconciliation policy:
 	//
 	//   --skip-reconcile           never reconcile after this push
-	//   --reconcile                always reconcile after this push (even big batches)
 	//   (default)                  reconcile when ≤ reconcileAutoThreshold new lines
 	//
 	// The threshold makes hourly cron pushes (typically 0–5 new lines)
 	// safely auto-reconcile, while large back-fills (hundreds of lines)
-	// require an explicit --reconcile so the operator stays in the loop.
-	// The inner per-line "skip reconciliation" flag controls whether the
-	// provider's inline reconcile step runs for each new line as it's
-	// created. We leave the existing semantic: skip unless --reconcile.
-	// The POST-push journal-wide reconcile is decided separately by
-	// shouldReconcileAfterPush(), which adds the auto-on-small-batches
-	// behaviour the operator asked for. --skip-reconciliation is kept as
-	// a deprecated alias for --skip-reconcile.
-	skipReconciliation := !HasFlag(args, "--reconcile")
+	// skip the post-push reconcile — the operator runs the dedicated
+	// `chb odoo journals N reconcile` verb to handle them. The inner
+	// per-line "skip reconciliation" flag controls whether the provider's
+	// inline reconcile step runs for each new line as it's created; we
+	// always skip that and let the post-push journal-wide reconcile do it
+	// in batch (decided by shouldReconcileAfterPush).
+	// --skip-reconciliation is kept as a deprecated alias for
+	// --skip-reconcile.
+	skipReconciliation := true
 	if HasFlag(args, "--account") {
 		return fmt.Errorf("unknown flag --account for journal sync; use --accounts")
 	}
@@ -2591,13 +2588,13 @@ func AccountOdooPush(slug string, args []string) error {
 		// journal — no IBAN-as-partner-name junk, no IBAN-as-payment-ref.
 		// --history is implied: merge always considers the full CSV.
 		//
-		// --reconcile is allowed (opt-in) and runs odooJournalReconcile
-		// after the merge — same shape as Stripe's --reconcile stage,
+		// Post-merge reconcile auto-runs only for small batches; large
+		// merges defer to `chb odoo journals N reconcile` explicitly,
 		// for consistency. The other Stripe-only stages (--partners,
 		// --accounts, --metadata) don't have a KBC equivalent and are
 		// rejected.
 		if stages.Explicit && (!stages.Transactions || stages.Partners || stages.Accounts || stages.Metadata) {
-			return fmt.Errorf("for KBC, only --transactions and --reconcile stage flags are supported")
+			return fmt.Errorf("for KBC, only --transactions is supported; run reconcile separately with `chb odoo journals %d reconcile`", acc.OdooJournalID)
 		}
 		var kbcCreated int
 		kbcCreated, syncErr = mergeKBCJournalWithCSV(creds, uid, acc.OdooJournalID, acc, dryRun, assumeYes, false)
@@ -2613,16 +2610,32 @@ func AccountOdooPush(slug string, args []string) error {
 			}
 		}
 	} else {
-		// Same shape for blockchain accounts: --reconcile is opt-in;
-		// other Stripe-only stages are rejected.
-		if stages.Explicit && (!stages.Transactions || stages.Partners || stages.Accounts || stages.Metadata) {
-			return fmt.Errorf("for this account, only --transactions and --reconcile stage flags are supported")
+		// Blockchain accounts (etherscan / monerium): --transactions for
+		// the regular push, --metadata to refresh payment_ref + narration
+		// on already-pushed lines from the latest local cache (useful when
+		// Monerium enrichment landed AFTER the original push). --partners
+		// and --accounts have no blockchain equivalent and are rejected.
+		if stages.Explicit && (stages.Partners || stages.Accounts) {
+			return fmt.Errorf("for this account, only --transactions and --metadata are supported; run reconcile separately with `chb odoo journals %d reconcile`", acc.OdooJournalID)
 		}
-		var result blockchainOdooSyncResult
-		result, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, skipReconciliation, sinceDate, untilDate, useHistory, previewLimit)
-		summary = result.Summary
-		syncedCount = result.Synced
-		if syncErr == nil && shouldReconcileAfterPush(args, syncedCount, acc.Slug) && !dryRun {
+		if !stages.Explicit || stages.Transactions {
+			var result blockchainOdooSyncResult
+			result, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, skipReconciliation, sinceDate, untilDate, useHistory, previewLimit)
+			summary = result.Summary
+			syncedCount = result.Synced
+		}
+		if syncErr == nil && stages.Explicit && stages.Metadata {
+			reviewed, updated, err := syncBlockchainOdooMetadataStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun)
+			if err != nil {
+				syncErr = err
+			} else if reviewed > 0 {
+				if summary != "" {
+					summary += ", "
+				}
+				summary += fmt.Sprintf("metadata %d/%d", updated, reviewed)
+			}
+		}
+		if syncErr == nil && shouldReconcileAfterPush(args, syncedCount, acc.Slug) && !dryRun && (!stages.Explicit || stages.Transactions) {
 			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, assumeYes, dryRun, false); err != nil {
 				syncErr = err
 			} else {
@@ -3835,6 +3848,194 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 	return blockchainOdooSyncResult{Summary: summary, Synced: synced}, nil
 }
 
+// syncBlockchainOdooMetadataStage walks every Odoo bank-statement-line
+// for the account's journal (optionally narrowed to a date window) and
+// re-writes payment_ref + narration from the current local cache.
+//
+// Use case: a line was pushed before generate had Monerium order data,
+// so payment_ref ended up as the bare counterparty/address. After a
+// subsequent pull+generate the local tx has the proper memo with
+// invoice ref — but the Odoo line is stale. This stage closes that
+// gap without re-pushing.
+//
+// Only payment_ref and narration are updated; partner_id and amount
+// are left alone (the regular --transactions stage handles those when
+// creating fresh lines).
+func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time, dryRun bool) (reviewed, updated int, err error) {
+	// Local cache → index by unique_import_id.
+	local := loadAccountTransactionsForOdoo(acc)
+	localByImportID := make(map[string]TransactionEntry, len(local))
+	for _, tx := range local {
+		if id := buildUniqueImportID(acc, tx); id != "" {
+			localByImportID[id] = tx
+		}
+	}
+	if len(localByImportID) == 0 {
+		return 0, 0, nil
+	}
+
+	// Live Odoo journal lines (with date window). is_reconciled lets us
+	// skip lines that are already paid — their payment_ref no longer
+	// affects the matcher, and modifying them requires unreconciling +
+	// re-reconciling which is destructive (and not what --metadata is
+	// for). move_id is the move we'd draft-write-post on.
+	lines, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		[]interface{}{[]interface{}{"journal_id", "=", acc.OdooJournalID}},
+		[]string{"id", "move_id", "date", "payment_ref", "unique_import_id", "narration", "is_reconciled"},
+		"date asc, id asc")
+	if err != nil {
+		return 0, 0, fmt.Errorf("fetch journal lines: %v", err)
+	}
+
+	type planned struct {
+		LineID     int
+		MoveID     int
+		ImportID   string
+		Old        string
+		New        string
+		NarrChange bool
+		NarrOld    string
+		NarrNew    string
+	}
+	var plan []planned
+	skippedReconciled := 0
+
+	for _, row := range lines {
+		dateStr := odooString(row["date"])
+		if !since.IsZero() || !until.IsZero() {
+			if d, derr := time.Parse("2006-01-02", dateStr); derr == nil {
+				if !since.IsZero() && d.Before(since) {
+					continue
+				}
+				if !until.IsZero() && !d.Before(until) {
+					continue
+				}
+			}
+		}
+		importID := odooString(row["unique_import_id"])
+		if importID == "" {
+			continue
+		}
+		tx, ok := localByImportID[importID]
+		if !ok {
+			continue
+		}
+		reviewed++
+		wantRef := buildOdooPaymentRef(tx)
+		wantNarr := buildOdooNarration(acc, tx)
+		curRef := odooString(row["payment_ref"])
+		curNarr := odooString(row["narration"])
+		refChange := wantRef != "" && wantRef != curRef
+		narrChange := wantNarr != "" && wantNarr != curNarr
+		if !refChange && !narrChange {
+			continue
+		}
+		// Already-reconciled lines: skip. Their payment_ref is no longer
+		// load-bearing (the matcher filters reconciled lines out anyway),
+		// and writing to them on a posted+reconciled move triggers
+		// "vous ne pouvez pas supprimer une écriture comptable validée".
+		// Operator should unreconcile first if they really want to retag.
+		if odooBool(row["is_reconciled"]) {
+			skippedReconciled++
+			continue
+		}
+		plan = append(plan, planned{
+			LineID:     odooInt(row["id"]),
+			MoveID:     odooFieldID(row["move_id"]),
+			ImportID:   importID,
+			Old:        curRef,
+			New:        wantRef,
+			NarrChange: narrChange,
+			NarrOld:    curNarr,
+			NarrNew:    wantNarr,
+		})
+	}
+
+	if len(plan) == 0 {
+		hint := ""
+		if skippedReconciled > 0 {
+			hint = fmt.Sprintf(" (%d already-reconciled line%s skipped)", skippedReconciled, plural(skippedReconciled))
+		}
+		fmt.Printf("  %s↻ metadata stage: %d line%s reviewed, none stale.%s%s\n",
+			Fmt.Dim, reviewed, plural(reviewed), hint, Fmt.Reset)
+		return reviewed, 0, nil
+	}
+
+	skipHint := ""
+	if skippedReconciled > 0 {
+		skipHint = fmt.Sprintf(", %d already-reconciled skipped", skippedReconciled)
+	}
+	fmt.Printf("  %s↻ metadata stage: %d reviewed, %d stale%s%s\n",
+		Fmt.Bold, reviewed, len(plan), skipHint, Fmt.Reset)
+	for i, p := range plan {
+		if i < 5 || dryRun {
+			oldRef := truncate(p.Old, 50)
+			newRef := truncate(p.New, 50)
+			fmt.Printf("    %sline #%d%s  %s%s%s → %s%s%s\n",
+				Fmt.Dim, p.LineID, Fmt.Reset,
+				Fmt.Yellow, oldRef, Fmt.Reset,
+				Fmt.Green, newRef, Fmt.Reset)
+		}
+	}
+	if !dryRun && len(plan) > 5 {
+		fmt.Printf("    %s…and %d more%s\n", Fmt.Dim, len(plan)-5, Fmt.Reset)
+	}
+	if dryRun {
+		fmt.Printf("  %s(dry-run — no writes)%s\n", Fmt.Dim, Fmt.Reset)
+		return reviewed, 0, nil
+	}
+
+	// Apply: each unreconciled bank line lives on a posted move; writing
+	// payment_ref triggers an Odoo recompute that needs to unlink+recreate
+	// the underlying move lines. On a posted move that fails with
+	// "vous ne pouvez pas supprimer une écriture comptable validée".
+	// Draft → write → repost is the standard workaround, same shape as
+	// applyOdooMappingAccount uses for counterpart-account rewrites.
+	for _, p := range plan {
+		if p.MoveID == 0 {
+			Warnf("    %s⚠ line #%d: missing move_id; skipped%s", Fmt.Yellow, p.LineID, Fmt.Reset)
+			continue
+		}
+		if _, werr := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move", "button_draft",
+			[]interface{}{[]interface{}{p.MoveID}}, nil); werr != nil {
+			Warnf("    %s⚠ line #%d draft: %v%s", Fmt.Yellow, p.LineID, werr, Fmt.Reset)
+			continue
+		}
+		patch := map[string]interface{}{"payment_ref": p.New}
+		if p.NarrChange {
+			patch["narration"] = p.NarrNew
+		}
+		writeErr := func() error {
+			_, e := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.bank.statement.line", "write",
+				[]interface{}{[]interface{}{p.LineID}, patch}, nil)
+			return e
+		}()
+		// Always re-post, even when the write failed, so we don't leave
+		// the move in draft state.
+		if _, postErr := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move", "action_post",
+			[]interface{}{[]interface{}{p.MoveID}}, nil); postErr != nil {
+			Warnf("    %s⚠ line #%d repost: %v%s", Fmt.Yellow, p.LineID, postErr, Fmt.Reset)
+			continue
+		}
+		if writeErr != nil {
+			Warnf("    %s⚠ line #%d write: %v%s", Fmt.Yellow, p.LineID, writeErr, Fmt.Reset)
+			continue
+		}
+		updated++
+	}
+	// Refresh local journal cache so subsequent dry-run / reconcile
+	// passes see the new payment_refs.
+	if updated > 0 {
+		if _, rerr := writeOdooJournalLinesCache(creds, uid, acc.OdooJournalID); rerr != nil {
+			Warnf("    %s⚠ journal cache refresh: %v%s", Fmt.Yellow, rerr, Fmt.Reset)
+		}
+	}
+	return reviewed, updated, nil
+}
+
 func printOdooBlockchainDryRunPlan(creds *OdooCredentials, uid int, acc *AccountConfig, txs []TransactionEntry, existingIDs map[string]bool, limit int) error {
 	if quietOdooContext() {
 		return nil
@@ -4777,21 +4978,36 @@ func buildOdooNarration(acc *AccountConfig, tx TransactionEntry) string {
 }
 
 func buildOdooPaymentRef(tx TransactionEntry) string {
-	paymentRef := tx.Counterparty
 	if tx.Type == "INTERNAL" {
-		paymentRef = "Internal transfer"
+		ref := "Internal transfer"
 		if tx.Counterparty != "" {
-			paymentRef += ": " + tx.Counterparty
+			ref += ": " + tx.Counterparty
 		}
+		return ref
 	}
-	if paymentRef == "" {
-		paymentRef = txDisplayDescription(tx)
-	}
-	if paymentRef == "" {
-		paymentRef = strings.ToLower(tx.Type)
-		if tx.Currency != "" {
-			paymentRef += " " + tx.Currency
+	// Prefer description over counterparty: the description usually
+	// carries the human-readable memo (incl. invoice references like
+	// "MEM/2026/00048"), which is what the reconcile matcher's
+	// strategy 1 looks for. The partner is already attributed via
+	// partner_id, so we don't lose the customer name by demoting
+	// Counterparty to a fallback. Counterparty wins only when both are
+	// non-empty AND the description doesn't already mention it — that
+	// pads bare-counterparty cases (e.g. blockchain transfers with no
+	// memo) without duplicating info.
+	desc := txDisplayDescription(tx)
+	counterparty := strings.TrimSpace(tx.Counterparty)
+	if desc != "" {
+		if counterparty != "" && !strings.Contains(strings.ToLower(desc), strings.ToLower(counterparty)) {
+			return counterparty + " — " + desc
 		}
+		return desc
+	}
+	if counterparty != "" {
+		return counterparty
+	}
+	paymentRef := strings.ToLower(tx.Type)
+	if tx.Currency != "" {
+		paymentRef += " " + tx.Currency
 	}
 	return paymentRef
 }
@@ -5929,7 +6145,7 @@ func printAccountSlugHelp(slug string) {
 	fmt.Printf("%sPUSH OPTIONS%s\n\n", f.Bold, f.Reset)
 	fmt.Printf("  %s--dry-run%s          Preview what would be pushed\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--force%s            Empty the journal first, then re-push everything\n", f.Yellow, f.Reset)
-	fmt.Printf("  %s--reconcile%s        Run the reconcile pass after the push (off by default)\n", f.Yellow, f.Reset)
+	fmt.Printf("  %s--skip-reconcile%s   Skip the post-push reconcile (auto-runs on small batches by default)\n", f.Yellow, f.Reset)
 	fmt.Printf("  %s--until <date>%s     Stop processing at this date end\n", f.Yellow, f.Reset)
 	if acc.Provider == "stripe" {
 		fmt.Printf("  %sStripe-only stage flags:%s\n", f.Dim, f.Reset)
@@ -5948,7 +6164,7 @@ func printAccountSlugHelp(slug string) {
 	fmt.Printf("  %s$ chb accounts %s pull%s\n", f.Dim, slug, f.Reset)
 	fmt.Printf("  %s$ chb accounts %s pull --since 2026-01-01%s\n", f.Dim, slug, f.Reset)
 	fmt.Printf("  %s$ chb accounts %s push --dry-run%s\n", f.Dim, slug, f.Reset)
-	fmt.Printf("  %s$ chb accounts %s push --reconcile%s\n", f.Dim, slug, f.Reset)
+	fmt.Printf("  %s$ chb odoo journals <id> reconcile%s\n", f.Dim, f.Reset)
 	fmt.Println()
 }
 
@@ -5966,7 +6182,6 @@ func printAccountsHelp() {
   %schb accounts <slug> pull --since <date>%s   Pull from a specific date onwards
   %schb accounts <slug> push%s              Push local transactions → linked Odoo journal
   %schb accounts <slug> push --dry-run%s    Preview what would be pushed
-  %schb accounts <slug> push --reconcile%s  Push + run reconcile pass (off by default)
   %schb accounts <slug> push --force%s      Empty the journal first, then re-push
   %schb accounts <slug> link%s              Link account to an Odoo bank journal
   %schb accounts <slug> balance [YYYY[/MM[/DD]]]%s   Historical balance at end of period
@@ -5981,10 +6196,10 @@ func printAccountsHelp() {
 `,
 		f.Bold, f.Reset, // title
 		f.Bold, f.Reset, // USAGE
-		// 13 USAGE rows
+		// 12 USAGE rows
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
-		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
+		f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Bold, f.Reset, // Note word
 		f.Bold, f.Reset, // ENVIRONMENT
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

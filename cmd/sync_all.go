@@ -273,6 +273,11 @@ func PushAllTargets(args []string) error {
 	}
 	var firstErr error
 	if os.Getenv("ODOO_URL") != "" {
+		// Show the Odoo target up front so the operator knows where
+		// writes are heading before any sub-step kicks off.
+		if creds, err := ResolveOdooCredentials(); err == nil && !HasFlag(args, "--dry-run") {
+			printOdooWriteBannerOnce(creds.URL, creds.DB)
+		}
 		if err := odooJournalsSyncAll(args); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -302,12 +307,12 @@ func PrintSyncCronHelp() {
   Designed to be safe to run unattended every hour:
     - Pull is read-only on remotes; cannot create duplicates.
     - Push auto-reconciles only when ≤ %d new lines were created
-      (large back-fills skip auto-reconcile, requiring --reconcile).
+      (large back-fills skip auto-reconcile; run
+      %schb odoo journals <id> reconcile%s to handle them explicitly).
 
 %sOPTIONS%s  (forwarded to both pull and push)
   %s--dry-run%s          Preview without writing anything
-  %s--reconcile%s        Force the Odoo reconcile pass even for big batches
-  %s--skip-reconcile%s   Skip the Odoo reconcile pass entirely
+  %s--skip-reconcile%s   Skip the auto-reconcile after push
   %s--since <date>%s     Pull from this date onwards (full history if older than cache)
   %s--history%s          Pull from the earliest cached month
   %s--verbose, -v%s      Show per-step progress instead of the compact view
@@ -324,14 +329,14 @@ func PrintSyncCronHelp() {
 		Fmt.Cyan, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,
 		reconcileAutoThreshold,
+		Fmt.Cyan, Fmt.Reset, // chb odoo journals <id> reconcile (inline hint)
 		Fmt.Bold, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
+		Fmt.Yellow, Fmt.Reset, // --dry-run
+		Fmt.Yellow, Fmt.Reset, // --skip-reconcile
+		Fmt.Yellow, Fmt.Reset, // --since
+		Fmt.Yellow, Fmt.Reset, // --history
+		Fmt.Yellow, Fmt.Reset, // --verbose, -v
+		Fmt.Yellow, Fmt.Reset, // --help, -h
 		Fmt.Bold, Fmt.Reset,
 		Fmt.Dim, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,
@@ -357,8 +362,7 @@ func printPushAllHelp() {
 
 %sOPTIONS%s
   %s--dry-run%s          Preview what would be pushed
-  %s--reconcile%s        Force the Odoo reconcile pass even for big batches
-  %s--skip-reconcile%s   Skip the Odoo reconcile pass entirely
+  %s--skip-reconcile%s   Skip the auto-reconcile after push
   %s--help, -h%s         Show this help
 
 %sCRON%s
@@ -372,10 +376,9 @@ func printPushAllHelp() {
 		Fmt.Cyan, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,
 		Fmt.Bold, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
-		Fmt.Yellow, Fmt.Reset,
+		Fmt.Yellow, Fmt.Reset, // --dry-run
+		Fmt.Yellow, Fmt.Reset, // --skip-reconcile
+		Fmt.Yellow, Fmt.Reset, // --help, -h
 		Fmt.Bold, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,

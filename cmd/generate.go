@@ -656,6 +656,7 @@ func Generate(args []string) error {
 		return nil
 	}
 
+	verbose := HasFlag(args, "--verbose", "-v") || HasFlag(args, "--debug")
 	dataDir := DataDir()
 	now := time.Now().In(BrusselsTZ())
 	posStartMonth, posEndMonth, posFound := ParseMonthRangeArg(args)
@@ -669,8 +670,6 @@ func Generate(args []string) error {
 		endMonth = posEndMonth
 	}
 
-	fmt.Printf("\n%s🔧 Generating derived data files...%s\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("%sDATA_DIR: %s%s\n\n", Fmt.Dim, dataDir, Fmt.Reset)
 	latestDir := filepath.Join(dataDir, "latest")
 	hadLatestDir := dirExists(latestDir)
 
@@ -680,14 +679,30 @@ func Generate(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("📋 Found %s: %s\n\n", Pluralize(len(years), "year", ""), strings.Join(years, ", "))
-
 	scopes := collectGenerateScopes(dataDir, years, startMonth, endMonth)
 	scopeYears := uniqueGenerateScopeYears(scopes)
-	if len(scopes) > 0 {
-		first := scopes[0].Year + "-" + scopes[0].Month
-		last := scopes[len(scopes)-1].Year + "-" + scopes[len(scopes)-1].Month
-		fmt.Printf("%sGeneration window: %s → %s%s\n\n", Fmt.Dim, first, last, Fmt.Reset)
+
+	if verbose {
+		fmt.Printf("\n%s🔧 Generating derived data files...%s\n", Fmt.Bold, Fmt.Reset)
+		fmt.Printf("%sDATA_DIR: %s%s\n\n", Fmt.Dim, dataDir, Fmt.Reset)
+		fmt.Printf("📋 Found %s: %s\n\n", Pluralize(len(years), "year", ""), strings.Join(years, ", "))
+		if len(scopes) > 0 {
+			first := scopes[0].Year + "-" + scopes[0].Month
+			last := scopes[len(scopes)-1].Year + "-" + scopes[len(scopes)-1].Month
+			fmt.Printf("%sGeneration window: %s → %s%s\n\n", Fmt.Dim, first, last, Fmt.Reset)
+		}
+	} else {
+		header := "Generating derived data"
+		if len(scopes) > 0 {
+			first := scopes[0].Year + "-" + scopes[0].Month
+			last := scopes[len(scopes)-1].Year + "-" + scopes[len(scopes)-1].Month
+			if first == last {
+				header += " for " + first
+			} else {
+				header += " for " + first + " → " + last
+			}
+		}
+		fmt.Printf("\n%s%s%s\n\n", Fmt.Bold, header, Fmt.Reset)
 	}
 
 	// Write latest/generated/ README
@@ -695,160 +710,185 @@ func Generate(args []string) error {
 
 	settings, _ := LoadSettings()
 
-	// 1. Generate images.json per month
-	fmt.Printf("📸 Generating images...\n")
-	totalImages := 0
-	for _, scope := range scopes {
-		n := generateMonthImagesGo(dataDir, scope.Year, scope.Month)
-		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "image", ""))
-			totalImages += n
+	// genStep runs fn with stdout swallowed (compact mode) or untouched
+	// (verbose), times it, and prints a live status line via StatusLine
+	// (compact) or a per-step banner (verbose). fn returns a short
+	// summary string ("247 images") shown after the spinner finishes.
+	genStep := func(label string, fn func() string) {
+		if verbose {
+			summary := fn()
+			if summary != "" {
+				fmt.Printf("  %s%s%s\n", Fmt.Dim, summary, Fmt.Reset)
+			}
+			return
 		}
+		sl := NewStatusLine(label)
+		SetActiveStatusLine(sl)
+		restore := silenceStdout()
+		summary := fn()
+		restore()
+		SetActiveStatusLine(nil)
+		sl.Final(Fmt.Green+"✓"+Fmt.Reset, summary)
 	}
+	_ = genStep // referenced below in step blocks
 
-	// Generate latest images (from latest/providers/discord/)
-	if hadLatestDir {
-		n := generateMonthImagesGo(dataDir, "latest", "")
-		if n > 0 {
-			fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "image", ""))
-			totalImages += n
+	genStep("Images", func() string {
+		total := 0
+		for _, scope := range scopes {
+			if n := generateMonthImagesGo(dataDir, scope.Year, scope.Month); n > 0 {
+				if verbose {
+					fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "image", ""))
+				}
+				total += n
+			}
 		}
-	}
-	fmt.Printf("  %s%d total images%s\n\n", Fmt.Dim, totalImages, Fmt.Reset)
-
-	// 2. Generate activity grid
-	fmt.Printf("📊 Generating activity grids...\n")
-	gridData := generateActivityGridGo(dataDir, years)
-	for _, year := range scopeYears {
-		generateYearActivityGridGo(dataDir, year, gridData)
-	}
-	fmt.Println()
-
-	// 3. Generate monthly contributors
-	fmt.Printf("👥 Generating monthly contributors...\n")
-	contributorsCache := newContributorsRunCache(dataDir)
-	for _, scope := range scopes {
-		n := generateMonthContributorsGo(dataDir, scope.Year, scope.Month, settings, contributorsCache, time.Time{})
-		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "contributor", ""))
+		if hadLatestDir {
+			if n := generateMonthImagesGo(dataDir, "latest", ""); n > 0 {
+				if verbose {
+					fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "image", ""))
+				}
+				total += n
+			}
 		}
-	}
-	// Also generate for latest/ — rolling 90-day window
-	if hadLatestDir {
-		cutoff := time.Now().UTC().AddDate(0, 0, -LatestContributorsWindowDays)
-		n := generateMonthContributorsGo(dataDir, "latest", "", settings, contributorsCache, cutoff)
-		if n > 0 {
-			fmt.Printf("  ✓ latest (%dd): %s\n", LatestContributorsWindowDays, Pluralize(n, "contributor", ""))
+		return Pluralize(total, "image", "")
+	})
+
+	genStep("Activity grids", func() string {
+		grid := generateActivityGridGo(dataDir, years)
+		for _, year := range scopeYears {
+			generateYearActivityGridGo(dataDir, year, grid)
 		}
-	}
-	contributorsCache.save()
-	fmt.Println()
+		return Pluralize(len(scopeYears), "year", "")
+	})
 
-	// 4. Generate top contributors (global contributors.json)
-	fmt.Printf("👥 Generating top contributors...\n")
-	generateTopContributorsGo(dataDir, settings)
-	fmt.Println()
-
-	// 5. Generate user profiles
-	fmt.Printf("👤 Generating user profiles...\n")
-	generateUserProfilesGo(dataDir, settings)
-	fmt.Println()
-
-	// 6. Generate yearly users
-	fmt.Printf("📅 Generating yearly users...\n")
-	for _, year := range scopeYears {
-		generateYearlyUsersGo(dataDir, year, settings)
-	}
-	fmt.Println()
-
-	// 7. Generate aggregated transactions
-	fmt.Printf("💰 Generating transactions...\n")
-	for _, scope := range scopes {
-		n := generateTransactionsGo(dataDir, scope.Year, scope.Month, settings)
-		if n > 0 {
-			fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "transaction", ""))
+	genStep("Monthly contributors", func() string {
+		cache := newContributorsRunCache(dataDir)
+		total := 0
+		for _, scope := range scopes {
+			if n := generateMonthContributorsGo(dataDir, scope.Year, scope.Month, settings, cache, time.Time{}); n > 0 {
+				if verbose {
+					fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "contributor", ""))
+				}
+				total += n
+			}
 		}
-	}
-	// Also generate for latest/
-	if hadLatestDir {
-		n := generateTransactionsGo(dataDir, "latest", "", settings)
-		if n > 0 {
-			fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "transaction", ""))
+		if hadLatestDir {
+			cutoff := time.Now().UTC().AddDate(0, 0, -LatestContributorsWindowDays)
+			if n := generateMonthContributorsGo(dataDir, "latest", "", settings, cache, cutoff); n > 0 {
+				if verbose {
+					fmt.Printf("  ✓ latest (%dd): %s\n", LatestContributorsWindowDays, Pluralize(n, "contributor", ""))
+				}
+				total += n
+			}
 		}
-	}
-	fmt.Println()
+		cache.save()
+		return Pluralize(total, "contributor", "")
+	})
 
-	// 8. Generate members from cached provider snapshots
-	fmt.Printf("👥 Generating members...\n")
-	generateMembersGo(dataDir, scopes)
-	fmt.Println()
+	genStep("Top contributors", func() string {
+		generateTopContributorsGo(dataDir, settings)
+		return "contributors.json"
+	})
 
-	// 8.5 Attach ticket-sale transactions to each event. Must run after
-	// transactions are regenerated so the Event → tx index is current.
-	fmt.Printf("🎟  Attaching ticket sales to events...\n")
-	enrichEventsWithTicketSales(dataDir)
-	fmt.Println()
+	genStep("User profiles", func() string {
+		generateUserProfilesGo(dataDir, settings)
+		return ""
+	})
 
-	// 9. Generate latest events
-	fmt.Printf("📅 Generating latest events...\n")
-	generateLatestEventsGo(dataDir, years)
-	generateMarkdownFiles(dataDir)
-	fmt.Println()
+	genStep("Yearly users", func() string {
+		for _, year := range scopeYears {
+			generateYearlyUsersGo(dataDir, year, settings)
+		}
+		return Pluralize(len(scopeYears), "year", "")
+	})
 
-	// 10. Generate counterparties
-	fmt.Printf("🏢 Generating counterparties...\n")
-	for _, scope := range scopes {
-		generateCounterpartiesGo(dataDir, scope.Year, scope.Month)
-	}
-	// Also generate for latest/
-	if hadLatestDir {
-		generateCounterpartiesGo(dataDir, "latest", "")
-	}
-	fmt.Println()
+	genStep("Transactions", func() string {
+		total := 0
+		for _, scope := range scopes {
+			if n := generateTransactionsGo(dataDir, scope.Year, scope.Month, settings); n > 0 {
+				if verbose {
+					fmt.Printf("  ✓ %s-%s: %s\n", scope.Year, scope.Month, Pluralize(n, "transaction", ""))
+				}
+				total += n
+			}
+		}
+		if hadLatestDir {
+			if n := generateTransactionsGo(dataDir, "latest", "", settings); n > 0 {
+				if verbose {
+					fmt.Printf("  ✓ latest: %s\n", Pluralize(n, "transaction", ""))
+				}
+				total += n
+			}
+		}
+		return Pluralize(total, "transaction", "")
+	})
 
-	// 11. Rebuild inbound-spread indexes (global; rebuilds even when the user
-	// only generated a single month, since spreads can target any month).
-	fmt.Printf("🔁 Rebuilding inbound-spread indexes...\n")
-	if err := rebuildInboundSpreads(dataDir); err != nil {
-		Warnf("  %s⚠ %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+	genStep("Members", func() string {
+		generateMembersGo(dataDir, scopes)
+		return ""
+	})
+
+	genStep("Event ticket sales", func() string {
+		enrichEventsWithTicketSales(dataDir)
+		return ""
+	})
+
+	genStep("Latest events", func() string {
+		generateLatestEventsGo(dataDir, years)
+		generateMarkdownFiles(dataDir)
+		return ""
+	})
+
+	genStep("Counterparties", func() string {
+		for _, scope := range scopes {
+			generateCounterpartiesGo(dataDir, scope.Year, scope.Month)
+		}
+		if hadLatestDir {
+			generateCounterpartiesGo(dataDir, "latest", "")
+		}
+		return ""
+	})
+
+	genStep("Inbound-spread indexes", func() string {
+		if err := rebuildInboundSpreads(dataDir); err != nil {
+			return "error: " + err.Error()
+		}
+		return ""
+	})
+
+	genStep("Host commissions", func() string {
+		if err := rebuildCommissions(dataDir); err != nil {
+			return "error: " + err.Error()
+		}
+		return ""
+	})
+
+	genStep("Monthly summaries", func() string {
+		total := 0
+		for _, scope := range scopes {
+			if generateMonthlyReportGo(dataDir, scope.Year, scope.Month, settings) {
+				if verbose {
+					fmt.Printf("  ✓ %s-%s: generated/summary.json\n", scope.Year, scope.Month)
+				}
+				total++
+			}
+		}
+		return Pluralize(total, "summary", "summaries")
+	})
+
+	genStep("Cross-month balances", func() string {
+		n, err := rebuildSummaryRollup(dataDir)
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return fmt.Sprintf("%d collective row%s", n, plural(n))
+	})
+
+	if verbose {
+		fmt.Printf("\n%s✅ All data generation complete!%s\n\n", Fmt.Green, Fmt.Reset)
 	} else {
-		fmt.Printf("  %sdone%s\n", Fmt.Dim, Fmt.Reset)
+		fmt.Println()
 	}
-	fmt.Println()
-
-	// 11b. Rebuild fiscal-host commissions (10% of each collective's monthly
-	// gross income, paid to the fiscal host). Must run before summaries so
-	// they get folded into the monthly aggregation.
-	fmt.Printf("💼 Rebuilding host commissions...\n")
-	if err := rebuildCommissions(dataDir); err != nil {
-		Warnf("  %s⚠ %v%s\n", Fmt.Yellow, err, Fmt.Reset)
-	} else {
-		fmt.Printf("  %sdone%s\n", Fmt.Dim, Fmt.Reset)
-	}
-	fmt.Println()
-
-	// 12. Generate monthly summaries
-	fmt.Printf("📄 Generating monthly summaries...\n")
-	totalReports := 0
-	for _, scope := range scopes {
-		if generateMonthlyReportGo(dataDir, scope.Year, scope.Month, settings) {
-			fmt.Printf("  ✓ %s-%s: generated/summary.json\n", scope.Year, scope.Month)
-			totalReports++
-		}
-	}
-	fmt.Printf("  %s%s%s\n\n", Fmt.Dim, Pluralize(totalReports, "summary", "summaries"), Fmt.Reset)
-
-	// 13. Rebalance per-collective startBalance/endBalance across months and
-	// write the global rollup latest/generated/summary.json.
-	fmt.Printf("📊 Computing cross-month balances...\n")
-	if n, err := rebuildSummaryRollup(dataDir); err != nil {
-		Warnf("  %s⚠ %v%s\n", Fmt.Yellow, err, Fmt.Reset)
-	} else {
-		fmt.Printf("  %s✓%s latest/generated/summary.json (%d collective rows)\n", Fmt.Green, Fmt.Reset, n)
-	}
-	fmt.Println()
-
-	fmt.Printf("\n%s✅ All data generation complete!%s\n\n", Fmt.Green, Fmt.Reset)
 	return nil
 }
 

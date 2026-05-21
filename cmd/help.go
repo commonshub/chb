@@ -70,7 +70,7 @@ func PrintHelp(version string) {
   $ chb odoo pull                           # fetch Odoo state (categories, partners, journal lines)
   $ chb odoo journals push                  # push to every linked Odoo journal
   $ chb odoo journals 28 push --dry-run     # preview push for journal #28
-  $ chb odoo journals 48 push --reconcile   # push + run reconcile pass after
+  $ chb odoo journals 48 reconcile          # run the reconcile verb on one journal
   $ chb odoo journals 48 pull               # refresh local cache for one journal
   $ chb --odoo-db citizenspring-test2 odoo journals 48
   $ chb nostr push                          # publish pending Nostr events

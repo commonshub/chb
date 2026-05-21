@@ -33,6 +33,7 @@ type OdooCacheLine struct {
 	PaymentRef     string                 `json:"paymentRef,omitempty"`
 	UniqueImportID string                 `json:"uniqueImportId,omitempty"`
 	Amount         float64                `json:"amount"`
+	IsReconciled   bool                   `json:"isReconciled,omitempty"`
 	Narration      string                 `json:"narration,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -139,7 +140,7 @@ func writeOdooJournalLinesCacheFile(journalID int, lines []OdooCacheLine) (int, 
 func fetchOdooJournalLinesForCache(creds *OdooCredentials, uid int, journalID int) ([]OdooCacheLine, error) {
 	rows, err := odooSearchReadAllMapsLabeled(creds, uid, "account.bank.statement.line",
 		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
-		[]string{"id", "partner_id", "move_id", "unique_import_id", "date", "payment_ref", "amount", "narration"},
+		[]string{"id", "partner_id", "move_id", "unique_import_id", "date", "payment_ref", "amount", "narration", "is_reconciled"},
 		"date asc, id asc",
 		fmt.Sprintf("Odoo journal #%d lines", journalID))
 	if err != nil {
@@ -167,6 +168,7 @@ func fetchOdooJournalLinesForCache(creds *OdooCredentials, uid int, journalID in
 			PaymentRef:     odooString(row["payment_ref"]),
 			UniqueImportID: odooString(row["unique_import_id"]),
 			Amount:         odooFloat(row["amount"]),
+			IsReconciled:   odooBool(row["is_reconciled"]),
 			Narration:      narration,
 			Metadata:       parseOdooLineNarration(narration),
 		}

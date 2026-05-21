@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,15 +34,31 @@ func runCounterpartiesTUI(kind, direction, scope string, rows []counterpartyAgg)
 	catInput.CharLimit = 64
 	catInput.Width = 32
 
+	// Sorted known slugs power the autocomplete hint and the
+	// confirm-on-new prompt. Loaded once at TUI launch — the user can
+	// add new ones via the confirm flow, but those persist via
+	// AddCollective / AddCategory and re-loading on next launch.
+	knownColls := CollectiveSlugs()
+	sort.Strings(knownColls)
+	knownCats := make([]string, 0, len(LoadCategories()))
+	for _, c := range LoadCategories() {
+		if c.Slug != "" {
+			knownCats = append(knownCats, c.Slug)
+		}
+	}
+	sort.Strings(knownCats)
+
 	m := counterpartiesTUIModel{
-		title:      counterpartiesTUITitle(kind, scope),
-		kind:       kind,
-		direction:  direction,
-		rows:       rows,
-		selected:   map[int]bool{},
-		collInput:  collInput,
-		catInput:   catInput,
-		focusField: 0,
+		title:            counterpartiesTUITitle(kind, scope),
+		kind:             kind,
+		direction:        direction,
+		rows:             rows,
+		selected:         map[int]bool{},
+		collInput:        collInput,
+		catInput:         catInput,
+		focusField:       0,
+		knownCollectives: knownColls,
+		knownCategories:  knownCats,
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -64,6 +81,7 @@ const (
 	cpModeList counterpartiesTUIMode = iota
 	cpModeEdit
 	cpModeDetail
+	cpModeConfirmNew // confirming creation of a new collective/category slug
 )
 
 type counterpartiesTUIModel struct {
@@ -79,6 +97,16 @@ type counterpartiesTUIModel struct {
 	collInput  textinput.Model
 	catInput   textinput.Model
 	focusField int // 0 = collective, 1 = category
+
+	// Known slugs loaded from settings — drive the autocomplete hint
+	// underneath each input and the create-confirm prompt.
+	knownCollectives []string
+	knownCategories  []string
+	// Pending creation flags set when the operator presses enter on a
+	// value that doesn't match any known slug. View renders a y/N prompt
+	// based on these; updateConfirmNew consumes them.
+	createCollective string
+	createCategory   string
 
 	status      string
 	statusError bool
@@ -100,6 +128,8 @@ func (m counterpartiesTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEdit(msg)
 		case cpModeDetail:
 			return m.updateDetail(msg)
+		case cpModeConfirmNew:
+			return m.updateConfirmNew(msg)
 		}
 		return m.updateList(msg)
 	}
@@ -213,7 +243,40 @@ func (m counterpartiesTUIModel) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.status = "Edit cancelled."
 		m.statusError = false
 		return m, nil
-	case "tab", "shift+tab":
+	case "tab":
+		// Soft autocomplete: if the focused field's text is a prefix of
+		// exactly one known slug, complete it. Otherwise rotate focus
+		// like before. Saves keystrokes when there's no ambiguity.
+		focusedInput := &m.collInput
+		known := m.knownCollectives
+		if m.focusField == 1 {
+			focusedInput = &m.catInput
+			known = m.knownCategories
+		}
+		prefix := strings.ToLower(strings.TrimSpace(focusedInput.Value()))
+		if prefix != "" {
+			var matches []string
+			for _, s := range known {
+				if strings.HasPrefix(strings.ToLower(s), prefix) {
+					matches = append(matches, s)
+				}
+			}
+			if len(matches) == 1 {
+				focusedInput.SetValue(matches[0])
+				focusedInput.SetCursor(len(matches[0]))
+				return m, nil
+			}
+		}
+		m.focusField = 1 - m.focusField
+		if m.focusField == 0 {
+			m.collInput.Focus()
+			m.catInput.Blur()
+		} else {
+			m.collInput.Blur()
+			m.catInput.Focus()
+		}
+		return m, textinput.Blink
+	case "shift+tab":
 		m.focusField = 1 - m.focusField
 		if m.focusField == 0 {
 			m.collInput.Focus()
@@ -229,6 +292,24 @@ func (m counterpartiesTUIModel) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		if coll == "" && cat == "" {
 			m.status = "Set at least one of collective or category before pressing enter"
 			m.statusError = true
+			return m, nil
+		}
+		// Safety net: any unknown slug triggers a y/N confirm so the
+		// operator can't typo their way into a new collective/category
+		// silently. Confirmed slugs are persisted via AddCollective /
+		// AddCategory in updateConfirmNew before applyRules runs.
+		m.createCollective = ""
+		m.createCategory = ""
+		if coll != "" && !containsSlug(m.knownCollectives, coll) {
+			m.createCollective = coll
+		}
+		if cat != "" && !containsSlug(m.knownCategories, cat) {
+			m.createCategory = cat
+		}
+		if m.createCollective != "" || m.createCategory != "" {
+			m.mode = cpModeConfirmNew
+			m.status = ""
+			m.statusError = false
 			return m, nil
 		}
 		added, merged, skipped, err := m.applyRules(coll, cat)
@@ -250,6 +331,57 @@ func (m counterpartiesTUIModel) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		m.catInput, cmd = m.catInput.Update(msg)
 	}
 	return m, cmd
+}
+
+// updateConfirmNew handles the y/N prompt shown when the operator typed
+// a collective or category slug that doesn't match any known one. On
+// 'y' we persist the new slug(s) via AddCollective / AddCategory, then
+// proceed with applyRules; on anything else we bounce back to edit so
+// the operator can correct the typo.
+func (m counterpartiesTUIModel) updateConfirmNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if m.createCollective != "" {
+			AddCollective(m.createCollective)
+			m.knownCollectives = append(m.knownCollectives, m.createCollective)
+			sort.Strings(m.knownCollectives)
+		}
+		if m.createCategory != "" {
+			// Direction baked from the list kind: vendors → expense,
+			// customers → income. Avoids the operator having to pick.
+			catDir := "expense"
+			if m.kind == "customers" {
+				catDir = "income"
+			}
+			AddCategory(CategoryDef{Slug: m.createCategory, Label: m.createCategory, Direction: catDir})
+			m.knownCategories = append(m.knownCategories, m.createCategory)
+			sort.Strings(m.knownCategories)
+		}
+		coll := strings.TrimSpace(m.collInput.Value())
+		cat := strings.TrimSpace(m.catInput.Value())
+		added, merged, skipped, err := m.applyRules(coll, cat)
+		if err != nil {
+			m.status = fmt.Sprintf("Failed: %v", err)
+			m.statusError = true
+			m.mode = cpModeEdit
+			return m, nil
+		}
+		m.mode = cpModeList
+		m.selected = map[int]bool{}
+		m.createCollective = ""
+		m.createCategory = ""
+		m.status = fmt.Sprintf("✓ %d added, %d merged, %d skipped", added, merged, skipped)
+		m.statusError = false
+		return m, nil
+	case "esc", "n", "N":
+		m.createCollective = ""
+		m.createCategory = ""
+		m.mode = cpModeEdit
+		m.status = "Cancelled — fix the typo or tab/enter again to confirm."
+		m.statusError = false
+		return m, textinput.Blink
+	}
+	return m, nil
 }
 
 // targets returns the row indices the next [e] action will affect:
@@ -274,6 +406,50 @@ func (m counterpartiesTUIModel) commonCollective() string {
 
 func (m counterpartiesTUIModel) commonCategory() string {
 	return commonField(m.targets(), m.rows, func(a counterpartyAgg) string { return a.Category })
+}
+
+// containsSlug reports whether `s` is a case-insensitive exact match of
+// any slug in the known list.
+func containsSlug(known []string, s string) bool {
+	target := strings.ToLower(strings.TrimSpace(s))
+	if target == "" {
+		return false
+	}
+	for _, k := range known {
+		if strings.EqualFold(k, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchHint returns a "matches: a, b, c" suffix for the autocomplete
+// row under each input. Shows nothing once an exact match exists (the
+// value is unambiguous — no need for the operator to scan).
+func matchHint(value string, known []string) string {
+	prefix := strings.ToLower(strings.TrimSpace(value))
+	if prefix == "" {
+		return ""
+	}
+	for _, k := range known {
+		if strings.EqualFold(k, prefix) {
+			return "✓ known"
+		}
+	}
+	var matches []string
+	for _, k := range known {
+		if strings.HasPrefix(strings.ToLower(k), prefix) {
+			matches = append(matches, k)
+		}
+	}
+	if len(matches) == 0 {
+		return "(new — will prompt to create)"
+	}
+	limit := 5
+	if len(matches) > limit {
+		matches = append(matches[:limit], fmt.Sprintf("+%d more", len(matches)-limit))
+	}
+	return "matches: " + strings.Join(matches, ", ")
 }
 
 func commonField(idxs []int, rows []counterpartyAgg, pick func(counterpartyAgg) string) string {
@@ -482,11 +658,34 @@ func (m counterpartiesTUIModel) View() string {
 		b.WriteString("\n  ")
 		b.WriteString("Collective: ")
 		b.WriteString(m.collInput.View())
+		if hint := matchHint(m.collInput.Value(), m.knownCollectives); hint != "" {
+			b.WriteString("  ")
+			b.WriteString(cpTUIDimStyle.Render(hint))
+		}
 		b.WriteString("\n  ")
 		b.WriteString("Category:   ")
 		b.WriteString(m.catInput.View())
+		if hint := matchHint(m.catInput.Value(), m.knownCategories); hint != "" {
+			b.WriteString("  ")
+			b.WriteString(cpTUIDimStyle.Render(hint))
+		}
 		b.WriteString("\n\n  ")
-		b.WriteString(cpTUIDimStyle.Render("[tab] switch field   [enter] apply   [esc] cancel"))
+		b.WriteString(cpTUIDimStyle.Render("[tab] complete / switch field   [enter] apply   [esc] cancel"))
+		b.WriteString("\n")
+	case cpModeConfirmNew:
+		b.WriteString("\n")
+		b.WriteString(cpTUIHeaderStyle.Render("⚠ Create new entries?"))
+		b.WriteString("\n")
+		if m.createCollective != "" {
+			b.WriteString("  ")
+			b.WriteString(fmt.Sprintf("Collective %q is not in collectives.json\n", m.createCollective))
+		}
+		if m.createCategory != "" {
+			b.WriteString("  ")
+			b.WriteString(fmt.Sprintf("Category %q is not in categories.json\n", m.createCategory))
+		}
+		b.WriteString("\n  ")
+		b.WriteString(cpTUIDimStyle.Render("Create + apply rule? [y] yes, persist + apply   [n/esc] back to edit"))
 		b.WriteString("\n")
 	case cpModeDetail:
 		b.WriteString("\n")

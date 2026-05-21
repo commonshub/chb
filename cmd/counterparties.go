@@ -30,6 +30,8 @@ func runCounterpartyView(args []string, kind string) {
 	csv := HasFlag(args, "--csv")
 	interactive := HasFlag(args, "-i", "--interactive")
 	all := HasFlag(args, "--all")
+	noCategory := HasFlag(args, "--no-category")
+	noCollective := HasFlag(args, "--no-collective")
 	limit := GetNumber(args, []string{"-n", "--limit"}, counterpartiesDefaultLimit)
 	posYear, posMonth, _ := ParseYearMonthArg(args)
 
@@ -43,6 +45,24 @@ func runCounterpartyView(args []string, kind string) {
 
 	txs := loadCounterpartyTxs(direction, posYear, posMonth, cat)
 	aggregates := aggregateCounterparties(txs)
+	if noCategory || noCollective {
+		// Keep only partners whose tx population still lacks the picked
+		// dimension(s). Uses the majority Category/Collective the
+		// aggregator already computed — partners with even one categorized
+		// tx fall out, which is what the operator wants when shopping for
+		// "review-me" candidates.
+		filtered := aggregates[:0]
+		for _, a := range aggregates {
+			if noCategory && a.Category != "" {
+				continue
+			}
+			if noCollective && a.Collective != "" {
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		aggregates = filtered
+	}
 	sort.Slice(aggregates, func(i, j int) bool {
 		return aggregates[i].Volume > aggregates[j].Volume
 	})
@@ -367,6 +387,8 @@ func printCounterpartiesHelp(kind string) {
 %sOPTIONS%s
   %s-i%s, %s--interactive%s    Open a TUI: arrow keys to move, [space] to select,
                        [e] to add a categorization rule for the selection
+  %s--no-category%s        Keep only counterparties whose txs have no category
+  %s--no-collective%s      Keep only counterparties whose txs have no collective
   %s-n%s <N>, %s--limit%s <N>   Limit output rows (default %d, use --all to show all)
   %s--all%s                Show every counterparty
   %s--csv%s                Output CSV instead of a formatted table
@@ -379,7 +401,9 @@ func printCounterpartiesHelp(kind string) {
 		f.Cyan, kind, f.Reset,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
-		f.Yellow, f.Reset, f.Yellow, f.Reset,
+		f.Yellow, f.Reset, f.Yellow, f.Reset, // -i, --interactive
+		f.Yellow, f.Reset,                    // --no-category
+		f.Yellow, f.Reset,                    // --no-collective
 		f.Yellow, f.Reset, f.Yellow, f.Reset, counterpartiesDefaultLimit,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

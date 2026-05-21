@@ -594,7 +594,12 @@ func OdooJournals(args []string) error {
 				reconcileArgs := append([]string{args[0]}, args[2:]...)
 				return OdooReconcileCommand(reconcileArgs)
 			}
-			return odooJournalReconcile(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--verbose", "-v"))
+			return odooJournalReconcileInteractive(creds, uid, journalID,
+				HasFlag(args, "--yes", "-y"),
+				HasFlag(args, "--dry-run"),
+				HasFlag(args, "--verbose", "-v"),
+				HasFlag(args, "--interactive", "-i"),
+			)
 		}
 		if len(args) >= 2 && args[1] == "lines" {
 			return odooJournalLines(creds, uid, journalID, args[2:])
@@ -928,28 +933,26 @@ collective / accountCode / partnerId from each tx (written by
   %s--transactions%s         Stripe-only: import statement lines/statements/fees
   %s--partners%s             Stripe-only: link/create partners and collective tags
   %s--accounts%s             Stripe-only: apply account rules to journal lines
-  %s--metadata%s             Stripe-only: refresh descriptions and narration metadata
-  %s--reconcile%s            Stripe-only: reconcile journal lines
+  %s--metadata%s             Stripe & blockchain: refresh payment_ref + narration on existing lines
   %s--payout <id>%s          Stripe-only: limit to one payout
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset,
 			f.Bold, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset, f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset, f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset,
-			f.Yellow, f.Reset, // --metadata
+			f.Yellow, f.Reset,                       // --dry-run
+			f.Yellow, f.Reset, f.Yellow, f.Reset,    // -n, --limit
+			f.Yellow, f.Reset,                       // --force
+			f.Yellow, f.Reset,                       // --reset
+			f.Yellow, f.Reset, f.Yellow, f.Reset,    // -y, --yes
+			f.Yellow, f.Reset,                       // --history
+			f.Yellow, f.Reset,                       // --since
+			f.Yellow, f.Reset,                       // --months
+			f.Yellow, f.Reset,                       // --until
+			f.Yellow, f.Reset,                       // --skip-reconciliation
+			f.Yellow, f.Reset,                       // --transactions
+			f.Yellow, f.Reset,                       // --partners
+			f.Yellow, f.Reset,                       // --accounts
+			f.Yellow, f.Reset,                       // --metadata
+			f.Yellow, f.Reset,                       // --payout
 		)
 	case "sync-all":
 		fmt.Printf(`
@@ -3053,7 +3056,7 @@ func PrintOdooHelp() {
 	fmt.Printf("  %s%schb odoo journals <id>%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sShow journal details + count of local txs not yet pushed (--verbose lists them all)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> push%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sPush local transactions into one journal. Add --reconcile to also run the reconcile pass.%s\n", f.Dim, f.Reset)
+	fmt.Printf("    %sPush local transactions into one journal. Reconcile runs automatically on small batches (≤%d new lines).%s\n", f.Dim, reconcileAutoThreshold, f.Reset)
 	fmt.Printf("    %sUse --dry-run to preview, --history for a full duplicate check%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> pull%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sRefresh the local journal-lines cache for one journal (cheaper than full chb odoo pull)%s\n\n", f.Dim, f.Reset)

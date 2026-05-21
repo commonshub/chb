@@ -19,20 +19,6 @@ const odooInternalTransferAccountCode = "580000"
 
 var odooInvoiceReferencePattern = regexp.MustCompile(`\b[A-Z]+/\d{4}/\d+\b`)
 
-type odooReconcileStats struct {
-	Scanned           int
-	Reconciled        int
-	InternalTransfers int
-	Ambiguous         int
-	NoPartner         int
-	NoMatch           int
-	Errors            int
-	DryRun            bool
-	Verbose           bool
-	Details           []string
-	Rows              []odooReconcileReviewRow
-}
-
 type odooStatementLineForReconcile struct {
 	ID                int
 	Date              string
@@ -73,55 +59,59 @@ type odooLineReconcileResult struct {
 	CandidateMoveName string
 }
 
-type odooReconcileReviewRow struct {
-	Date           string
-	Counterparty   string
-	Amount         float64
-	PotentialMatch string
-	Reason         string
-	Actionable     bool
+func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose bool) error {
+	return odooJournalReconcileInteractive(creds, uid, journalID, assumeYes, dryRun, verbose, false)
 }
 
-func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose bool) error {
-	lines, err := fetchJournalUnreconciledStatementLines(creds, uid, journalID)
+// odooJournalReconcileInteractive is the variant that surfaces the
+// `-i` / `--interactive` flag — used by `chb odoo journals <id> reconcile`
+// from the CLI dispatch. Auto-reconcile-after-push calls (cron path) use
+// the non-interactive odooJournalReconcile so they never block on stdin.
+//
+// Both --dry-run and live mode share the same matcher (computeReconcileMatches),
+// so the summary you see before confirming is what gets applied. Live mode adds
+// a counterpart-reset pre-pass (only run after confirmation) and an apply phase
+// that actually calls account.move.line.reconcile via XML-RPC.
+func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose, interactive bool) error {
+	header := "Reconcile preview for journal #%d (local-only)"
+	if !dryRun {
+		// Show the write target up front — before the confirm prompt, so
+		// the operator can abort if it's the wrong DB.
+		printOdooWriteBannerOnce(creds.URL, creds.DB)
+		header = "Reconciling journal #%d"
+	}
+	fmt.Printf("\n  %s"+header+"%s\n\n", Fmt.Bold, journalID, Fmt.Reset)
+
+	set, _, err := computeReconcileMatches(journalID, interactive)
 	if err != nil {
+		if err == errNoLocalCandidates {
+			fmt.Printf("  %sNo open invoices or bills in the local private cache.%s\n", Fmt.Yellow, Fmt.Reset)
+			fmt.Printf("  %s(Run `chb odoo pull` to refresh, or check that ODOO_URL gives access to the records.)%s\n\n", Fmt.Dim, Fmt.Reset)
+			return nil
+		}
 		return err
 	}
-	stats := &odooReconcileStats{DryRun: dryRun, Verbose: verbose}
-	fmt.Printf("\n  %sReconciling journal #%d%s\n", Fmt.Bold, journalID, Fmt.Reset)
-	fmt.Printf("  %s%s%s\n\n", Fmt.Dim, Pluralize(len(lines), "unreconciled statement line", ""), Fmt.Reset)
-	if len(lines) == 0 {
+
+	if dryRun {
+		printReconcileMatches(set, verbose)
+		fmt.Printf("  %s(local-only preview — no Odoo calls. Re-run without --dry-run to apply.)%s\n\n",
+			Fmt.Dim, Fmt.Reset)
 		return nil
 	}
 
-	// Pre-pass: lines whose counterpart is already on A/R or A/P were
-	// over-categorized by a previous push (typically a catch-all mapping
-	// rule). Reconcile can't match them against invoices because the
-	// counterpart is a free-floating credit/debit instead of suspense.
-	// Reset those back to the journal's suspense account so the regular
-	// reconcile flow below can replace it with the real invoice match.
-	resetCount, err := resetOverCategorizedToSuspense(creds, uid, journalID, lines, dryRun, verbose)
-	if err != nil {
-		return fmt.Errorf("reset over-categorized lines: %v", err)
-	}
-	if resetCount > 0 {
-		// Re-fetch — the lines we just reset now have a different
-		// counterpart account, and the reference-match step downstream
-		// needs the fresh state.
-		lines, err = fetchJournalUnreconciledStatementLines(creds, uid, journalID)
-		if err != nil {
-			return err
-		}
+	// Live mode: show counts before confirming so the operator sees the
+	// same numbers --dry-run does (matched / ambiguous / no-match / dupes).
+	printReconcileSummary(set)
+	winners := set.unambiguousWinners()
+	if len(winners) == 0 {
+		fmt.Printf("\n  %sNothing to reconcile.%s Re-run with %s-i%s to resolve ambiguous matches.\n\n",
+			Fmt.Dim, Fmt.Reset, Fmt.Bold, Fmt.Reset)
+		return nil
 	}
 
-	referenceCandidates, err := fetchOpenMoveCandidatesByReferenceForStatementLines(creds, uid, lines)
-	if err != nil {
-		return err
-	}
-
-	if !assumeYes && !dryRun {
-		fmt.Printf("  %sThis will reconcile unambiguous matches and mark detected internal transfers on Odoo.%s [y/N] ",
-			Fmt.Bold, Fmt.Reset)
+	if !assumeYes {
+		fmt.Printf("\n  %sReconcile %d match%s on Odoo?%s [y/N] ",
+			Fmt.Bold, len(winners), plural(len(winners)), Fmt.Reset)
 		reader := bufio.NewReader(os.Stdin)
 		resp, _ := reader.ReadString('\n')
 		resp = strings.TrimSpace(strings.ToLower(resp))
@@ -131,17 +121,121 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 		}
 	}
 
-	for _, line := range lines {
-		var amountCandidates []odooMoveCandidate
-		var amountErr error
-		if verbose {
-			amountCandidates, amountErr = findOpenMoveCandidatesByAmountForStatementLine(creds, uid, line)
-		}
-		result := tryReconcileStatementLineWithReferenceCandidates(creds, uid, line, dryRun, referenceCandidates[line.ID])
-		recordOdooReconcileResult(stats, line, result, amountCandidates, amountErr)
+	// Pre-pass: reset counterparts that landed on A/R or A/P (typically
+	// from a catch-all OdooMapping rule). Reconcile won't replace those
+	// without first putting them back on the journal's suspense account.
+	// Only touches the bank lines we're about to act on.
+	resetTargets := make([]odooStatementLineForReconcile, 0, len(winners))
+	for _, w := range winners {
+		resetTargets = append(resetTargets, odooStatementLineForReconcile{ID: w.Line.ID, MoveID: w.Line.MoveID})
 	}
-	printOdooReconcileStats(stats)
+	if _, err := resetOverCategorizedToSuspense(creds, uid, journalID, resetTargets, false, verbose); err != nil {
+		return fmt.Errorf("reset over-categorized lines: %v", err)
+	}
+
+	// Apply phase: build adapter structs from the local cache + matcher
+	// results and call reconcileStatementLineWithMove for each winner.
+	// MoveID + Amount are the only fields it actually uses on `line`;
+	// candidate.ID + AmountResidual are the only fields it uses on `move`.
+	var reconciled, alreadyDone, failed int
+	touchedInvoiceMoveIDs := make([]int, 0, len(winners))
+	for _, w := range winners {
+		line := odooStatementLineForReconcile{
+			ID:     w.Line.ID,
+			MoveID: w.Line.MoveID,
+			Amount: w.Line.Amount,
+		}
+		cand := w.Hits[0]
+		move := odooMoveCandidate{
+			ID:             cand.ID,
+			Name:           cand.Number,
+			PartnerID:      cand.PartnerID,
+			PartnerName:    cand.PartnerName,
+			AmountResidual: cand.Residual,
+		}
+		err := reconcileStatementLineWithMove(creds, uid, line, move)
+		if err == nil {
+			reconciled++
+			touchedInvoiceMoveIDs = append(touchedInvoiceMoveIDs, cand.ID)
+			if verbose {
+				fmt.Printf("  %s✓%s line #%d %s %s → %s %s\n",
+					Fmt.Green, Fmt.Reset, line.ID, w.Line.Date,
+					formatBalancePlain(line.Amount, "EUR"), cand.Kind, cand.label())
+			}
+			continue
+		}
+		// Cache-staleness post-conditions (invoice already paid, line
+		// already reconciled). Local cache showed open but Odoo finished
+		// it in another session. Treat as a no-op rather than failure.
+		if reconcileStaleCacheError(err) {
+			alreadyDone++
+			touchedInvoiceMoveIDs = append(touchedInvoiceMoveIDs, cand.ID)
+			if verbose {
+				fmt.Printf("  %s·%s line #%d → %s %s: %s\n",
+					Fmt.Dim, Fmt.Reset, line.ID, cand.Kind, cand.label(),
+					"already reconciled in Odoo (cache stale)")
+			}
+			continue
+		}
+		failed++
+		if verbose {
+			fmt.Printf("  %s✗%s line #%d → %s %s: %v\n", Fmt.Red, Fmt.Reset, line.ID, cand.Kind, cand.label(), err)
+		}
+	}
+
+	fmt.Printf("\n  %sReconciled %d match%s%s",
+		Fmt.Green, reconciled, plural(reconciled), Fmt.Reset)
+	if alreadyDone > 0 {
+		fmt.Printf(" (%s%d already reconciled — cache was stale%s)", Fmt.Dim, alreadyDone, Fmt.Reset)
+	}
+	if failed > 0 {
+		fmt.Printf(" (%s%d failed%s)", Fmt.Red, failed, Fmt.Reset)
+	}
+	fmt.Println()
+	if failed > 0 && !verbose {
+		fmt.Printf("  %sRe-run with --verbose to see per-line failures.%s\n", Fmt.Dim, Fmt.Reset)
+	}
+
+	// Refresh local caches so they reflect the writes we just made:
+	//   - journal-lines cache: counterpart account_id + reconciled flags
+	//   - private invoice/bill caches: payment_state + residual
+	// Without this the next dry-run would keep showing already-applied
+	// matches as "open" and `chb pull` would be required to recover.
+	if reconciled > 0 || alreadyDone > 0 {
+		if count, err := writeOdooJournalLinesCache(creds, uid, journalID); err != nil {
+			fmt.Printf("  %s⚠ journal cache refresh failed: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		} else {
+			fmt.Printf("  %s↻ Refreshed local cache for journal #%d (%d line%s)%s\n",
+				Fmt.Dim, journalID, count, plural(count), Fmt.Reset)
+		}
+		if patched, err := refreshTouchedInvoiceCache(creds, uid, touchedInvoiceMoveIDs); err != nil {
+			fmt.Printf("  %s⚠ invoice cache refresh failed: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		} else if patched > 0 {
+			noun := "entries"
+			if patched == 1 {
+				noun = "entry"
+			}
+			fmt.Printf("  %s↻ Patched %d invoice/bill %s in local cache%s\n",
+				Fmt.Dim, patched, noun, Fmt.Reset)
+		}
+	}
+	fmt.Println()
 	return nil
+}
+
+// reconcileStaleCacheError reports whether err is one of Odoo's
+// "you tried to reconcile something that's already reconciled / paid"
+// errors. Those indicate the local match was real at pull time but
+// Odoo settled the invoice in the meantime — not a real failure.
+func reconcileStaleCacheError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no open a/r or a/p line") ||
+		strings.Contains(msg, "écritures comptables qui le sont déjà") ||
+		strings.Contains(msg, "already reconciled") ||
+		strings.Contains(msg, "déjà lettré")
 }
 
 func reconcileCreatedStatementLine(creds *OdooCredentials, uid int, lineID int, dryRun bool, stats *syncStats) {
@@ -224,44 +318,6 @@ func recordSyncReconcileResult(stats *syncStats, line odooStatementLineForReconc
 		stats.ReconcileNoPartner++
 	case result.NoMatch:
 		stats.ReconcileNoMatch++
-	}
-}
-
-func recordOdooReconcileResult(stats *odooReconcileStats, line odooStatementLineForReconcile, result odooLineReconcileResult, amountCandidates []odooMoveCandidate, amountErr error) {
-	stats.Scanned++
-	potentialMatch := formatOdooPotentialMatch(amountCandidates, amountErr)
-	if potentialMatch == "-" && result.CandidateMoveName != "" {
-		potentialMatch = result.CandidateMoveName
-	}
-	stats.Rows = append(stats.Rows, odooReconcileReviewRow{
-		Date:           line.Date,
-		Counterparty:   odooStatementLineCounterparty(line),
-		Amount:         line.Amount,
-		PotentialMatch: potentialMatch,
-		Reason:         odooReconcileReason(result, amountErr),
-		Actionable:     result.Reconciled || result.InternalTransfer,
-	})
-	switch {
-	case result.Err != nil:
-		stats.Errors++
-		stats.Details = append(stats.Details, formatOdooReconcileDetail(line, result))
-	case result.InternalTransfer:
-		stats.InternalTransfers++
-		if stats.DryRun {
-			stats.Details = append(stats.Details, formatOdooReconcileDetail(line, result))
-		}
-	case result.Reconciled:
-		stats.Reconciled++
-		if stats.DryRun {
-			stats.Details = append(stats.Details, formatOdooReconcileDetail(line, result))
-		}
-	case result.Ambiguous:
-		stats.Ambiguous++
-		stats.Details = append(stats.Details, formatOdooReconcileDetail(line, result))
-	case result.NoPartner:
-		stats.NoPartner++
-	case result.NoMatch:
-		stats.NoMatch++
 	}
 }
 
@@ -364,6 +420,10 @@ func tryReconcileStatementLineWithReferenceCandidates(creds *OdooCredentials, ui
 // the journal's suspense account. That makes the line eligible for the
 // normal reconcile flow that follows.
 //
+// Reconciled counterparts are skipped — those are successfully-matched
+// payments, not over-categorization, and resetting them would undo a
+// completed reconcile.
+//
 // Returns the number of lines reset (0 on no-op or dry-run).
 func resetOverCategorizedToSuspense(creds *OdooCredentials, uid int, journalID int, lines []odooStatementLineForReconcile, dryRun, verbose bool) (int, error) {
 	if len(lines) == 0 {
@@ -381,22 +441,38 @@ func resetOverCategorizedToSuspense(creds *OdooCredentials, uid int, journalID i
 		return 0, nil
 	}
 
-	counterparts, err := fetchCounterpartMoveLinesByMoveID(creds, uid, moveIDs)
+	// Query directly for unreconciled A/R or A/P counterparts. This
+	// avoids the "first non-cash line wins" heuristic in
+	// fetchCounterpartMoveLinesByMoveID, which on a partially-reconciled
+	// move would surface the already-reconciled line.
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{
+			[]interface{}{"move_id", "in", intsToInterfaces(moveIDs)},
+			[]interface{}{"account_type", "in", []interface{}{"asset_receivable", "liability_payable"}},
+			[]interface{}{"reconciled", "=", false},
+		},
+		[]string{"id", "move_id", "account_type"},
+		"id asc",
+	)
 	if err != nil {
 		return 0, err
 	}
-
 	movesToReset := make([]int, 0)
 	counterpartsToReset := make([]int, 0)
-	for moveID, info := range counterparts {
-		switch info.AccountType {
-		case "asset_receivable", "liability_payable":
-			movesToReset = append(movesToReset, moveID)
-			counterpartsToReset = append(counterpartsToReset, info.LineID)
-			if verbose {
-				fmt.Printf("  %s↻ resetting line #%d (move #%d, counterpart on %s)%s\n",
-					Fmt.Dim, moveByID[moveID], moveID, info.AccountType, Fmt.Reset)
-			}
+	seenMove := map[int]bool{}
+	for _, row := range rows {
+		moveID := odooFieldID(row["move_id"])
+		if moveID == 0 || seenMove[moveID] {
+			continue
+		}
+		seenMove[moveID] = true
+		lineID := odooInt(row["id"])
+		accountType := odooString(row["account_type"])
+		movesToReset = append(movesToReset, moveID)
+		counterpartsToReset = append(counterpartsToReset, lineID)
+		if verbose {
+			fmt.Printf("  %s↻ resetting line #%d (move #%d, counterpart on %s)%s\n",
+				Fmt.Dim, moveByID[moveID], moveID, accountType, Fmt.Reset)
 		}
 	}
 	if len(movesToReset) == 0 {
@@ -436,21 +512,6 @@ func fetchJournalSuspenseAccount(creds *OdooCredentials, uid int, journalID int)
 		return 0, fmt.Errorf("journal #%d not found", journalID)
 	}
 	return odooFieldID(rows[0]["suspense_account_id"]), nil
-}
-
-func fetchJournalUnreconciledStatementLines(creds *OdooCredentials, uid int, journalID int) ([]odooStatementLineForReconcile, error) {
-	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
-		[]interface{}{
-			[]interface{}{"journal_id", "=", journalID},
-			[]interface{}{"is_reconciled", "=", false},
-		},
-		statementLineReconcileFields(),
-		"date asc, id asc",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("fetch unreconciled statement lines: %v", err)
-	}
-	return parseStatementLineRows(rows), nil
 }
 
 func fetchStatementLinesByImportID(creds *OdooCredentials, uid int, importIDs []string) ([]odooStatementLineForReconcile, error) {
@@ -915,82 +976,6 @@ func findOpenMoveCandidatesForStatementLine(creds *OdooCredentials, uid int, lin
 	return findOpenMoveCandidates(creds, uid, line, partnerID)
 }
 
-func findOpenMoveCandidatesByAmountForStatementLine(creds *OdooCredentials, uid int, line odooStatementLineForReconcile) ([]odooMoveCandidate, error) {
-	return findOpenMoveCandidates(creds, uid, line, 0)
-}
-
-func fetchOpenMoveCandidatesByReferenceForStatementLines(creds *OdooCredentials, uid int, lines []odooStatementLineForReconcile) (map[int][]odooMoveCandidate, error) {
-	refsByLine := map[int][]string{}
-	refSeen := map[string]bool{}
-	var refs []string
-	for _, line := range lines {
-		lineRefs := extractOdooInvoiceReferencesFromStatementLine(line)
-		if len(lineRefs) == 0 {
-			continue
-		}
-		refsByLine[line.ID] = lineRefs
-		for _, ref := range lineRefs {
-			if refSeen[ref] {
-				continue
-			}
-			refSeen[ref] = true
-			refs = append(refs, ref)
-		}
-	}
-	out := map[int][]odooMoveCandidate{}
-	if len(refs) == 0 {
-		return out, nil
-	}
-	var rows []map[string]interface{}
-	const refChunkSize = 40
-	for start := 0; start < len(refs); start += refChunkSize {
-		end := start + refChunkSize
-		if end > len(refs) {
-			end = len(refs)
-		}
-		values := make([]interface{}, 0, end-start)
-		for _, ref := range refs[start:end] {
-			values = append(values, ref)
-		}
-		chunkRows, err := odooSearchReadAllMaps(creds, uid, "account.move",
-			[]interface{}{
-				[]interface{}{"state", "=", "posted"},
-				[]interface{}{"move_type", "in", []interface{}{"out_invoice", "in_invoice"}},
-				[]interface{}{"payment_state", "not in", []interface{}{"paid", "in_payment", "reversed"}},
-				[]interface{}{"name", "in", values},
-			},
-			[]string{"id", "name", "invoice_date", "date", "move_type", "partner_id", "amount_residual"},
-			"invoice_date desc, id desc",
-		)
-		if err != nil {
-			return nil, fmt.Errorf("fetch invoice/bill reference candidates: %v", err)
-		}
-		rows = append(rows, chunkRows...)
-	}
-	candidatesByRef := map[string][]odooMoveCandidate{}
-	for _, candidate := range parseOdooMoveCandidates(rows) {
-		ref := strings.ToUpper(strings.TrimSpace(candidate.Name))
-		if ref == "" {
-			continue
-		}
-		candidatesByRef[ref] = append(candidatesByRef[ref], candidate)
-	}
-	for _, line := range lines {
-		lineRefs := refsByLine[line.ID]
-		if len(lineRefs) == 0 {
-			continue
-		}
-		for _, ref := range lineRefs {
-			for _, candidate := range candidatesByRef[ref] {
-				if odooReferenceCandidateMatchesLine(line, candidate) {
-					out[line.ID] = append(out[line.ID], candidate)
-				}
-			}
-		}
-	}
-	return out, nil
-}
-
 func findOpenMoveCandidatesByReferenceForStatementLine(creds *OdooCredentials, uid int, line odooStatementLineForReconcile) ([]odooMoveCandidate, error) {
 	refs := extractOdooInvoiceReferencesFromStatementLine(line)
 	if len(refs) == 0 {
@@ -1121,26 +1106,482 @@ func parseOdooMoveCandidates(rows []map[string]interface{}) []odooMoveCandidate 
 	return candidates
 }
 
+// reconcileStatementLineWithMove reconciles a bank statement line's
+// counterpart with the invoice/bill's receivable/payable line.
+//
+// Odoo's bank suspense account is intentionally NOT marked reconcile=true
+// (it's a holding bucket, not a journal-itemizable account), so we can't
+// just call account.move.line.reconcile on the suspense line. The
+// canonical flow is: draft the bank move → rewrite the suspense
+// counterpart's account_id to the invoice's A/R (or A/P) account →
+// repost the bank move → reconcile the now-on-A/R counterpart line with
+// the invoice's A/R line.
+//
+// This matches what `markStatementLineInternalTransfer` does for
+// transfers (it rewrites the counterpart to the internal-transfer
+// account instead of an A/R one) and what Odoo's bank reconciliation
+// widget does under the hood.
 func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooStatementLineForReconcile, move odooMoveCandidate) error {
 	if line.MoveID == 0 {
 		return fmt.Errorf("statement line has no move")
 	}
-	absAmount := math.Abs(line.Amount)
-	bankLines, err := openReconcilableMoveLines(creds, uid, line.MoveID, absAmount)
+
+	// Find the invoice/bill's open A/R or A/P line. Filtering by
+	// account_type (instead of the "reconcile=true on account" flag)
+	// avoids false positives from revenue / VAT lines that happen to be
+	// flagged reconcilable on this Odoo instance.
+	invoiceLineID, arAccountID, err := findInvoiceReceivablePayableLine(creds, uid, move.ID)
 	if err != nil {
-		return fmt.Errorf("bank move lines: %v", err)
+		// Fallback A — "in_payment" invoices: a payment record was
+		// already registered against the invoice's A/R line (so the
+		// A/R is reconciled and there's nothing open to match), but
+		// the payment's outstanding-receipts line is still waiting
+		// for the bank statement line — reconcile against that.
+		if oLineID, oAccountID, found, ferr := findOutstandingPaymentLineForInvoice(creds, uid, move.ID); ferr == nil && found {
+			invoiceLineID = oLineID
+			arAccountID = oAccountID
+		} else if unrecLineID, unrecAccountID, unrecCount, uerr := unreconcileInvoiceAndGetOpenLine(creds, uid, move.ID); uerr == nil && unrecLineID > 0 {
+			// Fallback B — "paid" invoice: the operator explicitly picked
+			// it from the interactive prompt's top-5 list, signalling
+			// that a previous reconciliation was wrong. Unreconcile the
+			// existing match and reuse the now-reopened A/R line.
+			fmt.Printf("  %s↻ unreconciled %d existing match%s on invoice/bill #%d before re-attaching%s\n",
+				Fmt.Yellow, unrecCount, plural(unrecCount), move.ID, Fmt.Reset)
+			invoiceLineID = unrecLineID
+			arAccountID = unrecAccountID
+		} else {
+			return fmt.Errorf("invoice/bill #%d: %v", move.ID, err)
+		}
 	}
-	invoiceLines, err := openReconcilableMoveLines(creds, uid, move.ID, absAmount)
+
+	// Find the bank move's non-bank counterpart (currently on suspense).
+	counterpartID, err := findStatementCounterpartMoveLine(creds, uid, line)
 	if err != nil {
-		return fmt.Errorf("invoice/bill move lines: %v", err)
+		return fmt.Errorf("find counterpart: %v", err)
 	}
-	if len(bankLines) != 1 || len(invoiceLines) != 1 {
-		return fmt.Errorf("expected one reconcilable line on each move, found bank=%d invoice=%d", len(bankLines), len(invoiceLines))
+	if counterpartID == 0 {
+		return fmt.Errorf("could not identify counterpart move line on move #%d", line.MoveID)
 	}
-	_, err = odooExec(creds.URL, creds.DB, uid, creds.Password,
+
+	// Draft → rewrite counterpart account → repost. Same shape as
+	// applyOdooMappingAccount / markStatementLineInternalTransfer.
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.move", "button_draft",
+		[]interface{}{[]interface{}{line.MoveID}}, nil); err != nil {
+		return fmt.Errorf("draft bank move #%d: %v", line.MoveID, err)
+	}
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.move.line", "write",
+		[]interface{}{[]interface{}{counterpartID}, map[string]interface{}{"account_id": arAccountID}}, nil); err != nil {
+		return fmt.Errorf("rewrite counterpart line #%d: %v", counterpartID, err)
+	}
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.move", "action_post",
+		[]interface{}{[]interface{}{line.MoveID}}, nil); err != nil {
+		return fmt.Errorf("repost bank move #%d: %v", line.MoveID, err)
+	}
+
+	// Now counterpart and invoice line are on the same A/R account.
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.move.line", "reconcile",
-		[]interface{}{[]interface{}{bankLines[0], invoiceLines[0]}}, nil)
-	return err
+		[]interface{}{[]interface{}{counterpartID, invoiceLineID}}, nil); err != nil {
+		return fmt.Errorf("reconcile lines: %v", err)
+	}
+
+	// Attribute the bank line to the invoice's partner + register the
+	// counterparty's IBAN on that partner. Future payments from the same
+	// IBAN will then auto-attribute and Odoo's reconcile widget proposes
+	// the right invoices without manual searching. Best-effort: errors
+	// downgrade to warnings since the reconcile itself already succeeded.
+	if move.PartnerID > 0 {
+		if err := attributeBankLineToPartnerAfterReconcile(creds, uid, line.ID, move.PartnerID); err != nil {
+			fmt.Printf("  %s⚠ post-reconcile partner attribution on line #%d failed: %v%s\n",
+				Fmt.Dim, line.ID, err, Fmt.Reset)
+		}
+	}
+	return nil
+}
+
+// attributeBankLineToPartnerAfterReconcile pins the invoice's partner on
+// the bank statement line (when empty) and ensures a res.partner.bank
+// record links the counterparty's IBAN to that partner. The next time
+// money flows from the same IBAN, Odoo's bank-reconciliation widget
+// suggests this partner — and the right invoices — without any operator
+// hint.
+//
+// Non-destructive: a partner_id or partner_bank_id already set on the
+// statement line is preserved (the operator may have set it deliberately).
+// The res.partner.bank record itself is always ensured (search-then-
+// create), so even pre-attributed lines contribute to future auto-match.
+func attributeBankLineToPartnerAfterReconcile(creds *OdooCredentials, uid int, statementLineID, partnerID int) error {
+	if statementLineID == 0 || partnerID <= 0 {
+		return nil
+	}
+	rows, err := odooReadMapsByIDs(creds, uid, "account.bank.statement.line",
+		[]int{statementLineID},
+		[]string{"partner_id", "partner_bank_id", "account_number"})
+	if err != nil {
+		return fmt.Errorf("read statement line: %v", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	currentPartnerID := odooFieldID(rows[0]["partner_id"])
+	currentBankID := odooFieldID(rows[0]["partner_bank_id"])
+	iban := normalizeBankAccountNumber(odooString(rows[0]["account_number"]))
+
+	// Fall back to the linked partner_bank's IBAN when the raw
+	// account_number column is empty (some imports populate one but not
+	// the other).
+	if iban == "" && currentBankID > 0 {
+		bankRows, _ := odooReadMapsByIDs(creds, uid, "res.partner.bank",
+			[]int{currentBankID},
+			[]string{"acc_number", "sanitized_acc_number"})
+		if len(bankRows) > 0 {
+			iban = normalizeBankAccountNumber(odooString(bankRows[0]["sanitized_acc_number"]))
+			if iban == "" {
+				iban = normalizeBankAccountNumber(odooString(bankRows[0]["acc_number"]))
+			}
+		}
+	}
+
+	// Ensure (IBAN, invoice partner) record. Skipped silently when no
+	// IBAN is available (Stripe / blockchain journals).
+	var newBankID int
+	if iban != "" {
+		newBankID, err = ensurePartnerBankAccount(creds, uid, iban, partnerID)
+		if err != nil {
+			return fmt.Errorf("ensure partner bank account: %v", err)
+		}
+	}
+
+	updates := map[string]interface{}{}
+	if currentPartnerID == 0 {
+		updates["partner_id"] = partnerID
+	}
+	if currentBankID == 0 && newBankID > 0 {
+		updates["partner_bank_id"] = newBankID
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "write",
+		[]interface{}{[]interface{}{statementLineID}, updates}, nil); err != nil {
+		return fmt.Errorf("write statement line: %v", err)
+	}
+	return nil
+}
+
+// ensurePartnerBankAccount finds or creates a res.partner.bank record
+// linking the given IBAN to the given partner. Returns the record id.
+//
+// Searches sanitized_acc_number first (Odoo's normalized form), then
+// the raw acc_number with ilike to catch records that imported the IBAN
+// with formatting whitespace. Falls through to create when nothing
+// matches, populating just acc_number — Odoo computes sanitized form on
+// save.
+func ensurePartnerBankAccount(creds *OdooCredentials, uid int, iban string, partnerID int) (int, error) {
+	if iban == "" || partnerID <= 0 {
+		return 0, nil
+	}
+	rows, err := odooSearchReadAllMaps(creds, uid, "res.partner.bank",
+		[]interface{}{
+			[]interface{}{"sanitized_acc_number", "=", iban},
+			[]interface{}{"partner_id", "=", partnerID},
+		},
+		[]string{"id"}, "id asc")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) > 0 {
+		return odooInt(rows[0]["id"]), nil
+	}
+	rows, err = odooSearchReadAllMaps(creds, uid, "res.partner.bank",
+		[]interface{}{
+			[]interface{}{"acc_number", "ilike", iban},
+			[]interface{}{"partner_id", "=", partnerID},
+		},
+		[]string{"id"}, "id asc")
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) > 0 {
+		return odooInt(rows[0]["id"]), nil
+	}
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"res.partner.bank", "create",
+		[]interface{}{map[string]interface{}{
+			"acc_number": iban,
+			"partner_id": partnerID,
+		}}, nil)
+	if err != nil {
+		return 0, err
+	}
+	ids := parseOdooCreatedIDs(result)
+	if len(ids) > 0 {
+		return ids[0], nil
+	}
+	return 0, fmt.Errorf("res.partner.bank.create returned no id")
+}
+
+// findInvoiceReceivablePayableLine returns the (lineID, accountID) of an
+// invoice/bill's single open A/R or A/P line — the one we need to
+// reconcile the bank counterpart against. Filtering by account_type
+// (rather than the per-account reconcile=true flag) keeps revenue / VAT
+// lines from masquerading as A/R candidates on Odoo instances that
+// flag many accounts reconcilable.
+//
+// Most invoices have exactly one A/R/A/P line. When multiple exist
+// (partial reconciles, manual splits), we pick the one with the largest
+// residual — almost always the original main A/R line.
+func findInvoiceReceivablePayableLine(creds *OdooCredentials, uid int, moveID int) (int, int, error) {
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{
+			[]interface{}{"move_id", "=", moveID},
+			[]interface{}{"account_type", "in", []interface{}{"asset_receivable", "liability_payable"}},
+			[]interface{}{"reconciled", "=", false},
+		},
+		[]string{"id", "account_id", "amount_residual"},
+		"id asc",
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(rows) == 0 {
+		return 0, 0, fmt.Errorf("no open A/R or A/P line")
+	}
+	bestIdx := 0
+	if len(rows) > 1 {
+		bestResidual := math.Abs(odooFloat(rows[0]["amount_residual"]))
+		for i := 1; i < len(rows); i++ {
+			r := math.Abs(odooFloat(rows[i]["amount_residual"]))
+			if r > bestResidual {
+				bestResidual = r
+				bestIdx = i
+			}
+		}
+	}
+	lineID := odooInt(rows[bestIdx]["id"])
+	accountID := odooFieldID(rows[bestIdx]["account_id"])
+	if accountID == 0 {
+		return 0, 0, fmt.Errorf("A/R line #%d has no account", lineID)
+	}
+	return lineID, accountID, nil
+}
+
+// findOutstandingPaymentLineForInvoice locates the still-open
+// "outstanding receipts/payments" line of the payment record that's
+// reconciled with an in_payment invoice.
+//
+// Odoo's in_payment state: customer paid, a payment record exists, the
+// payment's A/R credit is reconciled with the invoice's A/R debit — so
+// the invoice's A/R appears closed. What remains open is the payment's
+// outstanding-side line, waiting for the bank statement line to come in
+// and finalize the cycle. That line is what we need to reconcile
+// against, NOT the invoice's A/R (which is already taken).
+//
+// Reached via the partial.reconcile graph rather than account.payment's
+// One2many fields, since the partial-reconcile traversal works on any
+// Odoo version and doesn't depend on field-name conventions.
+// unreconcileInvoiceAndGetOpenLine undoes every existing
+// reconciliation on the invoice/bill's A/R or A/P line(s) and returns
+// the (now-open) line's id + account. Used when the operator picks a
+// "paid" candidate from the interactive prompt: the previous
+// reconciliation was wrong, we cut it loose, and the next phase of
+// reconcileStatementLineWithMove attaches the bank counterpart to the
+// freshly-reopened line.
+//
+// Returns (lineID, accountID, partialsRemoved, error). lineID = 0 when
+// no A/R line exists at all on the move (caller treats as "not
+// recoverable").
+func unreconcileInvoiceAndGetOpenLine(creds *OdooCredentials, uid int, invoiceMoveID int) (int, int, int, error) {
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{
+			[]interface{}{"move_id", "=", invoiceMoveID},
+			[]interface{}{"account_type", "in", []interface{}{"asset_receivable", "liability_payable"}},
+		},
+		[]string{"id", "account_id", "amount_residual", "matched_debit_ids", "matched_credit_ids", "reconciled"},
+		"id asc",
+	)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if len(rows) == 0 {
+		return 0, 0, 0, nil
+	}
+
+	// Collect partial.reconcile ids on those A/R lines. We'll remove
+	// them so the lines become open again.
+	var lineIDs []int
+	partialSet := map[int]bool{}
+	for _, r := range rows {
+		if id := odooInt(r["id"]); id > 0 {
+			lineIDs = append(lineIDs, id)
+		}
+		for _, key := range []string{"matched_debit_ids", "matched_credit_ids"} {
+			if arr, ok := r[key].([]interface{}); ok {
+				for _, v := range arr {
+					if id := odooInt(v); id > 0 {
+						partialSet[id] = true
+					}
+				}
+			}
+		}
+	}
+	partials := make([]int, 0, len(partialSet))
+	for id := range partialSet {
+		partials = append(partials, id)
+	}
+	if len(partials) > 0 {
+		// Call remove_move_reconcile on each A/R line — Odoo's official
+		// method that drops the partial.reconciles AND repostings, so the
+		// invoice transitions back to 'not_paid'. unlink on the partials
+		// is also valid but doesn't trigger Odoo's reset hooks.
+		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move.line", "remove_move_reconcile",
+			[]interface{}{lineIDs}, nil); err != nil {
+			return 0, 0, 0, fmt.Errorf("unreconcile A/R line(s) %v: %v", lineIDs, err)
+		}
+	}
+
+	// Re-read the A/R line we'll attach to. After remove_move_reconcile
+	// it should report reconciled=false; we pick the line with the
+	// largest residual (typically the original main A/R line).
+	rows, err = odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{
+			[]interface{}{"move_id", "=", invoiceMoveID},
+			[]interface{}{"account_type", "in", []interface{}{"asset_receivable", "liability_payable"}},
+			[]interface{}{"reconciled", "=", false},
+		},
+		[]string{"id", "account_id", "amount_residual"},
+		"id asc",
+	)
+	if err != nil {
+		return 0, 0, len(partials), err
+	}
+	if len(rows) == 0 {
+		return 0, 0, len(partials), fmt.Errorf("no A/R line open even after unreconcile on move #%d", invoiceMoveID)
+	}
+	bestIdx := 0
+	if len(rows) > 1 {
+		bestRes := math.Abs(odooFloat(rows[0]["amount_residual"]))
+		for i := 1; i < len(rows); i++ {
+			r := math.Abs(odooFloat(rows[i]["amount_residual"]))
+			if r > bestRes {
+				bestRes = r
+				bestIdx = i
+			}
+		}
+	}
+	return odooInt(rows[bestIdx]["id"]), odooFieldID(rows[bestIdx]["account_id"]), len(partials), nil
+}
+
+func findOutstandingPaymentLineForInvoice(creds *OdooCredentials, uid int, invoiceMoveID int) (int, int, bool, error) {
+	// 1. Invoice's A/R or A/P lines (any state — they're reconciled=true
+	//    for in_payment invoices).
+	arRows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{
+			[]interface{}{"move_id", "=", invoiceMoveID},
+			[]interface{}{"account_type", "in", []interface{}{"asset_receivable", "liability_payable"}},
+		},
+		[]string{"id", "matched_debit_ids", "matched_credit_ids"},
+		"id asc",
+	)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if len(arRows) == 0 {
+		return 0, 0, false, nil
+	}
+
+	// 2. Collect partial.reconcile ids attached to those A/R lines, plus
+	//    the set of invoice line ids (so we can identify the "other side"
+	//    of each partial reconcile — i.e. the payment's A/R line).
+	invLineIDs := map[int]bool{}
+	var partialIDs []int
+	for _, r := range arRows {
+		invLineIDs[odooInt(r["id"])] = true
+		for _, raw := range []interface{}{r["matched_debit_ids"], r["matched_credit_ids"]} {
+			if arr, ok := raw.([]interface{}); ok {
+				for _, v := range arr {
+					if id := odooInt(v); id > 0 {
+						partialIDs = append(partialIDs, id)
+					}
+				}
+			}
+		}
+	}
+	if len(partialIDs) == 0 {
+		return 0, 0, false, nil
+	}
+
+	// 3. Read the partial.reconcile records to find the payment's A/R
+	//    line on each — the line that isn't ours.
+	partialRows, err := odooReadMapsByIDs(creds, uid, "account.partial.reconcile",
+		uniquePositiveInts(partialIDs),
+		[]string{"id", "credit_move_id", "debit_move_id"})
+	if err != nil {
+		return 0, 0, false, err
+	}
+	paymentARLineIDs := map[int]bool{}
+	for _, pr := range partialRows {
+		for _, key := range []string{"credit_move_id", "debit_move_id"} {
+			if id := odooFieldID(pr[key]); id > 0 && !invLineIDs[id] {
+				paymentARLineIDs[id] = true
+			}
+		}
+	}
+	if len(paymentARLineIDs) == 0 {
+		return 0, 0, false, nil
+	}
+
+	// 4. Find the move each payment-A/R line belongs to — that's the
+	//    payment's account.move.
+	pLineIDList := make([]int, 0, len(paymentARLineIDs))
+	for id := range paymentARLineIDs {
+		pLineIDList = append(pLineIDList, id)
+	}
+	pLineRows, err := odooReadMapsByIDs(creds, uid, "account.move.line", pLineIDList,
+		[]string{"id", "move_id"})
+	if err != nil {
+		return 0, 0, false, err
+	}
+	paymentMoveIDs := map[int]bool{}
+	for _, r := range pLineRows {
+		if mid := odooFieldID(r["move_id"]); mid > 0 {
+			paymentMoveIDs[mid] = true
+		}
+	}
+	if len(paymentMoveIDs) == 0 {
+		return 0, 0, false, nil
+	}
+
+	// 5. The payment move has 2 lines: the A/R side (reconciled=true,
+	//    matched with the invoice) and the outstanding side
+	//    (reconciled=false, waiting for the bank). Return the latter.
+	pmIDList := make([]interface{}, 0, len(paymentMoveIDs))
+	for id := range paymentMoveIDs {
+		pmIDList = append(pmIDList, id)
+	}
+	outRows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{
+			[]interface{}{"move_id", "in", pmIDList},
+			[]interface{}{"reconciled", "=", false},
+		},
+		[]string{"id", "account_id"}, "id asc")
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if len(outRows) == 0 {
+		return 0, 0, false, nil
+	}
+	lineID := odooInt(outRows[0]["id"])
+	accountID := odooFieldID(outRows[0]["account_id"])
+	if lineID == 0 || accountID == 0 {
+		return 0, 0, false, nil
+	}
+	return lineID, accountID, true, nil
 }
 
 func openReconcilableMoveLines(creds *OdooCredentials, uid int, moveID int, absAmount float64) ([]int, error) {
@@ -1235,27 +1676,38 @@ func findInternalTransferAccountID(creds *OdooCredentials, uid int) (int, error)
 func findStatementCounterpartMoveLine(creds *OdooCredentials, uid int, line odooStatementLineForReconcile) (int, error) {
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
 		[]interface{}{[]interface{}{"move_id", "=", line.MoveID}},
-		[]string{"id", "balance", "debit", "credit"},
+		[]string{"id", "balance", "debit", "credit", "reconciled"},
 		"id asc",
 	)
 	if err != nil {
 		return 0, err
 	}
-	var candidates []int
+	// Two passes: first prefer the still-unreconciled counterpart (the
+	// typical "fresh bank line" case), then accept any if no unreconciled
+	// candidate exists. The unreconciled pass handles partially-reconciled
+	// moves where Odoo has already split the counterpart into two lines
+	// (one matched against an invoice, one still on suspense).
+	var unreconciled, all []int
 	for _, row := range rows {
 		id := odooInt(row["id"])
 		balance := odooFloat(row["balance"])
 		debit := odooFloat(row["debit"])
 		credit := odooFloat(row["credit"])
-		if line.Amount > 0 && (balance < -0.005 || credit > 0.005) {
-			candidates = append(candidates, id)
+		matchesSign := (line.Amount > 0 && (balance < -0.005 || credit > 0.005)) ||
+			(line.Amount < 0 && (balance > 0.005 || debit > 0.005))
+		if !matchesSign {
+			continue
 		}
-		if line.Amount < 0 && (balance > 0.005 || debit > 0.005) {
-			candidates = append(candidates, id)
+		all = append(all, id)
+		if !odooBool(row["reconciled"]) {
+			unreconciled = append(unreconciled, id)
 		}
 	}
-	if len(candidates) == 1 {
-		return candidates[0], nil
+	if len(unreconciled) == 1 {
+		return unreconciled[0], nil
+	}
+	if len(all) == 1 {
+		return all[0], nil
 	}
 	return 0, nil
 }
@@ -1297,104 +1749,6 @@ func odooStatementLineCounterparty(line odooStatementLineForReconcile) string {
 		return line.UniqueImportID
 	}
 	return fmt.Sprintf("line #%d", line.ID)
-}
-
-func formatOdooPotentialMatch(candidates []odooMoveCandidate, err error) string {
-	if err != nil {
-		return "lookup error"
-	}
-	if len(candidates) == 0 {
-		return "-"
-	}
-	if len(candidates) == 1 {
-		return candidateDisplayNameWithPartner(candidates[0])
-	}
-	return fmt.Sprintf("%d matches, e.g. %s", len(candidates), candidateDisplayNameWithPartner(candidates[0]))
-}
-
-func candidateDisplayNameWithPartner(candidate odooMoveCandidate) string {
-	name := candidateDisplayName(candidate)
-	if candidate.PartnerName != "" {
-		name = fmt.Sprintf("%s (%s)", name, candidate.PartnerName)
-	}
-	return name
-}
-
-func odooReconcileReason(result odooLineReconcileResult, amountErr error) string {
-	switch {
-	case result.Err != nil:
-		if result.Message != "" {
-			return fmt.Sprintf("%s failed: %v", result.Message, result.Err)
-		}
-		return result.Err.Error()
-	case result.InternalTransfer:
-		return result.Message
-	case result.Reconciled:
-		if result.CandidateMoveName != "" {
-			return fmt.Sprintf("%s %s", result.Message, result.CandidateMoveName)
-		}
-		return result.Message
-	case result.Ambiguous:
-		return result.Message
-	case result.NoPartner:
-		return result.Message
-	case result.NoMatch:
-		return result.Message
-	}
-	if amountErr != nil {
-		return fmt.Sprintf("amount-only lookup failed: %v", amountErr)
-	}
-	return "already reconciled"
-}
-
-func printOdooReconcileRows(stats *odooReconcileStats) {
-	if len(stats.Rows) == 0 {
-		return
-	}
-	rows := make([][]string, 0, len(stats.Rows))
-	for _, row := range stats.Rows {
-		if !stats.Verbose && !row.Actionable {
-			continue
-		}
-		rows = append(rows, []string{
-			row.Date,
-			row.Counterparty,
-			fmtEURSigned(row.Amount),
-			row.PotentialMatch,
-			row.Reason,
-		})
-	}
-	if len(rows) == 0 {
-		if !stats.Verbose {
-			fmt.Printf("  %sNo lines would be reconciled. Use --verbose to list skipped/no-match lines.%s\n", Fmt.Dim, Fmt.Reset)
-		}
-		return
-	}
-	printAlignedTable(
-		[]string{"Date", "Counterparty", "Amount", "Potential match", "Reason"},
-		rows,
-		map[int]bool{2: true},
-	)
-}
-
-func printOdooReconcileStats(stats *odooReconcileStats) {
-	label := "reconciled"
-	if stats.DryRun {
-		label = "would reconcile"
-	}
-	printOdooReconcileRows(stats)
-	if !stats.Verbose && len(stats.Rows) > stats.Reconciled+stats.InternalTransfers {
-		fmt.Printf("  %sUse --verbose to list skipped/no-match lines.%s\n", Fmt.Dim, Fmt.Reset)
-	}
-	fmt.Printf("\n  %s── Reconciliation summary ──%s\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("    Lines scanned:       %d\n", stats.Scanned)
-	fmt.Printf("    Lines %s:    %d\n", label, stats.Reconciled)
-	fmt.Printf("    Internal transfers:  %d\n", stats.InternalTransfers)
-	fmt.Printf("    Ambiguous matches:   %d\n", stats.Ambiguous)
-	fmt.Printf("    No partner:          %d\n", stats.NoPartner)
-	fmt.Printf("    No match:            %d\n", stats.NoMatch)
-	fmt.Printf("    Errors:              %d\n", stats.Errors)
-	fmt.Println()
 }
 
 func candidateDisplayName(candidate odooMoveCandidate) string {

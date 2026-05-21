@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 )
 
@@ -120,37 +119,6 @@ func TestOdooStatementLineCounterpartyFallbacks(t *testing.T) {
 				t.Fatalf("got %q want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestFormatOdooPotentialMatch(t *testing.T) {
-	candidates := []odooMoveCandidate{
-		{Name: "INV/2026/001", PartnerName: "Alice"},
-		{Name: "INV/2026/002", PartnerName: "Bob"},
-	}
-	if got := formatOdooPotentialMatch(nil, nil); got != "-" {
-		t.Fatalf("empty got %q", got)
-	}
-	if got := formatOdooPotentialMatch(candidates[:1], nil); got != "INV/2026/001 (Alice)" {
-		t.Fatalf("single got %q", got)
-	}
-	if got := formatOdooPotentialMatch(candidates, nil); got != "2 matches, e.g. INV/2026/001 (Alice)" {
-		t.Fatalf("multiple got %q", got)
-	}
-	if got := formatOdooPotentialMatch(nil, errors.New("boom")); got != "lookup error" {
-		t.Fatalf("error got %q", got)
-	}
-}
-
-func TestOdooReconcileReason(t *testing.T) {
-	if got := odooReconcileReason(odooLineReconcileResult{NoPartner: true, Message: "no partner or partner bank account"}, nil); got != "no partner or partner bank account" {
-		t.Fatalf("no partner got %q", got)
-	}
-	if got := odooReconcileReason(odooLineReconcileResult{Reconciled: true, Message: "would reconcile", CandidateMoveName: "INV/2026/001"}, nil); got != "would reconcile INV/2026/001" {
-		t.Fatalf("reconciled got %q", got)
-	}
-	if got := odooReconcileReason(odooLineReconcileResult{Err: errors.New("boom"), Message: "lookup partner"}, nil); got != "lookup partner failed: boom" {
-		t.Fatalf("error got %q", got)
 	}
 }
 

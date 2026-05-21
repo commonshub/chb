@@ -33,27 +33,36 @@ var (
 // For providers that don't separate gross from net (etherscan, kbc),
 // GrossAmount carries the same value as Amount so the fallback is a no-op.
 func txAmount(tx TransactionEntry) float64 {
-	if tx.GrossAmount != 0 {
-		// GrossAmount is unsigned for Stripe but signed for chain providers.
-		// Derive the direction from whichever signed field carries it, and
-		// re-apply on top of |GrossAmount| so both shapes resolve correctly.
-		gross := math.Abs(tx.GrossAmount)
-		signRef := tx.Amount
-		if signRef == 0 {
-			signRef = tx.NormalizedAmount
-		}
-		if signRef == 0 && tx.IsOutgoing() {
-			return -gross
-		}
-		if signRef < 0 {
-			return -gross
-		}
-		return gross
+	// Tx Type ("CREDIT"/"MINT" vs "DEBIT"/"BURN") is the authoritative
+	// direction signal across providers: Stripe has signed amounts but
+	// blockchain providers (Etherscan / Monerium) store the token magnitude
+	// as a positive number and rely on Type to encode direction. So we
+	// take the magnitude from whichever amount field is populated and
+	// re-apply the sign from IsOutgoing(). This used to favour the signed
+	// field over Type, which silently dropped blockchain outgoings from
+	// `--direction out` filters.
+	mag := math.Abs(tx.NormalizedAmount)
+	if mag == 0 {
+		mag = math.Abs(tx.Amount)
 	}
+	if mag == 0 {
+		mag = math.Abs(tx.GrossAmount)
+	}
+	if tx.IsOutgoing() {
+		return -mag
+	}
+	if tx.IsIncoming() {
+		return mag
+	}
+	// Neither flagged (TRANSFER / INTERNAL / etc.): keep the original
+	// signed value so callers see whichever sign the source supplied.
 	if tx.NormalizedAmount != 0 {
 		return tx.NormalizedAmount
 	}
-	return tx.Amount
+	if tx.Amount != 0 {
+		return tx.Amount
+	}
+	return tx.GrossAmount
 }
 
 // txFee returns the absolute processing fee for this transaction, in the
@@ -237,11 +246,24 @@ type TxFilter struct {
 	// entry matches against the tx's searchable text (counterparty +
 	// description + payment refs). Repeated --search flags accumulate here.
 	SearchAny []string
+	// DescriptionAny: each entry is a (lower-cased) substring; a tx passes
+	// if ANY entry matches against the tx's description field only — the
+	// narrower companion to SearchAny when counterparty/category noise is
+	// triggering false matches. Repeated --description flags accumulate.
+	DescriptionAny []string
 	// Amount filters by absolute gross magnitude with an optional operator
 	// (==, >, <, >=, <=). nil = no filter. Magnitude not signed amount —
 	// operators think "€100 transactions", not "+€100 vs -€100"; direction
 	// is what --direction is for.
 	Amount *AmountFilter
+	// Direction filters by sign of the signed amount: "in" (positive) or
+	// "out" (negative). Empty = no filter. Zero-amount txs match neither.
+	Direction string
+	// NoCategory keeps only transactions with no category set anywhere
+	// (Category field, "category" tag, metadata["category"]). Same shape
+	// for NoCollective.
+	NoCategory  bool
+	NoCollective bool
 }
 
 // AmountFilter is one comparison constraint on the absolute gross of a tx.
@@ -444,6 +466,38 @@ func (f TxFilter) matches(tx TransactionEntry) bool {
 		if !anyMatch {
 			return false
 		}
+	}
+	if len(f.DescriptionAny) > 0 {
+		desc := strings.ToLower(txDisplayDescription(tx))
+		anyMatch := false
+		for _, needle := range f.DescriptionAny {
+			if strings.Contains(desc, needle) {
+				anyMatch = true
+				break
+			}
+		}
+		if !anyMatch {
+			return false
+		}
+	}
+	if f.Direction != "" {
+		amt := txAmount(tx)
+		switch f.Direction {
+		case "in":
+			if amt <= 0 {
+				return false
+			}
+		case "out":
+			if amt >= 0 {
+				return false
+			}
+		}
+	}
+	if f.NoCategory && txDisplayCategory(tx) != "" {
+		return false
+	}
+	if f.NoCollective && txDisplayCollective(tx) != "" {
+		return false
 	}
 	if f.Amount != nil {
 		abs := roundCents(math.Abs(txAmount(tx)))
@@ -2949,6 +3003,14 @@ func parseTxListFlags(args []string) (TxFilter, int, int, error) {
 			f.SearchAny = append(f.SearchAny, strings.ToLower(t))
 		}
 	}
+	// --description: narrower than --search. Matches case-insensitive
+	// against just the description field, ignoring counterparty / tags /
+	// payment-ref noise that --search also scans. Repeatable.
+	for _, term := range GetOptions(args, "--description") {
+		if t := strings.TrimSpace(term); t != "" {
+			f.DescriptionAny = append(f.DescriptionAny, strings.ToLower(t))
+		}
+	}
 
 	if f.Currency == "" {
 		for _, a := range args {
@@ -2970,6 +3032,18 @@ func parseTxListFlags(args []string) (TxFilter, int, int, error) {
 		}
 		f.Amount = af
 	}
+	if s := strings.ToLower(strings.TrimSpace(GetOption(args, "--direction"))); s != "" {
+		switch s {
+		case "in", "incoming", "credit", "+":
+			f.Direction = "in"
+		case "out", "outgoing", "debit", "-":
+			f.Direction = "out"
+		default:
+			return f, 0, 0, fmt.Errorf("invalid --direction value %q (expected: in, out)", s)
+		}
+	}
+	f.NoCategory = HasFlag(args, "--no-category")
+	f.NoCollective = HasFlag(args, "--no-collective")
 	if s := GetOption(args, "--since"); s != "" {
 		t, ok := ParseSinceDate(s)
 		if !ok {
@@ -3051,9 +3125,15 @@ func printTransactionsBrowserHelp() {
   %s--collective <a,b,…>%s Match collective (comma-separated → any-of)
   %s--search <text>%s      Substring match against counterparty, description,
                        payment ref (repeatable → any-of)
+  %s--description <text>%s Substring match against the description field only
+                       (case-insensitive, repeatable → any-of)
   %s--amount <expr>%s     Filter by absolute gross magnitude. Supports
                        "100", ">10", "<1000.40", ">=50", "<=200"
                        (quote the operator to escape shell redirection)
+  %s--direction <in|out>%s Match only incoming (positive) or outgoing
+                       (negative) transactions
+  %s--no-category%s       Match only transactions with no category set
+  %s--no-collective%s     Match only transactions with no collective set
   %s--event <id>%s         Match tag ["event", id]
   %s--application <slug>%s Match tag ["application", slug]
   %s--payment-link <id>%s  Match tag ["paymentLink", id]
@@ -3097,23 +3177,27 @@ func printTransactionsBrowserHelp() {
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset, // FILTERS
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
+		f.Yellow, f.Reset, // --account
+		f.Yellow, f.Reset, // --currency
+		f.Yellow, f.Reset, // --category
+		f.Yellow, f.Reset, // --collective
+		f.Yellow, f.Reset, // --search
+		f.Yellow, f.Reset, // --description
+		f.Yellow, f.Reset, // --amount
+		f.Yellow, f.Reset, // --direction
+		f.Yellow, f.Reset, // --no-category
+		f.Yellow, f.Reset, // --no-collective
+		f.Yellow, f.Reset, // --event
+		f.Yellow, f.Reset, // --application
+		f.Yellow, f.Reset, // --payment-link
+		f.Yellow, f.Reset, // --tag
+		f.Yellow, f.Reset, // --tags
+		f.Yellow, f.Reset, // --since
+		f.Yellow, f.Reset, // --until
+		f.Yellow, f.Reset, // -n
+		f.Yellow, f.Reset, // --skip
+		f.Yellow, f.Reset, // --json
+		f.Yellow, f.Reset, // --with-pii
 		f.Bold, f.Reset, // INTERACTIVE KEYS
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

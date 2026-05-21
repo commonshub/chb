@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -341,7 +342,7 @@ func rpc(odooURL, service, method string, args []interface{}) (json.RawMessage, 
 	for attempt := 0; ; attempt++ {
 		resp, err := http.Post(odooURL+"/jsonrpc", "application/json", bytes.NewReader(data))
 		if err != nil {
-			return nil, err
+			return nil, friendlyOdooNetworkError(odooURL, err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -367,18 +368,77 @@ func rpc(odooURL, service, method string, args []interface{}) (json.RawMessage, 
 
 		var rpcResp rpcResponse
 		if err := json.Unmarshal(body, &rpcResp); err != nil {
-			preview := string(body)
-			if len(preview) > 200 {
-				preview = preview[:200] + "…"
-			}
-			preview = strings.ReplaceAll(preview, "\n", " ")
 			if resp.StatusCode == 429 {
 				return nil, fmt.Errorf("rate-limited by Odoo (HTTP 429) after %d retries — try again in a minute", attempt)
 			}
-			return nil, fmt.Errorf("non-JSON response from %s (HTTP %d): %s — got: %q", odooURL+"/jsonrpc", resp.StatusCode, err, preview)
+			return nil, friendlyOdooTransportError(odooURL, resp.StatusCode, body)
 		}
 		return handleRPCResponse(rpcResp)
 	}
+}
+
+// friendlyOdooNetworkError turns the raw transport error (DNS failure,
+// connection refused, TLS error, timeout) into a one-line actionable
+// message that names the host and points at the env var to fix.
+func friendlyOdooNetworkError(odooURL string, err error) error {
+	host := odooURL
+	if u, perr := url.Parse(odooURL); perr == nil && u.Host != "" {
+		host = u.Host
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "no such host"), strings.Contains(msg, "dns"):
+		return fmt.Errorf("Odoo host %s cannot be resolved (DNS lookup failed). "+
+			"Check ODOO_URL in $APP_DATA_DIR/settings/config.env", host)
+	case strings.Contains(msg, "connection refused"):
+		return fmt.Errorf("Odoo at %s refused the connection — the service may be down", host)
+	case strings.Contains(msg, "deadline exceeded"), strings.Contains(msg, "timeout"):
+		return fmt.Errorf("Odoo at %s timed out — the instance is slow or unreachable; try again in a moment", host)
+	case strings.Contains(msg, "x509"), strings.Contains(msg, "tls"), strings.Contains(msg, "certificate"):
+		return fmt.Errorf("Odoo at %s has a TLS/certificate problem: %v", host, err)
+	}
+	return fmt.Errorf("could not reach Odoo at %s: %v", host, err)
+}
+
+// friendlyOdooTransportError turns a non-JSON RPC response into an
+// actionable error string. Detects the common SaaS failure modes
+// (deleted instance redirect, generic 404, login form, server error)
+// so operators don't have to wade through HTML to figure out what
+// went wrong. Falls back to a truncated preview when nothing matches.
+func friendlyOdooTransportError(odooURL string, status int, body []byte) error {
+	host := odooURL
+	if u, err := url.Parse(odooURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	preview := strings.ToLower(string(body))
+
+	// Odoo SaaS serves a JS redirect to /typo when the subdomain doesn't
+	// exist anymore (instance deleted or never existed). The body looks
+	// like `<script>window.location = 'https://www.odoo.com/typo?…'</script>`.
+	if status == 404 && strings.Contains(preview, "odoo.com/typo") {
+		return fmt.Errorf("Odoo instance %s does not exist (or has been removed). "+
+			"Check ODOO_URL in $APP_DATA_DIR/settings/config.env, "+
+			"or pass --odoo-url=<other-instance> for this call", host)
+	}
+	if status == 404 {
+		return fmt.Errorf("Odoo URL %s returned 404 — the JSON-RPC endpoint is not reachable at this host. "+
+			"Verify ODOO_URL points at a live Odoo instance", odooURL)
+	}
+	// HTML login form ⇒ the host is alive but the request didn't auth.
+	// Usually a wrong DB or session expiry.
+	if strings.Contains(preview, "<title>odoo") || strings.Contains(preview, "name=\"login\"") {
+		return fmt.Errorf("Odoo at %s returned an HTML login page instead of JSON-RPC — "+
+			"the database name is likely wrong (set --odoo-db or ODOO_DATABASE)", host)
+	}
+	if status >= 500 {
+		return fmt.Errorf("Odoo at %s is unhealthy (HTTP %d) — try again in a moment", host, status)
+	}
+	// Generic fallback: short preview, no HTML noise.
+	snippet := strings.Join(strings.Fields(string(body)), " ")
+	if len(snippet) > 160 {
+		snippet = snippet[:160] + "…"
+	}
+	return fmt.Errorf("Odoo at %s returned an unexpected response (HTTP %d): %s", host, status, snippet)
 }
 
 // handleRPCResponse extracts the result or formats the Odoo-side error.
@@ -401,10 +461,35 @@ func handleRPCResponse(rpcResp rpcResponse) (json.RawMessage, error) {
 		if msg == "" {
 			msg = "(empty error response)"
 		}
-		return nil, fmt.Errorf("odoo error: %s", msg)
+		return nil, friendlyOdooRPCError(msg)
 	}
 	return rpcResp.Result, nil
 }
+
+// friendlyOdooRPCError takes the (often Python-traceback) error string
+// Odoo returns inside a JSON-RPC envelope and turns the common ones into
+// short actionable messages. Unrecognised errors fall through with a
+// neutral "odoo error: ..." prefix so the original info is still there.
+func friendlyOdooRPCError(msg string) error {
+	low := strings.ToLower(msg)
+	// `psycopg2.OperationalError: ... database "X" does not exist`
+	if strings.Contains(low, "database") && strings.Contains(low, "does not exist") {
+		if m := dbNameInError.FindStringSubmatch(msg); len(m) > 1 {
+			return fmt.Errorf("Odoo database %q does not exist on this server. "+
+				"Set ODOO_DATABASE (or pass --odoo-db=<name>) to a valid DB", m[1])
+		}
+		return fmt.Errorf("Odoo database does not exist on this server. " +
+			"Set ODOO_DATABASE (or pass --odoo-db=<name>) to a valid DB")
+	}
+	// AccessDenied / wrong credentials
+	if strings.Contains(low, "access denied") || strings.Contains(low, "accessdenied") ||
+		strings.Contains(low, "invalid login") || strings.Contains(low, "wrong login/password") {
+		return fmt.Errorf("Odoo rejected the credentials — check ODOO_LOGIN and ODOO_PASSWORD")
+	}
+	return fmt.Errorf("odoo error: %s", msg)
+}
+
+var dbNameInError = regexp.MustCompile(`database\s+"([^"]+)"\s+does not exist`)
 
 func RPC(odooURL, service, method string, args []interface{}) (json.RawMessage, error) {
 	return rpc(odooURL, service, method, args)
@@ -430,7 +515,7 @@ func auth(odooURL, db, login, password string) (int, error) {
 	}
 	var uid int
 	if err := json.Unmarshal(result, &uid); err != nil || uid == 0 {
-		return 0, fmt.Errorf("auth failed (uid=0)")
+		return 0, fmt.Errorf("Odoo rejected the credentials — check ODOO_LOGIN and ODOO_PASSWORD (login=%s, db=%s)", login, db)
 	}
 	return uid, nil
 }
