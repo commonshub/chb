@@ -405,6 +405,14 @@ func main() {
 		if err := cmd.Report(args[1:]); err != nil {
 			exitWithError(err)
 		}
+	case "income":
+		if err := cmd.Income(args[1:]); err != nil {
+			exitWithError(err)
+		}
+	case "expenses":
+		if err := cmd.Expenses(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	default:
 		cmd.Errorf("%sUnknown command: %s%s", cmd.Fmt.Red, args[0], cmd.Fmt.Reset)
 		cmd.PrintHelp(cmd.Version)
