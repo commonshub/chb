@@ -6,9 +6,46 @@ import (
 	"os"
 )
 
-// JSONMode reports whether the global --json flag was passed.
+// JSONMode reports whether the operator wants machine-readable output.
+// True when:
+//
+//   - the --json flag is explicitly passed, OR
+//   - stdout isn't a terminal (i.e. the command is being piped or
+//     redirected) AND --text / --pretty isn't passed to opt out.
+//
+// The auto-detect arm makes `chb transactions | odoo attach …` and
+// `chb transactions > out.jsonl` Just Work without --json. Callers
+// that want to force the pretty-print path despite being piped can
+// pass --text.
 func JSONMode(args []string) bool {
-	return HasFlag(args, "--json")
+	if HasFlag(args, "--text", "--pretty") {
+		return false
+	}
+	if HasFlag(args, "--json") {
+		return true
+	}
+	return !isStdoutTTY()
+}
+
+// isStdoutTTY reports whether os.Stdout is connected to a terminal
+// (i.e. NOT piped or redirected). Mirrors isInteractiveTTY which
+// checks stdin; this side is what matters for output formatting.
+func isStdoutTTY() bool {
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+// EmitJSONL writes v to stdout as one JSON object on a single line,
+// followed by a newline. Caller is responsible for calling this once
+// per record. No array wrapper, no indentation — the line-delimited
+// JSON convention that pipes into jq / odoo-cli / etc. cleanly.
+func EmitJSONL(v interface{}) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
 }
 
 // EmitJSON writes v to stdout as indented JSON followed by a newline.

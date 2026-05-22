@@ -3125,17 +3125,67 @@ func emitTransactionsJSON(f TxFilter, limit, skip int, includePII bool) {
 		loader = loadFilteredTransactions
 	}
 	txs := applyOffsetLimit(loader(f), skip, limit)
-	out := struct {
-		Count        int                `json:"count"`
-		Transactions []TransactionEntry `json:"transactions"`
-	}{
-		Count:        len(txs),
-		Transactions: txs,
+
+	// One TX per line (JSONL). Each line carries the TransactionEntry
+	// fields plus a computed uniqueImportId so a downstream tool can
+	// look up the matching Odoo bank.statement.line directly. The
+	// uniqueImportId requires the AccountConfig of the tx's account,
+	// which we look up by AccountSlug — building once per slug is much
+	// cheaper than per-tx for large result sets.
+	// Build the slug → AccountConfig index once. Subsequent per-tx
+	// lookups are O(1).
+	accCache := map[string]*AccountConfig{}
+	allAccounts := LoadAccountConfigs()
+	for i := range allAccounts {
+		accCache[allAccounts[i].Slug] = &allAccounts[i]
 	}
-	if txs == nil {
-		out.Transactions = []TransactionEntry{}
+	resolveAcc := func(slug string) *AccountConfig {
+		if slug == "" {
+			return nil
+		}
+		return accCache[slug]
 	}
-	_ = EmitJSON(out)
+
+	for _, tx := range txs {
+		envelope := txJSONEnvelope(tx, resolveAcc(tx.AccountSlug))
+		_ = EmitJSONL(envelope)
+	}
+}
+
+// txJSONEnvelope marshals a TransactionEntry plus enriched fields
+// useful to downstream tools (odoo-cli, jq pipelines) into a single
+// JSON object. The TX struct embeds via json.RawMessage round-trip
+// so its existing JSON tags + custom UnmarshalJSON logic stay
+// authoritative.
+func txJSONEnvelope(tx TransactionEntry, acc *AccountConfig) map[string]interface{} {
+	raw, err := json.Marshal(tx)
+	if err != nil {
+		return map[string]interface{}{"id": tx.ID, "error": err.Error()}
+	}
+	out := map[string]interface{}{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]interface{}{"id": tx.ID, "error": err.Error()}
+	}
+
+	// Computed: uniqueImportId — the Odoo-side identifier this tx was
+	// uploaded with (account.bank.statement.line.unique_import_id).
+	// Downstream tools use this to locate the matching bank line in
+	// Odoo without round-tripping through (date, amount, partner)
+	// heuristics that can collide on duplicates.
+	if acc != nil {
+		if uid := buildUniqueImportID(acc, tx); uid != "" {
+			out["uniqueImportId"] = uid
+		}
+	}
+
+	// Computed: display.description — what `chb transactions`'
+	// table would show in the Description column, after the
+	// memo / counterparty fallback. Lets downstream tools render
+	// matching UI without re-implementing the chain.
+	if desc := txDisplayDescription(tx); desc != "" {
+		out["displayDescription"] = desc
+	}
+	return out
 }
 
 func printTransactionsBrowserHelp() {
@@ -3154,7 +3204,9 @@ func printTransactionsBrowserHelp() {
   %schb transactions --daterange 2026/Q1%s              Filter to any range Parse­DateRangeSpec accepts
   %schb transactions --since 20260101 --until 20260131%s   Date range (inclusive)
   %schb transactions -n 50 --skip 100%s                 Paginate
-  %schb transactions --json%s                           Print matching txs as JSON
+  %schb transactions ... | odoo attach <ref>%s          Pipe matches into odoo-cli
+  %schb transactions --json%s                           Force JSONL (auto when piped)
+  %schb transactions --text%s                           Force pretty table (auto when TTY)
   %schb transactions stats%s                            Show transaction statistics
 
 %sFILTERS%s
@@ -3186,7 +3238,14 @@ func printTransactionsBrowserHelp() {
   %s--until <date>%s       Inclusive upper bound on transaction date
   %s-n N%s                 Limit to N transactions (most recent first)
   %s--skip N%s             Skip the first N matches before applying -n
-  %s--json%s               Emit JSON instead of launching the interactive browser
+  %s--json%s               Force JSONL (one TX per line) on stdout. Auto-enabled
+                       when stdout isn't a TTY (i.e. piped or redirected). Each
+                       record includes a computed uniqueImportId so downstream
+                       tools (e.g. 'odoo attach') can find the matching Odoo
+                       bank.statement.line without heuristics. Use --text to
+                       force the table format despite being piped.
+  %s--text%s               Force the pretty table even when stdout is piped.
+                       Useful for 'chb transactions ... --text | less'.
   %s--with-pii%s           With --json, merge private enrichment into results
 
 %sINTERACTIVE KEYS%s
@@ -3219,7 +3278,9 @@ func printTransactionsBrowserHelp() {
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
-		f.Cyan, f.Reset,
+		f.Cyan, f.Reset, // | odoo attach
+		f.Cyan, f.Reset, // --json (new doc line)
+		f.Cyan, f.Reset, // --text
 		f.Bold, f.Reset, // FILTERS
 		f.Yellow, f.Reset, // --account
 		f.Yellow, f.Reset, // --currency
@@ -3242,6 +3303,7 @@ func printTransactionsBrowserHelp() {
 		f.Yellow, f.Reset, // -n
 		f.Yellow, f.Reset, // --skip
 		f.Yellow, f.Reset, // --json
+		f.Yellow, f.Reset, // --text
 		f.Yellow, f.Reset, // --with-pii
 		f.Bold, f.Reset, // INTERACTIVE KEYS
 		f.Yellow, f.Reset,
