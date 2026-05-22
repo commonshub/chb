@@ -179,6 +179,10 @@ func main() {
 			if err := cmd.MovesReconcileCommandInvoices(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "push":
+			if err := cmd.MovePushCommandInvoices(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "publish":
 			exitWithUsage("%s`chb invoices publish` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:
@@ -212,6 +216,10 @@ func main() {
 			}
 		case "reconcile":
 			if err := cmd.MovesReconcileCommandBills(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "push":
+			if err := cmd.MovePushCommandBills(args[2:]); err != nil {
 				exitWithError(err)
 			}
 		case "publish":

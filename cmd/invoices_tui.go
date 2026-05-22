@@ -560,13 +560,19 @@ func (m movesTUIModel) renderAttach() string {
 		m.kind.label, mv.ID, mv.Date,
 		fmtAmountCurrency(mv.TotalAmount, mv.Currency))))
 	b.WriteString("\n")
-	b.WriteString(cpTUIDimStyle.Render(fmt.Sprintf("  %d candidate bank line(s) — closest to invoice date first",
-		len(m.attachCands))))
+	partnerHits := 0
+	for _, c := range m.attachCands {
+		if c.PartnerMatch {
+			partnerHits++
+		}
+	}
+	b.WriteString(cpTUIDimStyle.Render(fmt.Sprintf("  %d candidate bank line(s) — %d partner-match, then by date proximity",
+		len(m.attachCands), partnerHits)))
 	b.WriteString("\n\n")
 
-	headers := []string{"Sel", "Date", "Δ", "Amount", "Journal", "Description", "Ref / Counterparty"}
-	rightAlign := map[int]bool{3: true}
-	caps := []int{3, 10, 6, 14, 14, 36, 30}
+	headers := []string{"Sel", "Partner", "Date", "Δ", "Amount", "Journal", "Description", "Ref / Counterparty"}
+	rightAlign := map[int]bool{4: true}
+	caps := []int{3, 8, 10, 6, 14, 14, 36, 30}
 
 	plain := make([][]string, 0, len(m.attachCands))
 	for i, c := range m.attachCands {
@@ -589,8 +595,13 @@ func (m movesTUIModel) renderAttach() string {
 		if stableID == "" {
 			stableID = fmt.Sprintf("line #%d", c.Line.ID)
 		}
+		partnerBadge := ""
+		if c.PartnerMatch {
+			partnerBadge = "match"
+		}
 		plain = append(plain, []string{
 			mark,
+			partnerBadge,
 			c.Line.Date,
 			delta,
 			fmtAmountCurrency(c.Line.Amount, "EUR"),

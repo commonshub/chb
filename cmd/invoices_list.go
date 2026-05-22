@@ -329,6 +329,20 @@ func saveMoveRowAnnotation(row *moveRow, kind moveKind, category, collective str
 			txCount++
 		}
 	}
+
+	// 3. Also write a Nostr annotation keyed by the move's own URI
+	//    (odoo:<host>:<db>:account.move:<id>). Lets the next `chb
+	//    nostr push` ship the (category, collective) classification
+	//    so other chb instances pulling from the same relay learn it
+	//    too. Best-effort — credential issues downgrade to a silent
+	//    skip rather than failing the JSON write the user just
+	//    confirmed.
+	if creds, err := ResolveOdooCredentials(); err == nil {
+		host := OdooHost(creds.URL)
+		_ = writeMoveNostrAnnotation(*row, kind, host, creds.DB,
+			row.Move.Category, row.Move.Collective)
+	}
+
 	return 1, txCount, nil
 }
 
