@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,13 @@ type RuleMatch struct {
 	Provider    string   `json:"provider,omitempty"`    // stripe, etherscan, monerium
 	Currency    string   `json:"currency,omitempty"`    // EUR, EURe, EURb, CHT
 	Amount      *float64 `json:"amount,omitempty"`      // exact signed GROSS amount, rounded to cents
+	// MinAmount / MaxAmount are inclusive bounds on the ABSOLUTE
+	// gross amount (sign-independent). Use direction:"in" /
+	// direction:"out" alongside when you want to scope a range to
+	// one direction. Exact-match `Amount` (above) stays
+	// signed-gross for back-compat.
+	MinAmount   *float64 `json:"amount_min,omitempty"`
+	MaxAmount   *float64 `json:"amount_max,omitempty"`
 	Direction   string   `json:"direction,omitempty"`   // "in" or "out"
 	Application string   `json:"application,omitempty"` // stripe connect app: luma, opencollective, etc.
 	PaymentLink string   `json:"paymentLink,omitempty"` // Stripe Checkout payment link ID
@@ -40,12 +48,17 @@ type RuleMatch struct {
 // RuleAssign defines what a matching rule assigns.
 // Category/Collective/Event are fallback assignments (only set when empty).
 // Type and Description are overrides (always applied when present).
+// Tags are additive — merged with whatever the row already carries,
+// deduplicated, and never removed by a rule. Useful for orthogonal
+// labelling (e.g. ["shifter", "vat:21%"]) that doesn't fit into the
+// single-value Category / Collective slots.
 type RuleAssign struct {
-	Category    string `json:"category,omitempty"`    // category slug
-	Collective  string `json:"collective,omitempty"`  // collective slug
-	Event       string `json:"event,omitempty"`       // event UID
-	Type        string `json:"type,omitempty"`        // override tx.Type (CREDIT/DEBIT/MINT/BURN/INTERNAL/TRANSFER)
-	Description string `json:"description,omitempty"` // override metadata.description
+	Category    string   `json:"category,omitempty"`    // category slug
+	Collective  string   `json:"collective,omitempty"`  // collective slug
+	Event       string   `json:"event,omitempty"`       // event UID
+	Type        string   `json:"type,omitempty"`        // override tx.Type (CREDIT/DEBIT/MINT/BURN/INTERNAL/TRANSFER)
+	Description string   `json:"description,omitempty"` // override metadata.description
+	Tags        []string `json:"tags,omitempty"`        // additive labels (e.g. "shifter", "vat:21%")
 }
 
 // Rule is a categorization rule.
@@ -141,6 +154,16 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		// catch a €10 Stripe charge regardless of the ~€0.30 fee that
 		// makes the net €9.70.
 		if roundCents(txAmount(tx)) != roundCents(*m.Amount) {
+			return false
+		}
+	}
+
+	if m.MinAmount != nil || m.MaxAmount != nil {
+		abs := math.Abs(txAmount(tx))
+		if m.MinAmount != nil && roundCents(abs) < roundCents(*m.MinAmount) {
+			return false
+		}
+		if m.MaxAmount != nil && roundCents(abs) > roundCents(*m.MaxAmount) {
 			return false
 		}
 	}
@@ -272,6 +295,12 @@ func (r *Rule) RuleSummary() string {
 	if r.Match.Amount != nil {
 		parts = append(parts, fmt.Sprintf("amount: %.2f", *r.Match.Amount))
 	}
+	if r.Match.MinAmount != nil {
+		parts = append(parts, fmt.Sprintf("amount ≥ %.2f", *r.Match.MinAmount))
+	}
+	if r.Match.MaxAmount != nil {
+		parts = append(parts, fmt.Sprintf("amount ≤ %.2f", *r.Match.MaxAmount))
+	}
 	if r.Match.Direction != "" {
 		parts = append(parts, fmt.Sprintf("direction: %s", r.Match.Direction))
 	}
@@ -328,6 +357,20 @@ func (r *Rule) MatchesMove(m OdooOutgoingInvoicePublic, partner string, kind mov
 		}
 	}
 
+	if r.Match.Description != "" {
+		// For moves, "description" matches the FIRST non-section
+		// line item only — same text the operator sees in the
+		// "Description" column of `chb invoices`. We deliberately
+		// don't scan the whole line-item haystack: an invoice
+		// titled "Ostrom Event Space" + line 2 "Coffee, tea" would
+		// otherwise match a `*Coffee*` rule meant for coffee
+		// invoices.
+		hay := strings.ToLower(moveFirstLineItem(m))
+		if !globMatch(strings.ToLower(r.Match.Description), hay) {
+			return false
+		}
+	}
+
 	if r.Match.Currency != "" {
 		if !strings.EqualFold(r.Match.Currency, m.Currency) {
 			return false
@@ -340,13 +383,25 @@ func (r *Rule) MatchesMove(m OdooOutgoingInvoicePublic, partner string, kind mov
 		}
 	}
 
+	if r.Match.MinAmount != nil || r.Match.MaxAmount != nil {
+		abs := math.Abs(m.TotalAmount)
+		if r.Match.MinAmount != nil && roundCents(abs) < roundCents(*r.Match.MinAmount) {
+			return false
+		}
+		if r.Match.MaxAmount != nil && roundCents(abs) > roundCents(*r.Match.MaxAmount) {
+			return false
+		}
+	}
+
 	return true
 }
 
 // ApplyMoveRules walks every rule whose target matches the kind and
 // fills in any (collective, category) the move doesn't already have.
-// Rules without conditions act as default-assigners — keep them at
-// the END of rules.json so explicit overrides win first.
+// Tags are additive — merged from every matching rule, deduplicated,
+// and never removed. Rules without conditions act as default-
+// assigners — keep them at the END of rules.json so explicit
+// overrides win first.
 //
 // Mutates m in place.
 func ApplyMoveRules(m *OdooOutgoingInvoicePublic, partner string, kind moveKind, rules []Rule) {
@@ -360,11 +415,29 @@ func ApplyMoveRules(m *OdooOutgoingInvoicePublic, partner string, kind moveKind,
 		if m.Category == "" && r.Assign.Category != "" {
 			m.Category = r.Assign.Category
 		}
-		// Early exit when both have been filled. First matching rule
-		// wins per field; a later rule can still set a field an
-		// earlier rule didn't touch.
-		if m.Collective != "" && m.Category != "" {
-			return
+		for _, t := range r.Assign.Tags {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if !containsString(m.Tags, t) {
+				m.Tags = append(m.Tags, t)
+			}
+		}
+		// NOTE: we do NOT early-return when collective+category are
+		// both set — later rules can still contribute additional
+		// tags. The first-matching-rule-wins-per-field semantic only
+		// applies to the singular fields.
+	}
+}
+
+// containsString reports whether haystack contains needle (exact,
+// case-sensitive). Used for tag dedupe in ApplyMoveRules.
+func containsString(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
 		}
 	}
+	return false
 }

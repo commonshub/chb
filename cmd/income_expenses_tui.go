@@ -58,6 +58,7 @@ const (
 	incomeModeList incomeTUIMode = iota
 	incomeModeDrill
 	incomeModeEdit
+	incomeModeReconcile
 )
 
 type incomeTUIModel struct {
@@ -83,6 +84,18 @@ type incomeTUIModel struct {
 	catInput   textinput.Model
 	focusField int // 0 = collective, 1 = category
 
+	// Reconcile picker state — populated when [r] is pressed in drill
+	// mode. Holds the resolved Odoo bank statement line + journal +
+	// suggester output (unreconciled first; broadens to already-paid
+	// invoices/bills when no open match exists). The cursor here is
+	// a local index into reconcileCands; the outer m.cursor stays
+	// pointed at the underlying tx so we can return to it on Esc.
+	reconcileLine            OdooCacheLine
+	reconcileJournal         int
+	reconcileCands           []Suggestion
+	reconcileCursor          int
+	reconcileConfirmReattach bool // set when [enter] is pressed on an AlreadyAttached candidate; [y] confirms
+
 	status      string
 	statusError bool
 
@@ -101,6 +114,8 @@ func (m incomeTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case incomeModeEdit:
 			return m.updateEdit(msg)
+		case incomeModeReconcile:
+			return m.updateReconcile(msg)
 		case incomeModeDrill:
 			return m.updateDrill(msg)
 		}
@@ -201,6 +216,127 @@ func (m incomeTUIModel) updateDrill(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.statusError = false
 		return m, textinput.Blink
+	case "r":
+		if m.cursor < 0 || m.cursor >= len(txs) {
+			return m, nil
+		}
+		t := txs[m.cursor]
+		if t.ImportID == "" {
+			m.status = "Cannot reconcile: tx has no Odoo import id (account not configured?)."
+			m.statusError = true
+			return m, nil
+		}
+		line, jid, ok := findOdooLineForTx(t.ImportID)
+		if !ok {
+			m.status = "Tx not found in any local journal cache — run `chb pull` first."
+			m.statusError = true
+			return m, nil
+		}
+		if line.IsReconciled {
+			m.status = fmt.Sprintf("Tx is already reconciled on Odoo (journal #%d, line #%d).", jid, line.ID)
+			m.statusError = false
+			return m, nil
+		}
+		cands := SuggestForTx(t)
+		if len(cands) == 0 {
+			noun := "invoice"
+			if t.SignedAmount < 0 {
+				noun = "bill"
+			}
+			m.status = fmt.Sprintf("No %s candidates with amount %s — checked open AND paid.",
+				noun, fmtAmountCurrency(t.Amount, t.Currency))
+			m.statusError = false
+			return m, nil
+		}
+		m.mode = incomeModeReconcile
+		m.reconcileLine = line
+		m.reconcileJournal = jid
+		m.reconcileCands = cands
+		m.reconcileCursor = FirstUnattachedIndex(cands)
+		m.reconcileConfirmReattach = false
+		m.status = ""
+		m.statusError = false
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m incomeTUIModel) updateReconcile(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.mode = incomeModeDrill
+		m.reconcileCands = nil
+		m.reconcileCursor = 0
+		m.reconcileConfirmReattach = false
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	case "up", "k":
+		m.reconcileConfirmReattach = false
+		if m.reconcileCursor > 0 {
+			m.reconcileCursor--
+		}
+		return m, nil
+	case "down", "j":
+		m.reconcileConfirmReattach = false
+		if m.reconcileCursor < len(m.reconcileCands)-1 {
+			m.reconcileCursor++
+		}
+		return m, nil
+	case "enter":
+		if m.reconcileCursor < 0 || m.reconcileCursor >= len(m.reconcileCands) {
+			return m, nil
+		}
+		sugg := m.reconcileCands[m.reconcileCursor]
+		// Picking a paid candidate triggers unreconcile + reattach
+		// inside reconcileStatementLineWithMove. Confirm explicitly
+		// so a reflex Enter doesn't override a previous decision.
+		if sugg.AlreadyAttached && !m.reconcileConfirmReattach {
+			m.reconcileConfirmReattach = true
+			m.status = fmt.Sprintf("↻ %s %s is already %s. Press [y] to UNRECONCILE its existing match and reattach this tx, or [esc] to back out.",
+				sugg.Move.Kind, sugg.Move.label(),
+				defaultString(sugg.PaymentState, "settled"))
+			m.statusError = false
+			return m, nil
+		}
+		if err := attachTxToInvoiceCandidate(m.reconcileLine, m.reconcileJournal, sugg.Move); err != nil {
+			m.status = fmt.Sprintf("Attach failed: %v", err)
+			m.statusError = true
+			m.reconcileConfirmReattach = false
+			return m, nil
+		}
+		verb := "Reconciled with"
+		if sugg.AlreadyAttached {
+			verb = "Re-reconciled (unattached + reattached) with"
+		}
+		m.status = fmt.Sprintf("✓ %s %s %s (%s)",
+			verb, sugg.Move.Kind, sugg.Move.label(), sugg.Move.Date)
+		m.statusError = false
+		m.mode = incomeModeDrill
+		m.reconcileCands = nil
+		m.reconcileCursor = 0
+		m.reconcileConfirmReattach = false
+		return m, nil
+	case "y", "Y":
+		if !m.reconcileConfirmReattach ||
+			m.reconcileCursor < 0 || m.reconcileCursor >= len(m.reconcileCands) {
+			return m, nil
+		}
+		sugg := m.reconcileCands[m.reconcileCursor]
+		if err := attachTxToInvoiceCandidate(m.reconcileLine, m.reconcileJournal, sugg.Move); err != nil {
+			m.status = fmt.Sprintf("Reattach failed: %v", err)
+			m.statusError = true
+			m.reconcileConfirmReattach = false
+			return m, nil
+		}
+		m.status = fmt.Sprintf("✓ Re-reconciled (unattached + reattached) with %s %s (%s)",
+			sugg.Move.Kind, sugg.Move.label(), sugg.Move.Date)
+		m.statusError = false
+		m.mode = incomeModeDrill
+		m.reconcileCands = nil
+		m.reconcileCursor = 0
+		m.reconcileConfirmReattach = false
+		return m, nil
 	}
 	return m, nil
 }
@@ -262,6 +398,8 @@ func (m incomeTUIModel) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m incomeTUIModel) View() string {
 	switch m.mode {
+	case incomeModeReconcile:
+		return m.viewReconcile()
 	case incomeModeDrill, incomeModeEdit:
 		return m.viewDrill()
 	}
@@ -402,17 +540,18 @@ func (m incomeTUIModel) viewDrill() string {
 		end = len(cat.Txs)
 	}
 
-	headers := []string{"Date", "Counterparty", "Account", "Amount"}
-	rightAlign := map[int]bool{3: true}
-	caps := []int{10, 40, 14, 14}
+	headers := []string{"Date", "Counterparty", "Description", "Account", "Amount"}
+	rightAlign := map[int]bool{4: true}
+	caps := []int{10, 28, 32, 12, 14}
 
 	plain := make([][]string, 0, end-m.offset)
 	for i := m.offset; i < end; i++ {
 		t := cat.Txs[i]
 		plain = append(plain, []string{
 			t.Date,
-			Truncate(firstNonEmptyStr(t.Counterparty, t.Description, "—"), 40),
-			Truncate(t.AccountSlug, 14),
+			Truncate(t.Counterparty, 28),
+			Truncate(t.Description, 32),
+			Truncate(t.AccountSlug, 12),
 			fmtAmountCurrency(t.Amount, t.Currency),
 		})
 	}
@@ -470,19 +609,20 @@ func (m incomeTUIModel) viewDrill() string {
 	if m.cursor < len(cat.Txs) {
 		t := cat.Txs[m.cursor]
 		b.WriteString("\n  ")
-		b.WriteString(cpTUIHeaderStyle.Render("▸ " + firstNonEmptyStr(t.Counterparty, t.Description, t.URI)))
+		header := firstNonEmptyStr(t.Counterparty, t.Description, t.URI)
+		b.WriteString(cpTUIHeaderStyle.Render("▸ " + header))
 		b.WriteString("\n")
-		if t.Description != "" && t.Description != t.Counterparty {
-			b.WriteString("  ")
-			b.WriteString(cpTUIDimStyle.Render(padRight("Description", 14)))
-			b.WriteString(t.Description)
-			b.WriteString("\n")
-		}
 		writeKV := func(k, v string) {
 			b.WriteString("  ")
 			b.WriteString(cpTUIDimStyle.Render(padRight(k, 14)))
 			b.WriteString(v)
 			b.WriteString("\n")
+		}
+		if t.Counterparty != "" {
+			writeKV("Counterparty", t.Counterparty)
+		}
+		if t.Description != "" {
+			writeKV("Description", t.Description)
 		}
 		writeKV("Collective", defaultString(t.Collective, "—"))
 		writeKV("Category", defaultString(t.Category, "—"))
@@ -515,8 +655,141 @@ func (m incomeTUIModel) viewDrill() string {
 		b.WriteString("\n")
 	} else {
 		b.WriteString("\n  ")
-		b.WriteString(cpTUIDimStyle.Render("[↑/↓] navigate   [e] edit collective/category   [esc/q] back to categories"))
+		b.WriteString(cpTUIDimStyle.Render("[↑/↓] navigate   [e] edit collective/category   [r] reconcile with invoice/bill   [esc/q] back"))
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+func (m incomeTUIModel) viewReconcile() string {
+	var b strings.Builder
+	txs := m.cats[m.drillIdx].Txs
+	t := txs[m.cursor]
+	b.WriteString(cpTUIHeaderStyle.Render(fmt.Sprintf("⇄ Reconcile tx with invoice/bill — %s — %s",
+		t.Date, fmtAmountCurrency(t.Amount, t.Currency))))
+	b.WriteString("\n")
+	partnerHits, attachedHits := 0, 0
+	for _, c := range m.reconcileCands {
+		if c.PartnerMatch {
+			partnerHits++
+		}
+		if c.AlreadyAttached {
+			attachedHits++
+		}
+	}
+	subtitle := fmt.Sprintf("  %d candidate(s) — %d partner-match, then by date proximity",
+		len(m.reconcileCands), partnerHits)
+	if attachedHits > 0 {
+		subtitle += fmt.Sprintf("  ·  %d already paid (pick to unreconcile+reattach)", attachedHits)
+	}
+	b.WriteString(cpTUIDimStyle.Render(subtitle))
+	b.WriteString("\n\n")
+
+	headers := []string{"Sel", "Status", "Partner", "Date", "Δ", "Number", "Residual", "First line"}
+	rightAlign := map[int]bool{6: true}
+	caps := []int{3, 6, 8, 10, 6, 22, 14, 36}
+
+	plain := make([][]string, 0, len(m.reconcileCands))
+	for i, c := range m.reconcileCands {
+		mark := " "
+		if i == m.reconcileCursor {
+			mark = "▸"
+		}
+		status := ""
+		if c.AlreadyAttached {
+			status = defaultString(c.PaymentState, "paid")
+		}
+		match := ""
+		if c.PartnerMatch {
+			match = "match"
+		}
+		delta := dateDeltaLabel(c.Move.Date, t.Date)
+		// Display amount = residual when open, signed total when settled
+		// (residual goes to 0 once paid).
+		amt := c.Move.Residual
+		if amt == 0 {
+			amt = c.Move.SignedTotal
+		}
+		plain = append(plain, []string{
+			mark,
+			status,
+			match,
+			c.Move.Date,
+			delta,
+			Truncate(c.Move.label(), 22),
+			fmtAmountCurrency(amt, "EUR"),
+			Truncate(c.Move.FirstLineItem, 36),
+		})
+	}
+
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = displayWidth(h)
+	}
+	for _, r := range plain {
+		for i, c := range r {
+			if w := displayWidth(c); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	for i := range widths {
+		if widths[i] > caps[i] {
+			widths[i] = caps[i]
+		}
+	}
+
+	renderRow := func(cells []string, isHeader, isCursor bool) string {
+		parts := make([]string, len(cells))
+		for i, c := range cells {
+			if rightAlign[i] {
+				parts[i] = padLeft(c, widths[i])
+			} else {
+				parts[i] = padRight(c, widths[i])
+			}
+		}
+		line := "  " + strings.Join(parts, "  ")
+		switch {
+		case isHeader:
+			return cpTUIDimStyle.Render(line)
+		case isCursor:
+			return cpTUICursorStyle.Render(line)
+		}
+		return line
+	}
+
+	b.WriteString(renderRow(headers, true, false))
+	b.WriteString("\n")
+	for i, r := range plain {
+		b.WriteString(renderRow(r, false, i == m.reconcileCursor))
+		b.WriteString("\n")
+	}
+
+	// Detail panel for the cursor candidate.
+	if m.reconcileCursor >= 0 && m.reconcileCursor < len(m.reconcileCands) {
+		c := m.reconcileCands[m.reconcileCursor].Move
+		b.WriteString("\n  ")
+		b.WriteString(cpTUIHeaderStyle.Render("▸ " + firstNonEmptyStr(c.PartnerName, c.Number)))
+		b.WriteString("\n")
+		writeKV := func(k, v string) {
+			if v == "" {
+				return
+			}
+			b.WriteString("  ")
+			b.WriteString(cpTUIDimStyle.Render(padRight(k, 14)))
+			b.WriteString(v)
+			b.WriteString("\n")
+		}
+		writeKV("Kind", c.Kind)
+		writeKV("Number", c.Number)
+		writeKV("Date", c.Date)
+		writeKV("Residual", fmtAmountCurrency(c.Residual, "EUR"))
+		writeKV("Partner", c.PartnerName)
+		writeKV("First line", c.FirstLineItem)
+	}
+
+	b.WriteString("\n  ")
+	b.WriteString(cpTUIDimStyle.Render("[↑/↓] pick   [enter] attach (writes to Odoo)   [esc] back"))
+	b.WriteString("\n")
 	return b.String()
 }

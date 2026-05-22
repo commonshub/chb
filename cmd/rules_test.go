@@ -163,6 +163,155 @@ func TestApplyMoveRulesFillsBlanksOnly(t *testing.T) {
 	}
 }
 
+// TestRuleAmountRange pins the absolute-amount semantic of amount_min
+// / amount_max: a rule with `amount_min: 500` matches a +€600
+// incoming tx AND a -€600 outgoing tx (sign-independent), but not
+// a +€400 tx. Combine with `direction: "in"` to scope.
+func TestRuleAmountRange(t *testing.T) {
+	min := 500.0
+	rule := Rule{
+		Match: RuleMatch{MinAmount: &min, Direction: "in"},
+	}
+	mk := func(amount float64, in bool) TransactionEntry {
+		tx := TransactionEntry{
+			Amount: amount,
+			Type:   "CREDIT",
+		}
+		if !in {
+			tx.Type = "DEBIT"
+		}
+		return tx
+	}
+	if !rule.MatchesTransaction(mk(600, true)) {
+		t.Fatalf("amount_min=500, direction=in should match +600")
+	}
+	if rule.MatchesTransaction(mk(400, true)) {
+		t.Fatalf("amount_min=500 should NOT match +400")
+	}
+	if rule.MatchesTransaction(mk(800, false)) {
+		t.Fatalf("direction=in should NOT match an outgoing 800")
+	}
+
+	// Same range on a move (invoice): m.TotalAmount is absolute.
+	imv := Rule{
+		Target: "invoice",
+		Match:  RuleMatch{Title: "*OSV/20*", MinAmount: &min},
+		Assign: RuleAssign{Category: "sponsoring"},
+	}
+	hi := OdooOutgoingInvoicePublic{Title: "OSV/2024/0001", TotalAmount: 600}
+	lo := OdooOutgoingInvoicePublic{Title: "OSV/2024/0002", TotalAmount: 400}
+	if !imv.MatchesMove(hi, "", moveKindInvoice) {
+		t.Fatalf("title+amount_min should match a 600 OSV invoice")
+	}
+	if imv.MatchesMove(lo, "", moveKindInvoice) {
+		t.Fatalf("title+amount_min=500 should NOT match a 400 OSV invoice")
+	}
+}
+
+// TestInvoiceRuleDescriptionMatchesLineItems pins that the
+// `description` match field, when used on an invoice/bill target,
+// matches against the concatenated line item titles (NOT against
+// metadata.description, which is the transaction-target semantic).
+// Same field name on RuleMatch, different evaluation per target —
+// this lets operators author "match the text that describes this
+// row" rules without remembering the underlying schema.
+func TestInvoiceRuleDescriptionMatchesLineItems(t *testing.T) {
+	rules := []Rule{
+		{Target: "invoice", Match: RuleMatch{Description: "*room*"},
+			Assign: RuleAssign{Category: "rental", Collective: "commonshub"}},
+		{Target: "invoice", Match: RuleMatch{Description: "*cowork*"},
+			Assign: RuleAssign{Category: "coworking", Collective: "commonshub"}},
+	}
+
+	withLineItem := func(title string) OdooOutgoingInvoicePublic {
+		return OdooOutgoingInvoicePublic{
+			LineItems: []OdooInvoiceLineItem{{Title: title}},
+		}
+	}
+
+	cases := []struct {
+		title    string
+		wantCat  string
+	}{
+		{"Satoshi meeting room booking", "rental"},
+		{"Ostrom Event Space", ""}, // contains neither "room" nor "cowork"
+		{"Coworker 1 Month", "coworking"},
+		{"Coworking Solarpunk subscription", "coworking"},
+	}
+	for _, tc := range cases {
+		mv := withLineItem(tc.title)
+		ApplyMoveRules(&mv, "", moveKindInvoice, rules)
+		if mv.Category != tc.wantCat {
+			t.Fatalf("line item %q: want category %q, got %q", tc.title, tc.wantCat, mv.Category)
+		}
+	}
+
+	// Section / note rows should be skipped: a section titled "room"
+	// shouldn't trigger the rental rule on its own.
+	sectionOnly := OdooOutgoingInvoicePublic{
+		LineItems: []OdooInvoiceLineItem{
+			{DisplayType: "line_section", Title: "Meeting room category"},
+		},
+	}
+	ApplyMoveRules(&sectionOnly, "", moveKindInvoice, rules)
+	if sectionOnly.Category != "" {
+		t.Fatalf("section row shouldn't trigger description rule, got category %q", sectionOnly.Category)
+	}
+}
+
+// TestApplyMoveRulesMergesTags pins the additive semantics of
+// RuleAssign.Tags: every matching rule's tags get merged onto the
+// move, deduplicated, and never removed. Multiple rules can each
+// contribute tags — unlike Category / Collective which are first-
+// matching-rule-wins.
+func TestApplyMoveRulesMergesTags(t *testing.T) {
+	amount := 121.0
+	rules := []Rule{
+		{
+			Target: "invoice",
+			Match:  RuleMatch{Description: "Shifter*", Amount: &amount},
+			Assign: RuleAssign{
+				Category:   "coworking",
+				Collective: "commonshub",
+				Tags:       []string{"shifter", "vat:21%"},
+			},
+		},
+		{
+			Target: "invoice",
+			Match:  RuleMatch{Description: "*cowork*"},
+			Assign: RuleAssign{Tags: []string{"coworking-related"}},
+		},
+	}
+
+	// Both rules match a "Shifter coworking" line at €121 → tags
+	// from both should land, deduplicated.
+	mv := OdooOutgoingInvoicePublic{
+		TotalAmount: 121,
+		LineItems:   []OdooInvoiceLineItem{{Title: "Shifter coworking monthly"}},
+		Tags:        []string{"shifter"}, // pre-existing tag survives
+	}
+	ApplyMoveRules(&mv, "", moveKindInvoice, rules)
+	if mv.Category != "coworking" {
+		t.Fatalf("category = %q", mv.Category)
+	}
+	for _, want := range []string{"shifter", "vat:21%", "coworking-related"} {
+		if !containsString(mv.Tags, want) {
+			t.Fatalf("tags missing %q: %v", want, mv.Tags)
+		}
+	}
+	// Dedupe: "shifter" was pre-existing AND added by the rule; it
+	// should appear exactly once.
+	count := 0
+	for _, tag := range mv.Tags {
+		if tag == "shifter" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one 'shifter' tag, got %d (tags=%v)", count, mv.Tags)
+	}
+}
+
 // TestInvoiceRuleSubstringGlobCatchesReversal pins the lesson learned
 // after v3.4.0 shipped with prefix-anchored title globs: a credit
 // note / reversal whose title is "Reversal of: CHB/2025/00076,

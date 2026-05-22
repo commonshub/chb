@@ -3,119 +3,18 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"math"
 	"os"
 	"sort"
 	"strings"
 )
 
-// invoicePaymentCandidate pairs a cached unreconciled bank-statement
-// line with the journal it lives on. Used by the invoice-side
-// reconcile flow: starting from an open invoice/bill, surface every
-// bank line whose absolute amount matches (signed correctly for the
-// move kind), with partner-aware ordering so the most-likely match
-// surfaces first in the TUI picker.
-type invoicePaymentCandidate struct {
-	JournalID   int
-	JournalName string
-	Line        OdooCacheLine
-
-	// PartnerMatch is true when this candidate's partner_id resolves
-	// to the same Odoo partner the invoice references, OR when a
-	// token (≥3 chars) of the invoice's partner display name appears
-	// in the bank line's payment_ref / narration / counterparty name.
-	// The picker badges these and sorts them above amount-only matches.
-	PartnerMatch bool
-
-	// DaysDelta is |bank-line date − invoice date|, used for sorting
-	// within the partner-match and non-partner-match tiers. Always ≥0.
-	DaysDelta int
-}
-
-// findInvoicePaymentCandidates returns the cached bank-statement lines
-// that could be the unattached payment for the given invoice / bill.
-// Strict filters (always applied):
-//
-//   - IsReconciled lines are skipped (already attached elsewhere)
-//   - direction is gated by kind: invoices want incoming bank lines
-//     (positive amount); bills want outgoing (negative)
-//   - absolute amount must equal the move's total within ±0.01 EUR
-//   - synthetic (non-imported) cache rows are skipped
-//
-// Scoring (soft):
-//
-//   - partner match: try partner_id equality first via the local
-//     partner index; fall back to a fuzzy token match (any ≥3-char
-//     token of the invoice's partner name appearing in the bank
-//     line's payment_ref + narration + cached counterparty name).
-//   - date delta: absolute days between bank-line date and invoice date.
-//
-// Two-tier ordering: partner-matching candidates first (sorted by
-// date proximity), then non-partner-matching candidates (also by date
-// proximity). If the strict-partner pass returns no hits, the picker
-// still has the date-sorted full list — the partner condition relaxes
-// automatically rather than failing silently.
-//
-// Reads only local caches — no Odoo RPCs. Up-to-date results require
-// a recent `chb pull`.
-func findInvoicePaymentCandidates(row moveRow, kind moveKind) []invoicePaymentCandidate {
-	amount := row.Move.TotalAmount
-	if amount <= 0 {
-		return nil
-	}
-	wantPositive := !kind.isBill // invoices = incoming, bills = outgoing
-	moveDate := row.Move.Date
-
-	// Resolve the invoice's partner_id once. We pull it from the
-	// private side via the partner index when row.Partner is a name —
-	// the public file doesn't carry partner_id directly, so we
-	// reverse-look up by display name. Falls through to "no id" on
-	// no match; the fuzzy token path still works.
-	partnerIdx := loadLatestOdooPartnerIndex(DataDir())
-	invoicePartnerID := partnerIDForMoveRow(row, partnerIdx)
-	partnerTokens := partnerNameTokens(row.Partner)
-
-	var out []invoicePaymentCandidate
-	for _, jid := range allLinkedOdooJournalIDs() {
-		lines, ok := loadLatestOdooJournalLinesCache(jid)
-		if !ok {
-			continue
-		}
-		journalName := ""
-		if acc := linkedAccountForJournal(jid); acc != nil {
-			journalName = acc.Slug
-		}
-		for _, ln := range lines {
-			if ln.IsReconciled || isOdooSyntheticLine(ln) || ln.Amount == 0 {
-				continue
-			}
-			if (ln.Amount > 0) != wantPositive {
-				continue
-			}
-			if math.Abs(math.Abs(ln.Amount)-amount) > 0.01 {
-				continue
-			}
-			out = append(out, invoicePaymentCandidate{
-				JournalID:    jid,
-				JournalName:  journalName,
-				Line:         ln,
-				PartnerMatch: bankLineMatchesPartner(ln, invoicePartnerID, partnerTokens, partnerIdx),
-				DaysDelta:    dateDeltaDaysAbs(ln.Date, moveDate),
-			})
-		}
-	}
-
-	// Two-tier sort: partner-matching first (true > false), then by
-	// date proximity within each tier (smaller delta = better). The
-	// stable sort keeps cache order as the final tiebreaker.
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].PartnerMatch != out[j].PartnerMatch {
-			return out[i].PartnerMatch
-		}
-		return out[i].DaysDelta < out[j].DaysDelta
-	})
-	return out
-}
+// invoicePaymentCandidate + findInvoicePaymentCandidates have been
+// replaced by Suggestion + SuggestForMove in cmd/reconcile_suggest.go,
+// which adds two-pass widening (unreconciled → all-posted) so the
+// picker can offer unreconcile + reattach for already-paid lines.
+// The partner-matching + scoring helpers below (partnerIDForMoveRow,
+// partnerNameTokens, bankLineMatchesPartner) are still used by the
+// new suggester unchanged.
 
 // partnerIDForMoveRow returns the Odoo partner_id of the invoice's
 // customer / vendor, resolved via the local partner index. Falls back
@@ -196,16 +95,19 @@ func bankLineMatchesPartner(ln OdooCacheLine, invoicePartnerID int, tokens []str
 
 // attachMoveToBankLine wires up the chosen bank line to the
 // invoice/bill via the same machinery the journal-side reconcile uses
-// (draft → rewrite suspense counterpart → repost → reconcile). On
-// success, the local journal-lines cache is patched so future runs
+// (draft → rewrite suspense counterpart → repost → reconcile). When
+// sugg is an AlreadyAttached suggestion, reconcileStatementLineWithMove
+// detects the previous match and performs unreconcile + reattach.
+//
+// On success, the local journal-lines cache is patched so future runs
 // don't propose the same line again, and the in-memory moveRow gets a
 // synthetic ReconciledTransaction so the TUI reflects the change
 // immediately.
-func attachMoveToBankLine(creds *OdooCredentials, uid int, row *moveRow, cand invoicePaymentCandidate) error {
+func attachMoveToBankLine(creds *OdooCredentials, uid int, row *moveRow, sugg Suggestion) error {
 	line := odooStatementLineForReconcile{
-		ID:     cand.Line.ID,
-		MoveID: cand.Line.MoveID,
-		Amount: cand.Line.Amount,
+		ID:     sugg.Line.ID,
+		MoveID: sugg.Line.MoveID,
+		Amount: sugg.Line.Amount,
 	}
 	moveCand := odooMoveCandidate{
 		ID:             row.Move.ID,
@@ -220,17 +122,17 @@ func attachMoveToBankLine(creds *OdooCredentials, uid int, row *moveRow, cand in
 	// Mark the line reconciled in the cache so a follow-up `chb
 	// invoices reconcile` (or the interactive picker's next iteration)
 	// doesn't surface it again. Cheap in-place patch.
-	if cached, ok := loadLatestOdooJournalLinesCache(cand.JournalID); ok {
+	if cached, ok := loadLatestOdooJournalLinesCache(sugg.JournalID); ok {
 		patched := false
 		for i := range cached {
-			if cached[i].ID == cand.Line.ID {
+			if cached[i].ID == sugg.Line.ID {
 				cached[i].IsReconciled = true
 				patched = true
 				break
 			}
 		}
 		if patched {
-			_, _ = writeOdooJournalLinesCacheFile(cand.JournalID, cached)
+			_, _ = writeOdooJournalLinesCacheFile(sugg.JournalID, cached)
 		}
 	}
 
@@ -238,12 +140,12 @@ func attachMoveToBankLine(creds *OdooCredentials, uid int, row *moveRow, cand in
 	// payment attached" to "linked tx" immediately. The next `chb pull
 	// invoices` regenerates this field from Odoo's source-of-truth.
 	row.Move.ReconciledTransaction = &OdooReconciledTransaction{
-		ID:           cand.Line.UniqueImportID,
+		ID:           sugg.Line.UniqueImportID,
 		Provider:     "odoo",
-		Date:         cand.Line.Date,
-		Amount:       cand.Line.Amount,
-		Reference:    cand.Line.PaymentRef,
-		AccountSlug:  cand.JournalName,
+		Date:         sugg.Line.Date,
+		Amount:       sugg.Line.Amount,
+		Reference:    sugg.Line.PaymentRef,
+		AccountSlug:  sugg.JournalName,
 		Counterparty: row.Partner,
 	}
 	return nil
@@ -327,13 +229,24 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 
 	type plan struct {
 		Row      moveRow
-		Cands    []invoicePaymentCandidate
+		Cands    []Suggestion
 		Decision string // "match" | "ambiguous" | "none"
 	}
 	plans := make([]plan, 0, len(open))
 	var matched, ambiguous, none int
 	for _, r := range open {
-		cands := findInvoicePaymentCandidates(r, kind)
+		// Non-interactive batch stays narrow: only act on unambiguous
+		// UNRECONCILED matches. Filter out AlreadyAttached candidates
+		// (the suggester's widening fallback) — those need the
+		// interactive picker so the operator can confirm the
+		// unreconcile + reattach.
+		all := SuggestForMove(r, kind)
+		cands := make([]Suggestion, 0, len(all))
+		for _, s := range all {
+			if !s.AlreadyAttached {
+				cands = append(cands, s)
+			}
+		}
 		p := plan{Row: r, Cands: cands}
 		switch {
 		case len(cands) == 0:
@@ -452,7 +365,7 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 	return nil
 }
 
-func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []invoicePaymentCandidate, decision string) {
+func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []Suggestion, decision string) {
 	icon, color := "?", Fmt.Yellow
 	switch decision {
 	case "match":
@@ -496,7 +409,7 @@ func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []invoicePayme
 
 // candidatePartnerBadge returns a colored "  [partner]" suffix when
 // the candidate's PartnerMatch flag is set, empty string otherwise.
-func candidatePartnerBadge(c invoicePaymentCandidate) string {
+func candidatePartnerBadge(c Suggestion) string {
 	if !c.PartnerMatch {
 		return ""
 	}

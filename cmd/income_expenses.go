@@ -39,6 +39,19 @@ type incomeExpenseTx struct {
 	// `chb generate` re-runs rebucket the rows on the next read.
 	Category   string
 	Collective string
+
+	// SignedAmount keeps the directional amount (positive ⇔ CREDIT
+	// from the account's perspective, negative ⇔ DEBIT). Used by the
+	// [r] reconcile flow to decide whether to surface invoice or
+	// bill candidates.
+	SignedAmount float64
+
+	// ImportID is the unique_import_id this tx will (or did) get on
+	// the Odoo bank statement line. Populated at collection time via
+	// buildUniqueImportID(acc, tx); empty when the account isn't
+	// configured. Used by the [r] reconcile flow to find the Odoo
+	// line in the local journal cache.
+	ImportID string
 }
 
 // incomeCategoryBucket aggregates transactions for one category over
@@ -89,17 +102,24 @@ func runIncomeExpenseReport(direction string, args []string) error {
 	// Stripe payment shows up under a noisy 20-char key instead of "stripe".
 	configuredAccounts := LoadAccountConfigs()
 	slugIndex := map[string]string{}
-	for _, acc := range configuredAccounts {
+	// accIndex by slug → *AccountConfig — used to build the
+	// unique_import_id for the interactive [r] reconcile flow.
+	accIndex := map[string]*AccountConfig{}
+	for i := range configuredAccounts {
+		acc := &configuredAccounts[i]
 		slug := strings.ToLower(strings.TrimSpace(acc.Slug))
 		if slug == "" {
 			continue
 		}
 		slugIndex[slug] = acc.Slug
+		accIndex[slug] = acc
 		if acc.AccountID != "" {
 			slugIndex[strings.ToLower(acc.AccountID)] = acc.Slug
+			accIndex[strings.ToLower(acc.AccountID)] = acc
 		}
 		if acc.Address != "" {
 			slugIndex[strings.ToLower(acc.Address)] = acc.Slug
+			accIndex[strings.ToLower(acc.Address)] = acc
 		}
 	}
 	resolveSlug := func(tx TransactionEntry) string {
@@ -111,6 +131,15 @@ func runIncomeExpenseReport(direction string, args []string) error {
 			return s
 		}
 		return raw
+	}
+	resolveAcc := func(tx TransactionEntry) *AccountConfig {
+		if a, ok := accIndex[strings.ToLower(strings.TrimSpace(tx.AccountSlug))]; ok {
+			return a
+		}
+		if a, ok := accIndex[strings.ToLower(strings.TrimSpace(tx.Account))]; ok {
+			return a
+		}
+		return nil
 	}
 
 	months := ExpandMonthRange(spec.StartMonth, spec.EndMonth)
@@ -170,17 +199,27 @@ func runIncomeExpenseReport(direction string, args []string) error {
 			b.Count++
 			b.Amount = roundReportAmount(b.Amount + amount)
 			if interactive {
+				signed := amount
+				if tx.IsOutgoing() {
+					signed = -amount
+				}
+				importID := ""
+				if acc := resolveAcc(tx); acc != nil {
+					importID = buildUniqueImportID(acc, tx)
+				}
 				b.Txs = append(b.Txs, incomeExpenseTx{
 					Date:         time.Unix(tx.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02"),
 					Timestamp:    tx.Timestamp,
 					Counterparty: incomeExpenseTxCounterparty(tx),
 					AccountSlug:  resolveSlug(tx),
 					Amount:       amount,
+					SignedAmount: signed,
 					Currency:     tx.Currency,
 					Description:  stringMetadata(tx.Metadata, "description"),
 					URI:          tx.ID,
 					Category:     tx.Category,
 					Collective:   tx.Collective,
+					ImportID:     importID,
 				})
 			}
 
@@ -338,19 +377,12 @@ func truncateCategory(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
-// incomeExpenseTxCounterparty returns the best human-readable label
-// for a tx in the interactive drill view: the resolved Counterparty
-// when available (already enriched with Nostr name / Stripe customer
-// / Monerium memo), falling back to metadata.description for fee /
-// payout rows that don't have a counterparty.
+// incomeExpenseTxCounterparty returns ONLY the counterparty — empty
+// when none. Description (metadata.description / memo) is kept in
+// its own field so the TUI can render the two as distinct columns
+// instead of collapsing them via a fallback.
 func incomeExpenseTxCounterparty(tx TransactionEntry) string {
-	if cp := strings.TrimSpace(tx.Counterparty); cp != "" {
-		return cp
-	}
-	if d := strings.TrimSpace(stringMetadata(tx.Metadata, "description")); d != "" {
-		return d
-	}
-	return "—"
+	return strings.TrimSpace(tx.Counterparty)
 }
 
 func formatIncomeExpenseRange(spec DateSpec) string {

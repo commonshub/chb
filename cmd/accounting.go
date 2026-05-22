@@ -138,6 +138,19 @@ func (c *Categorizer) Apply(tx *TransactionEntry) {
 			}
 			tx.Metadata["description"] = rule.Assign.Description
 		}
+		for _, spec := range rule.Assign.Tags {
+			// Reuse the CLI tag-spec parser so a rule's tags follow
+			// the same syntax operators use elsewhere:
+			//   "shifter"   → ["t", "shifter"]
+			//   "vat:21%"   → ["vat", "21%"]
+			tag, ok := parseTransactionTagSpec(spec)
+			if !ok {
+				continue
+			}
+			if !transactionHasTag(*tx, tag) {
+				tx.Tags = append(tx.Tags, tag)
+			}
+		}
 	}
 	// Semantic coherence: a tx whose category is "internal_transfer"
 	// IS, by definition, an internal transfer between accounts the

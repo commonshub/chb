@@ -69,9 +69,13 @@ type movesTUIModel struct {
 	focusField int
 
 	// Attach-payment picker state. Loaded lazily on `r` from the detail
-	// mode; reset when the detail view closes.
-	attachCands  []invoicePaymentCandidate
-	attachCursor int
+	// mode; reset when the detail view closes. Holds the two-tier
+	// suggester output: unreconciled-first, then AlreadyAttached
+	// (paid / reconciled) candidates the operator can pick to
+	// trigger unreconcile-and-reattach.
+	attachCands           []Suggestion
+	attachCursor          int
+	attachConfirmReattach bool // set when the operator presses [enter] on an AlreadyAttached candidate; [y] then applies
 
 	status      string
 	statusError bool
@@ -195,10 +199,10 @@ func (m movesTUIModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		row := m.rows[m.cursor]
-		m.attachCands = findInvoicePaymentCandidates(row, m.kind)
-		m.attachCursor = 0
+		m.attachCands = SuggestForMove(row, m.kind)
+		m.attachCursor = FirstUnattachedIndex(m.attachCands)
 		if len(m.attachCands) == 0 {
-			m.status = fmt.Sprintf("No matching unreconciled bank lines found for %s (amount %s).",
+			m.status = fmt.Sprintf("No matching bank lines found for %s (amount %s) — checked unreconciled AND reconciled.",
 				kindLabelN(m.kind, 1),
 				fmtAmountCurrency(row.Move.TotalAmount, row.Move.Currency))
 			m.statusError = false
@@ -228,15 +232,19 @@ func (m movesTUIModel) updateAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = movesModeDetail
 		m.attachCands = nil
 		m.attachCursor = 0
+		m.attachConfirmReattach = false
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
 	case "up", "k":
+		// Cursor movement cancels a pending reattach confirm.
+		m.attachConfirmReattach = false
 		if m.attachCursor > 0 {
 			m.attachCursor--
 		}
 		return m, nil
 	case "down", "j":
+		m.attachConfirmReattach = false
 		if m.attachCursor < len(m.attachCands)-1 {
 			m.attachCursor++
 		}
@@ -247,27 +255,66 @@ func (m movesTUIModel) updateAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		row := &m.rows[m.cursor]
 		cand := m.attachCands[m.attachCursor]
+		// For AlreadyAttached bank lines, picking one triggers
+		// unreconcile + reattach inside reconcileStatementLineWithMove.
+		// Pause for an explicit "yes" via `y` so the operator can't
+		// override a previous reconciliation by reflex.
+		if cand.AlreadyAttached && !m.attachConfirmReattach {
+			m.attachConfirmReattach = true
+			m.status = fmt.Sprintf("↻ Line #%d is already reconciled. Press [y] to UNRECONCILE its existing match and reattach to %s #%d, or [esc] to back out.",
+				cand.Line.ID, m.kind.label, row.Move.ID)
+			m.statusError = false
+			return m, nil
+		}
 		if err := applyAttachPayment(row, cand); err != nil {
 			m.status = fmt.Sprintf("Attach failed: %v", err)
 			m.statusError = true
+			m.attachConfirmReattach = false
 			return m, nil
 		}
-		m.status = fmt.Sprintf("✓ Attached line #%d (%s, %s) to %s #%d",
-			cand.Line.ID, cand.JournalName, cand.Line.Date, m.kind.label, row.Move.ID)
+		verb := "Attached"
+		if cand.AlreadyAttached {
+			verb = "Reattached"
+		}
+		m.status = fmt.Sprintf("✓ %s line #%d (%s, %s) to %s #%d",
+			verb, cand.Line.ID, cand.JournalName, cand.Line.Date, m.kind.label, row.Move.ID)
 		m.statusError = false
 		m.mode = movesModeDetail
 		m.attachCands = nil
 		m.attachCursor = 0
+		m.attachConfirmReattach = false
+		return m, nil
+	case "y", "Y":
+		// Only meaningful as the confirm response to a reattach
+		// prompt. Treat any other context as a no-op.
+		if m.attachConfirmReattach && m.attachCursor >= 0 && m.attachCursor < len(m.attachCands) {
+			row := &m.rows[m.cursor]
+			cand := m.attachCands[m.attachCursor]
+			if err := applyAttachPayment(row, cand); err != nil {
+				m.status = fmt.Sprintf("Reattach failed: %v", err)
+				m.statusError = true
+				m.attachConfirmReattach = false
+				return m, nil
+			}
+			m.status = fmt.Sprintf("✓ Reattached line #%d (%s, %s) to %s #%d",
+				cand.Line.ID, cand.JournalName, cand.Line.Date, m.kind.label, row.Move.ID)
+			m.statusError = false
+			m.mode = movesModeDetail
+			m.attachCands = nil
+			m.attachCursor = 0
+			m.attachConfirmReattach = false
+		}
 		return m, nil
 	}
 	return m, nil
 }
 
 // applyAttachPayment resolves Odoo creds, authenticates, and calls
-// attachMoveToBankLine. Kept separate from the TUI Update handler so
-// the unhappy paths (creds missing, auth failed, RPC error) all
-// surface as a single status string.
-func applyAttachPayment(row *moveRow, cand invoicePaymentCandidate) error {
+// attachMoveToBankLine via the existing invoice-side write path.
+// Works for both fresh attaches and reattaches — when the bank line
+// is already reconciled, the chain inside reconcileStatementLineWithMove
+// detects the case and unreconciles before relinking.
+func applyAttachPayment(row *moveRow, sugg Suggestion) error {
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
 		return err
@@ -276,7 +323,7 @@ func applyAttachPayment(row *moveRow, cand invoicePaymentCandidate) error {
 	if err != nil || uid == 0 {
 		return fmt.Errorf("Odoo authentication failed: %v", err)
 	}
-	return attachMoveToBankLine(creds, uid, row, cand)
+	return attachMoveToBankLine(creds, uid, row, sugg)
 }
 
 func (m movesTUIModel) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -413,12 +460,13 @@ func (m movesTUIModel) View() string {
 	}
 
 	const (
-		partnerCap = 28
-		descCap    = 32
-		slugCap    = 14
+		partnerCap = 24
+		refCap     = 20
+		descCap    = 28
+		slugCap    = 12
 	)
-	headers := []string{"Sel", "Date", partnerColumnLabel(m.kind), "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
-	rightAlign := map[int]bool{4: true, 5: true, 6: true, 7: true}
+	headers := []string{"Sel", "Date", partnerColumnLabel(m.kind), "Reference", "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
+	rightAlign := map[int]bool{5: true, 6: true, 7: true, 8: true}
 
 	plain := make([][]string, 0, end-m.offset)
 	for i := m.offset; i < end; i++ {
@@ -427,13 +475,13 @@ func (m movesTUIModel) View() string {
 		if m.selected[i] {
 			mark = "[×]"
 		}
-		desc := moveDescription(r.Move)
 		cur := r.Move.Currency
 		plain = append(plain, []string{
 			mark,
 			r.Move.Date,
 			Truncate(r.Partner, partnerCap),
-			Truncate(desc, descCap),
+			Truncate(moveReference(r.Move), refCap),
+			Truncate(moveFirstLineItem(r.Move), descCap),
 			fmtAmountCurrency(r.Move.TotalAmount, cur),
 			fmtAmountCurrency(r.Move.VATAmount, cur),
 			fmtAmountCurrency(r.Move.UntaxedAmount, cur),
@@ -443,7 +491,7 @@ func (m movesTUIModel) View() string {
 		})
 	}
 
-	caps := []int{3, 10, partnerCap, descCap, 12, 12, 12, 4, slugCap, slugCap}
+	caps := []int{3, 10, partnerCap, refCap, descCap, 12, 12, 12, 4, slugCap, slugCap}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = displayWidth(h)
@@ -560,19 +608,26 @@ func (m movesTUIModel) renderAttach() string {
 		m.kind.label, mv.ID, mv.Date,
 		fmtAmountCurrency(mv.TotalAmount, mv.Currency))))
 	b.WriteString("\n")
-	partnerHits := 0
+	partnerHits, attachedHits := 0, 0
 	for _, c := range m.attachCands {
 		if c.PartnerMatch {
 			partnerHits++
 		}
+		if c.AlreadyAttached {
+			attachedHits++
+		}
 	}
-	b.WriteString(cpTUIDimStyle.Render(fmt.Sprintf("  %d candidate bank line(s) — %d partner-match, then by date proximity",
-		len(m.attachCands), partnerHits)))
+	subtitle := fmt.Sprintf("  %d candidate(s) — %d partner-match, then by date proximity",
+		len(m.attachCands), partnerHits)
+	if attachedHits > 0 {
+		subtitle += fmt.Sprintf("  ·  %d already reconciled (pick to unreconcile+reattach)", attachedHits)
+	}
+	b.WriteString(cpTUIDimStyle.Render(subtitle))
 	b.WriteString("\n\n")
 
-	headers := []string{"Sel", "Partner", "Date", "Δ", "Amount", "Journal", "Description", "Ref / Counterparty"}
-	rightAlign := map[int]bool{4: true}
-	caps := []int{3, 8, 10, 6, 14, 14, 36, 30}
+	headers := []string{"Sel", "Status", "Partner", "Date", "Δ", "Amount", "Journal", "Description", "Ref / Counterparty"}
+	rightAlign := map[int]bool{5: true}
+	caps := []int{3, 6, 8, 10, 6, 14, 14, 36, 30}
 
 	plain := make([][]string, 0, len(m.attachCands))
 	for i, c := range m.attachCands {
@@ -589,11 +644,13 @@ func (m movesTUIModel) renderAttach() string {
 		if journal == "" {
 			journal = fmt.Sprintf("#%d", c.JournalID)
 		}
-		// Use UniqueImportID as a stable identifier when present; falls
-		// back to the cached line id otherwise.
 		stableID := c.Line.UniqueImportID
 		if stableID == "" {
 			stableID = fmt.Sprintf("line #%d", c.Line.ID)
+		}
+		status := ""
+		if c.AlreadyAttached {
+			status = "paid"
 		}
 		partnerBadge := ""
 		if c.PartnerMatch {
@@ -601,6 +658,7 @@ func (m movesTUIModel) renderAttach() string {
 		}
 		plain = append(plain, []string{
 			mark,
+			status,
 			partnerBadge,
 			c.Line.Date,
 			delta,

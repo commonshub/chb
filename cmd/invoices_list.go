@@ -20,22 +20,87 @@ import (
 // move title looks like one of these.
 var structuredPaymentRefPattern = regexp.MustCompile(`^\+*[\d/.\s-]+\+*$`)
 
-// moveDescription returns the most informative one-line description for
-// a move: the title, unless it's an opaque payment reference, in which
-// case the first non-empty line-item title (or product name) takes
-// over. Empty string when neither yields anything readable.
+// moveReference returns the canonical reference for a move — the
+// invoice / bill number like "CHB/2026/00299" or a structured
+// payment reference (`+++000/0030/50648+++`). Falls back to the
+// move's internal id when blank. The display sees this in the
+// "Reference" column.
+func moveReference(m OdooOutgoingInvoicePublic) string {
+	if t := strings.TrimSpace(m.Title); t != "" {
+		return t
+	}
+	return fmt.Sprintf("#%d", m.ID)
+}
+
+// moveFirstLineItem returns the human-readable first line item of a
+// move, skipping Odoo's purely-presentational rows (line_section /
+// line_note). Falls back to the product name when the line has no
+// title; empty when nothing useful is present (e.g. a move with no
+// line items, or only section rows). The display sees this in the
+// "Description" column.
+//
+// Newlines and tabs in the source are collapsed to single spaces so
+// table layout doesn't break — multi-line Odoo descriptions (one
+// row's title is often "Ostrom Event Space\nOstrom Event Space\n…")
+// must render as a single line in tabular output.
+func moveFirstLineItem(m OdooOutgoingInvoicePublic) string {
+	for _, li := range m.LineItems {
+		switch strings.ToLower(li.DisplayType) {
+		case "line_section", "line_note":
+			continue
+		}
+		if t := collapseWhitespace(li.Title); t != "" {
+			return t
+		}
+		if p := collapseWhitespace(li.ProductName); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// collapseWhitespace trims and folds runs of whitespace (newlines,
+// tabs, repeated spaces) into a single space. Idempotent.
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// moveLineItemHaystack returns one lowercase string containing every
+// non-section / non-note line item's title and product name, joined
+// by single spaces. Used by rules.json's `description` match field
+// when the rule's target is invoice / bill — so a rule like
+// `description: "*room*"` catches any line item mentioning a room
+// regardless of which line it lives on.
+func moveLineItemHaystack(m OdooOutgoingInvoicePublic) string {
+	var b strings.Builder
+	for _, li := range m.LineItems {
+		switch strings.ToLower(li.DisplayType) {
+		case "line_section", "line_note":
+			continue
+		}
+		if t := strings.TrimSpace(li.Title); t != "" {
+			b.WriteString(t)
+			b.WriteByte(' ')
+		}
+		if p := strings.TrimSpace(li.ProductName); p != "" {
+			b.WriteString(p)
+			b.WriteByte(' ')
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// moveDescription is retained for callers that want one composite
+// label (e.g. CSV legacy consumers); prefers the line item title
+// when the move title is just a structured payment ref. New display
+// surfaces should call moveReference + moveFirstLineItem separately.
 func moveDescription(m OdooOutgoingInvoicePublic) string {
 	title := strings.TrimSpace(m.Title)
 	if title != "" && !structuredPaymentRefPattern.MatchString(title) {
 		return title
 	}
-	for _, li := range m.LineItems {
-		if t := strings.TrimSpace(li.Title); t != "" {
-			return t
-		}
-		if p := strings.TrimSpace(li.ProductName); p != "" {
-			return p
-		}
+	if li := moveFirstLineItem(m); li != "" {
+		return li
 	}
 	return title
 }
@@ -65,6 +130,8 @@ func runMoveList(args []string, kind moveKind) error {
 	interactive := HasFlag(args, "-i", "--interactive")
 	all := HasFlag(args, "--all")
 	unreconciled := HasFlag(args, "--unreconciled", "--open")
+	noCategory := HasFlag(args, "--no-category")
+	noCollective := HasFlag(args, "--no-collective")
 	limit := GetNumber(args, []string{"-n", "--limit"}, invoicesDefaultLimit)
 	posYear, posMonth, _ := ParseYearMonthArg(args)
 
@@ -83,10 +150,45 @@ func runMoveList(args []string, kind moveKind) error {
 		rows = filtered
 	}
 
+	// Filter on the EFFECTIVE (post-rule) value so the result is
+	// WYSIWYG with the rendered Category / Collective columns: a
+	// blank cell passes; a rule-derived value (e.g. "rental" for
+	// CHB/*) does not. Use the raw fields below if you ever want a
+	// "what's blank at the source regardless of rules" view.
+	if noCategory {
+		filtered := rows[:0]
+		for _, r := range rows {
+			if strings.TrimSpace(r.Move.Category) == "" {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
+	}
+
+	if noCollective {
+		filtered := rows[:0]
+		for _, r := range rows {
+			if strings.TrimSpace(r.Move.Collective) == "" {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
+	}
+
 	if len(rows) == 0 {
 		noun := kind.labelPl
+		var quals []string
 		if unreconciled {
-			noun = "unreconciled " + noun
+			quals = append(quals, "unreconciled")
+		}
+		if noCategory {
+			quals = append(quals, "no-category")
+		}
+		if noCollective {
+			quals = append(quals, "no-collective")
+		}
+		if len(quals) > 0 {
+			noun = strings.Join(quals, " ") + " " + noun
 		}
 		fmt.Printf("\n%sNo %s found%s\n\n", Fmt.Dim, noun, Fmt.Reset)
 		return nil
@@ -128,10 +230,19 @@ func moveIsOpen(m OdooOutgoingInvoicePublic) bool {
 // moveRow wraps an OdooOutgoingInvoicePublic with location info (year,
 // month) needed to re-save it, plus the counterpart display name pulled
 // from the private companion file.
+//
+// RawCategory / RawCollective hold the source-of-truth values that
+// were on the JSON record BEFORE the rule engine filled in defaults.
+// Display uses Move.Category / Move.Collective (rule-applied); filters
+// like `--no-category` use the Raw* fields so the catch-all
+// "commonshub" rule doesn't mask invoices the operator still needs
+// to triage at the source.
 type moveRow struct {
-	Year, Month string
-	Move        OdooOutgoingInvoicePublic
-	Partner     string // customer (invoices) or vendor (bills) display name
+	Year, Month   string
+	Move          OdooOutgoingInvoicePublic
+	Partner       string // customer (invoices) or vendor (bills) display name
+	RawCategory   string
+	RawCollective string
 }
 
 // loadMoveRows walks every month directory and collects matching moves.
@@ -164,12 +275,16 @@ func loadMoveRows(kind moveKind, posYear, posMonth string) ([]moveRow, error) {
 		partners := loadMovePartners(dataDir, year, month, kind)
 		for _, m := range moves {
 			partner := partners[m.ID]
+			rawCat := m.Category
+			rawColl := m.Collective
 			ApplyMoveRules(&m, partner, kind, rules)
 			out = append(out, moveRow{
-				Year:    year,
-				Month:   month,
-				Move:    m,
-				Partner: partner,
+				Year:          year,
+				Month:         month,
+				Move:          m,
+				Partner:       partner,
+				RawCategory:   rawCat,
+				RawCollective: rawColl,
 			})
 		}
 		return nil
@@ -192,25 +307,25 @@ func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow)
 	scope := counterpartiesScopeLabel(posYear, posMonth)
 	fmt.Printf("\n%s%s%s\n\n", Fmt.Bold, moveListTitle(kind, scope), Fmt.Reset)
 
-	headers := []string{"Date", partnerColumnLabel(kind), "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
-	rightAlign := map[int]bool{3: true, 4: true, 5: true, 6: true}
+	headers := []string{"Date", partnerColumnLabel(kind), "Reference", "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
+	rightAlign := map[int]bool{4: true, 5: true, 6: true, 7: true}
 
 	cells := make([][]string, 0, len(rows))
 	var totalGross, totalVAT, totalNet, totalPaid float64
 	paidCount := 0
 	for _, r := range rows {
-		desc := moveDescription(r.Move)
 		cur := r.Move.Currency
 		cells = append(cells, []string{
 			r.Move.Date,
-			Truncate(r.Partner, 30),
-			Truncate(desc, 40),
+			Truncate(r.Partner, 28),
+			Truncate(moveReference(r.Move), 22),
+			Truncate(moveFirstLineItem(r.Move), 32),
 			fmtAmountCurrency(r.Move.TotalAmount, cur),
 			fmtAmountCurrency(r.Move.VATAmount, cur),
 			fmtAmountCurrency(r.Move.UntaxedAmount, cur),
 			movePaidCell(r.Move),
-			Truncate(r.Move.Collective, 14),
-			Truncate(r.Move.Category, 14),
+			Truncate(r.Move.Collective, 12),
+			Truncate(r.Move.Category, 12),
 		})
 		totalGross += r.Move.TotalAmount
 		totalVAT += r.Move.VATAmount
@@ -224,6 +339,7 @@ func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow)
 	totalRow := []string{
 		"",
 		Pluralize(len(rows), kind.label, "") + " — total",
+		"",
 		"",
 		fmtEUR(totalGross),
 		fmtEUR(totalVAT),
@@ -254,17 +370,17 @@ func partnerColumnLabel(kind moveKind) string {
 
 func printMoveListCSV(kind moveKind, rows []moveRow) {
 	partner := partnerColumnLabel(kind)
-	fmt.Printf("date,%s,description,gross,vat,net,currency,paid,collective,category,state,payment_state\n", strings.ToLower(partner))
+	fmt.Printf("date,%s,reference,description,gross,vat,net,currency,paid,collective,category,state,payment_state\n", strings.ToLower(partner))
 	for _, r := range rows {
-		desc := moveDescription(r.Move)
 		paid := "no"
 		if !moveIsOpen(r.Move) {
 			paid = "yes"
 		}
-		fmt.Printf("%s,%s,%s,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s\n",
+		fmt.Printf("%s,%s,%s,%s,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s\n",
 			csvCell(r.Move.Date),
 			csvCell(r.Partner),
-			csvCell(desc),
+			csvCell(moveReference(r.Move)),
+			csvCell(moveFirstLineItem(r.Move)),
 			r.Move.TotalAmount, r.Move.VATAmount, r.Move.UntaxedAmount,
 			csvCell(r.Move.Currency),
 			paid,
@@ -418,12 +534,14 @@ func printMoveListHelp(kind moveKind) {
 %sCOLUMNS%s
   Date         Invoice / bill date
   %s    Display name from the private file (PII; in-memory only)
-  Description  Title, or first line-item title when empty
+  Reference    Move number / title (e.g. CHB/2026/00299, +++000/0030/…+++)
+  Description  First non-section line item title
   Gross        Total amount (VAT-inclusive)
   VAT          Total VAT
   Net          Untaxed amount
-  Collective   Annotation on the move record
-  Category     Annotation on the move record
+  Paid         ✓ when payment_state = paid OR a tx is attached
+  Collective   Annotation on the move record (rule-applied)
+  Category     Annotation on the move record (rule-applied)
 
 %sOPTIONS%s
   %s-i%s, %s--interactive%s    Open a TUI: navigate, drill in, set collective/category,
@@ -431,6 +549,13 @@ func printMoveListHelp(kind moveKind) {
                        candidate bank lines and reconcile in place.
   %s--unreconciled%s       Only %s whose payment_state ≠ paid AND that have no
                        attached payment yet. Pair with -i to triage open items.
+  %s--no-category%s        Only rows whose rendered Category column is blank — i.e.
+                       neither Odoo's source data nor any rule in rules.json
+                       has assigned one. Useful for finding invoices that
+                       need a new rule (or a manual [e] in the TUI).
+  %s--no-collective%s      Same, for Collective. With the embedded catch-all rule
+                       (match: {}, assign collective: commonshub) this will
+                       return zero rows unless you remove that fallback.
   %s-n%s <N>, %s--limit%s <N>   Limit output rows (default %d, use --all to show all)
   %s--all%s                Show every row
   %s--csv%s                Output CSV instead of a formatted table
@@ -454,13 +579,15 @@ func printMoveListHelp(kind moveKind) {
 		f.Bold, f.Reset,
 		partnerColumnLabel(kind),
 		f.Bold, f.Reset,
-		f.Yellow, f.Reset, f.Yellow, f.Reset,
-		f.Yellow, f.Reset, kind.labelPl,
-		f.Yellow, f.Reset, f.Yellow, f.Reset, invoicesDefaultLimit,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Yellow, f.Reset,
-		f.Bold, f.Reset,
+		f.Yellow, f.Reset, f.Yellow, f.Reset, // -i, --interactive
+		f.Yellow, f.Reset, kind.labelPl, // --unreconciled
+		f.Yellow, f.Reset, // --no-category
+		f.Yellow, f.Reset, // --no-collective
+		f.Yellow, f.Reset, f.Yellow, f.Reset, invoicesDefaultLimit, // -n / --limit
+		f.Yellow, f.Reset, // --all
+		f.Yellow, f.Reset, // --csv
+		f.Yellow, f.Reset, // --help
+		f.Bold, f.Reset, // RECONCILE SUBCOMMAND header
 		f.Cyan, kind.labelPl, f.Reset,
 		kind.labelPl,
 		f.Cyan, f.Reset,
