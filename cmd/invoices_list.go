@@ -182,11 +182,12 @@ func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow)
 	scope := counterpartiesScopeLabel(posYear, posMonth)
 	fmt.Printf("\n%s%s%s\n\n", Fmt.Bold, moveListTitle(kind, scope), Fmt.Reset)
 
-	headers := []string{"Date", partnerColumnLabel(kind), "Description", "Gross", "VAT", "Net", "Collective", "Category"}
-	rightAlign := map[int]bool{3: true, 4: true, 5: true}
+	headers := []string{"Date", partnerColumnLabel(kind), "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
+	rightAlign := map[int]bool{3: true, 4: true, 5: true, 6: true}
 
 	cells := make([][]string, 0, len(rows))
-	var totalGross, totalVAT, totalNet float64
+	var totalGross, totalVAT, totalNet, totalPaid float64
+	paidCount := 0
 	for _, r := range rows {
 		desc := moveDescription(r.Move)
 		cur := r.Move.Currency
@@ -197,25 +198,41 @@ func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow)
 			fmtAmountCurrency(r.Move.TotalAmount, cur),
 			fmtAmountCurrency(r.Move.VATAmount, cur),
 			fmtAmountCurrency(r.Move.UntaxedAmount, cur),
+			movePaidCell(r.Move),
 			Truncate(r.Move.Collective, 14),
 			Truncate(r.Move.Category, 14),
 		})
 		totalGross += r.Move.TotalAmount
 		totalVAT += r.Move.VATAmount
 		totalNet += r.Move.UntaxedAmount
+		if !moveIsOpen(r.Move) {
+			paidCount++
+			totalPaid += r.Move.TotalAmount
+		}
 	}
 
 	totalRow := []string{
 		"",
-		Pluralize(len(rows), kind.label, "")+ " — total",
+		Pluralize(len(rows), kind.label, "") + " — total",
 		"",
 		fmtEUR(totalGross),
 		fmtEUR(totalVAT),
 		fmtEUR(totalNet),
+		fmt.Sprintf("%d/%d", paidCount, len(rows)),
 		"",
 		"",
 	}
 	renderTicketsTable(headers, cells, totalRow, rightAlign)
+}
+
+// movePaidCell returns the table-cell string for the "Paid" column:
+// "✓" when the move is reconciled / payment_state=paid, "—" otherwise.
+// Plain runes so displayWidth (rune count) gives the right column width.
+func movePaidCell(m OdooOutgoingInvoicePublic) string {
+	if moveIsOpen(m) {
+		return "—"
+	}
+	return "✓"
 }
 
 func partnerColumnLabel(kind moveKind) string {
@@ -227,15 +244,20 @@ func partnerColumnLabel(kind moveKind) string {
 
 func printMoveListCSV(kind moveKind, rows []moveRow) {
 	partner := partnerColumnLabel(kind)
-	fmt.Printf("date,%s,description,gross,vat,net,currency,collective,category,state,payment_state\n", strings.ToLower(partner))
+	fmt.Printf("date,%s,description,gross,vat,net,currency,paid,collective,category,state,payment_state\n", strings.ToLower(partner))
 	for _, r := range rows {
 		desc := moveDescription(r.Move)
-		fmt.Printf("%s,%s,%s,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s\n",
+		paid := "no"
+		if !moveIsOpen(r.Move) {
+			paid = "yes"
+		}
+		fmt.Printf("%s,%s,%s,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s\n",
 			csvCell(r.Move.Date),
 			csvCell(r.Partner),
 			csvCell(desc),
 			r.Move.TotalAmount, r.Move.VATAmount, r.Move.UntaxedAmount,
 			csvCell(r.Move.Currency),
+			paid,
 			csvCell(r.Move.Collective),
 			csvCell(r.Move.Category),
 			csvCell(r.Move.State),

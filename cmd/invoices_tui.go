@@ -418,8 +418,8 @@ func (m movesTUIModel) View() string {
 		descCap    = 32
 		slugCap    = 14
 	)
-	headers := []string{"Sel", "Date", partnerColumnLabel(m.kind), "Description", "Gross", "VAT", "Net", "Collective", "Category"}
-	rightAlign := map[int]bool{4: true, 5: true, 6: true}
+	headers := []string{"Sel", "Date", partnerColumnLabel(m.kind), "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
+	rightAlign := map[int]bool{4: true, 5: true, 6: true, 7: true}
 
 	plain := make([][]string, 0, end-m.offset)
 	for i := m.offset; i < end; i++ {
@@ -438,12 +438,13 @@ func (m movesTUIModel) View() string {
 			fmtAmountCurrency(r.Move.TotalAmount, cur),
 			fmtAmountCurrency(r.Move.VATAmount, cur),
 			fmtAmountCurrency(r.Move.UntaxedAmount, cur),
+			movePaidCell(r.Move),
 			Truncate(r.Move.Collective, slugCap),
 			Truncate(r.Move.Category, slugCap),
 		})
 	}
 
-	caps := []int{3, 10, partnerCap, descCap, 12, 12, 12, slugCap, slugCap}
+	caps := []int{3, 10, partnerCap, descCap, 12, 12, 12, 4, slugCap, slugCap}
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = displayWidth(h)
