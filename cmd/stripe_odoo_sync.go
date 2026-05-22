@@ -1673,10 +1673,14 @@ func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountCo
 		}
 		fmt.Printf("  %sWill update on each stale line (draft → write → repost):%s\n", Fmt.Dim, Fmt.Reset)
 		if refCount > 0 {
-			fmt.Printf("    %s• payment_ref%s on %d line%s\n", Fmt.Yellow, Fmt.Reset, refCount, plural(refCount))
+			fmt.Printf("    %s• payment_ref%s on %d line%s — short human-readable label\n",
+				Fmt.Yellow, Fmt.Reset, refCount, plural(refCount))
 		}
 		if narrCount > 0 {
-			fmt.Printf("    %s• narration%s on %d line%s\n", Fmt.Yellow, Fmt.Reset, narrCount, plural(narrCount))
+			fmt.Printf("    %s• narration%s on %d line%s — structured JSON of the Stripe balance_transaction\n",
+				Fmt.Yellow, Fmt.Reset, narrCount, plural(narrCount))
+			fmt.Printf("      %s(bt id, type, fee/net, charge/payout id, customer, etc. — used by reports, NOT a duplicate of payment_ref)%s\n",
+				Fmt.Dim, Fmt.Reset)
 		}
 		fmt.Println()
 
@@ -1700,10 +1704,7 @@ func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountCo
 						Fmt.Yellow, truncate(u.OldRef, 60), Fmt.Reset,
 						Fmt.Green, truncate(u.PaymentRef, 60), Fmt.Reset)
 				case "narration":
-					fmt.Printf("      %snarration:%s  %s%s%s → %s%s%s\n",
-						Fmt.Dim, Fmt.Reset,
-						Fmt.Yellow, truncate(u.OldNarr, 60), Fmt.Reset,
-						Fmt.Green, truncate(narrationPreview(u.Narration), 60), Fmt.Reset)
+					printNarrationDiff(u.OldNarr, u.Narration)
 				}
 			}
 		}
@@ -1780,26 +1781,91 @@ func odooCredsHost(creds *OdooCredentials) string {
 	return creds.URL
 }
 
-// narrationPreview turns the JSON-encoded narration into a one-line
-// preview suitable for the FROM → TO table. The stored value is
-// `{"category":"stripe_fee","stripeFee":true,…}` which is unhelpful
-// at a glance; surface the human-readable bit.
-func narrationPreview(narr string) string {
+// printNarrationDiff renders the narration FROM → TO with enough
+// structure that the operator can see what's actually being stored.
+// Both sides are JSON blobs of Stripe BT data; showing them as one
+// truncated string makes the change look like a duplicate of
+// payment_ref, which it isn't. We render:
+//
+//	narration:
+//	  from: <empty>  OR  json{N keys: …}
+//	  to:   json{N keys: balanceTransaction=txn_…, type=…, fee=…, net=…}
+//	        description: "Billing - Usage Fee (2026-03-31)"
+//
+// Salient fields chosen to make it obvious this is the BT object,
+// not a description string.
+func printNarrationDiff(oldNarr, newNarr string) {
+	fmt.Printf("      %snarration:%s\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("        %sfrom:%s %s%s%s\n",
+		Fmt.Dim, Fmt.Reset,
+		Fmt.Yellow, narrationSummary(oldNarr, 80), Fmt.Reset)
+	fmt.Printf("        %sto:  %s%s%s%s\n",
+		Fmt.Dim, Fmt.Reset,
+		Fmt.Green, narrationSummary(newNarr, 100), Fmt.Reset)
+	// If the new value has a readable description, surface it on a
+	// dedicated line so the operator sees the human-friendly part
+	// without having to mentally JSON-parse the summary.
+	if desc := narrationDescription(newNarr); desc != "" {
+		fmt.Printf("        %sdescription:%s %s\n",
+			Fmt.Dim, Fmt.Reset, truncate(desc, 80))
+	}
+}
+
+// narrationSummary renders a JSON narration as
+// "json{N keys: balanceTransaction, type, fee, net, …}" — short
+// enough for a single line, informative enough to recognise as
+// structured Stripe BT data. Non-JSON / empty values pass through
+// as-is.
+func narrationSummary(narr string, limit int) string {
+	if narr == "" {
+		return "<empty>"
+	}
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(narr), &m) != nil {
+		one := strings.ReplaceAll(strings.ReplaceAll(narr, "\n", " "), "\t", " ")
+		return truncate(one, limit)
+	}
+	if len(m) == 0 {
+		return "{}"
+	}
+	salient := []string{}
+	for _, k := range []string{"balanceTransaction", "type", "reportingCategory", "fee", "net", "chargeId", "payoutId", "customerName"} {
+		if _, ok := m[k]; ok {
+			salient = append(salient, k)
+		}
+	}
+	hint := fmt.Sprintf("json{%d keys", len(m))
+	if len(salient) > 0 {
+		cap := 4
+		if len(salient) < cap {
+			cap = len(salient)
+		}
+		hint += ": " + strings.Join(salient[:cap], ", ")
+		if len(salient) > cap {
+			hint += ", …"
+		}
+	}
+	hint += "}"
+	return truncate(hint, limit)
+}
+
+// narrationDescription pulls the human-friendly description field
+// out of a JSON narration. Returns "" when the value isn't JSON or
+// doesn't carry a description.
+func narrationDescription(narr string) string {
 	if narr == "" {
 		return ""
 	}
-	// Try to extract the "description" or "stripeDescription" field
-	// from the JSON. Falls back to the raw value.
 	var m map[string]interface{}
-	if json.Unmarshal([]byte(narr), &m) == nil {
-		for _, key := range []string{"description", "stripeDescription"} {
-			if v, ok := m[key].(string); ok && v != "" {
-				return v
-			}
+	if json.Unmarshal([]byte(narr), &m) != nil {
+		return ""
+	}
+	for _, key := range []string{"description", "stripeDescription"} {
+		if v, ok := m[key].(string); ok && v != "" {
+			return v
 		}
 	}
-	one := strings.ReplaceAll(strings.ReplaceAll(narr, "\n", " "), "\t", " ")
-	return one
+	return ""
 }
 
 func stripeFeeNarrationNeedsUpdate(current, desired map[string]interface{}) bool {
