@@ -1677,6 +1677,11 @@ func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 // are authoritative — the starting and ending balances are derived from
 // them, not asserted independently.
 func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun bool) error {
+	if !dryRun {
+		if err := RequireOdooWriteCapability(); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("\n  %sFixing Odoo journal #%d%s\n", Fmt.Bold, journalID, Fmt.Reset)
 	fmt.Printf("  %sChecking orphan/duplicate statement lines...%s\n", Fmt.Dim, Fmt.Reset)
 	res, err := findOdooOrphanStatementLines(creds, uid, journalID)
@@ -2923,6 +2928,9 @@ func refreshAllOdooJournalLineCaches() error {
 
 // odooJournalSync resolves a journal ID to its linked account and runs the account sync.
 func odooJournalSync(journalID int, args []string) error {
+	if err := RequireOdooWriteCapability(); err != nil {
+		return err
+	}
 	for _, acc := range LoadAccountConfigs() {
 		if acc.OdooJournalID == journalID {
 			return AccountOdooPush(acc.Slug, args)
@@ -2936,6 +2944,9 @@ func odooJournalSync(journalID int, args []string) error {
 // serially so the per-account one-liners stay in order and can't interleave.
 // In verbose mode, up to 4 journals run concurrently.
 func odooJournalsSyncAll(args []string) error {
+	if err := RequireOdooWriteCapability(); err != nil {
+		return err
+	}
 	verbose := HasFlag(args, "--verbose", "-v") || HasFlag(args, "--debug")
 	wasQuiet := quietOdooContext()
 	// Note: the Odoo DB is already shown by the surrounding "Pushing
@@ -3113,6 +3124,9 @@ func attentionVerb(n int) string {
 }
 
 func odooJournalReset(creds *OdooCredentials, uid int, journalID int, yes bool) error {
+	if err := RequireOdooWriteCapability(); err != nil {
+		return err
+	}
 	// Fetch journal name
 	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.journal", "search_read",

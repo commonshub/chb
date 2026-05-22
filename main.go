@@ -260,6 +260,13 @@ func main() {
 			exitWithError(err)
 		}
 	case "generate":
+		// Mirror mode: the trusted host already ran `generate`; the
+		// rsync pull copies its output into our local data/. Skip the
+		// local recompute so we don't fight the remote state.
+		if cmd.MirrorEnabled(args[1:]) {
+			cmd.PrintMirrorGenerateSkipped()
+			break
+		}
 		if err := cmd.ProvidersCommand(append([]string{"*", "generate"}, args[1:]...)); err != nil {
 			exitWithError(err)
 		}
@@ -401,6 +408,17 @@ func main() {
 			exitWithError(err)
 		}
 	case "pull":
+		// Mirror mode: instead of running every provider locally, rsync
+		// the trusted host's data/ and outbox into our APP_DATA_DIR. The
+		// `--no-mirror` flag (per-invocation override) keeps the legacy
+		// path available, e.g. on the trusted host running the same
+		// binary.
+		if cmd.MirrorEnabled(args[1:]) {
+			if err := cmd.MirrorPull(cmd.FilterMirrorFlags(args[1:])); err != nil {
+				exitWithError(err)
+			}
+			break
+		}
 		if err := cmd.ProvidersCommand(append([]string{"*", "pull"}, args[1:]...)); err != nil {
 			exitWithError(err)
 		}
@@ -409,6 +427,12 @@ func main() {
 		// the second half of `chb sync` and as a standalone "publish
 		// everything ready" call for cron jobs that pull continuously and
 		// push periodically.
+		if cmd.MirrorEnabled(args[1:]) {
+			if err := cmd.MirrorPushNostrOnly(cmd.FilterMirrorFlags(args[1:])); err != nil {
+				exitWithError(err)
+			}
+			break
+		}
 		if err := cmd.PushAllTargets(args[1:]); err != nil {
 			exitWithError(err)
 		}
@@ -423,6 +447,19 @@ func main() {
 		if cmd.HasFlag(args[1:], "--help", "-h", "help") {
 			cmd.PrintSyncCronHelp()
 			return
+		}
+		// Mirror mode: pull from the trusted host, skip generate, push
+		// only what we can sign locally (Nostr).
+		if cmd.MirrorEnabled(args[1:]) {
+			mirrorArgs := cmd.FilterMirrorFlags(args[1:])
+			if err := cmd.MirrorPull(mirrorArgs); err != nil {
+				exitWithError(err)
+			}
+			cmd.PrintMirrorGenerateSkipped()
+			if err := cmd.MirrorPushNostrOnly(mirrorArgs); err != nil {
+				exitWithError(err)
+			}
+			break
 		}
 		if err := cmd.ProvidersCommand(append([]string{"*", "pull"}, args[1:]...)); err != nil {
 			exitWithError(err)

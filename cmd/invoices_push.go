@@ -44,6 +44,9 @@ func MovesPushCommand(kind moveKind, args []string) error {
 		printMovesPushHelp(kind)
 		return nil
 	}
+	if err := RequireOdooWriteCapability(); err != nil {
+		return err
+	}
 	dryRun := HasFlag(args, "--dry-run")
 	assumeYes := HasFlag(args, "--yes", "-y")
 	verbose := HasFlag(args, "--verbose", "-v")

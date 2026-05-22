@@ -37,6 +37,11 @@ type odooJournalMergeAccountingMove struct {
 }
 
 func odooJournalMerge(creds *OdooCredentials, uid int, sourceJournalID int, targetArg string, dryRun, verbose, yes bool) error {
+	if !dryRun {
+		if err := RequireOdooWriteCapability(); err != nil {
+			return err
+		}
+	}
 	targetJournalID, err := resolveJournalIDArg(targetArg)
 	if err != nil {
 		return err

@@ -27,6 +27,9 @@ func OdooReconcileCommand(args []string) error {
 		printOdooReconcileMigrateHelp()
 		return nil
 	}
+	if err := RequireOdooWriteCapability(); err != nil {
+		return err
+	}
 	targetJournalID, err := resolveJournalIDArg(args[0])
 	if err != nil {
 		return err
