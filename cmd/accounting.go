@@ -139,6 +139,19 @@ func (c *Categorizer) Apply(tx *TransactionEntry) {
 			tx.Metadata["description"] = rule.Assign.Description
 		}
 	}
+	// Semantic coherence: a tx whose category is "internal_transfer"
+	// IS, by definition, an internal transfer between accounts the
+	// org owns (Stripe payout → bank, savings → checking, etc.). A
+	// rule that set the category but forgot to set the type would
+	// otherwise leave the tx as CREDIT/DEBIT — and consumers like
+	// `chb income` / `chb expenses` / monthly reports would
+	// (correctly) skip on Type=INTERNAL but include this row,
+	// inflating totals. Coerce Type here so the data stays coherent
+	// regardless of how strictly the rules were written.
+	if strings.EqualFold(strings.TrimSpace(tx.Category), "internal_transfer") &&
+		tx.Type != "INTERNAL" {
+		tx.Type = "INTERNAL"
+	}
 	stampVAT(tx)
 }
 

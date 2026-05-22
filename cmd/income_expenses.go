@@ -19,6 +19,31 @@ func Expenses(args []string) error {
 	return runIncomeExpenseReport("expenses", args)
 }
 
+// incomeExpenseTx is the per-transaction row the interactive drill
+// view shows after the operator picks a category from the list. Only
+// populated when `-i` is on — the non-interactive (default + JSON)
+// paths leave the Txs slice empty so disk + memory stay bounded.
+type incomeExpenseTx struct {
+	Date         string  // YYYY-MM-DD
+	Timestamp    int64   // unix seconds, for tie-breaker sorts
+	Counterparty string  // human-friendly other party
+	AccountSlug  string  // resolved account (e.g. "stripe", "kbcbrussels")
+	Amount       float64 // absolute EUR gross
+	Currency     string
+	Description  string // metadata.description (if any)
+	URI          string // tx canonical URI for copy-paste / nostr lookup
+}
+
+// incomeCategoryBucket aggregates transactions for one category over
+// the selected date range. Exported only at package level so the TUI
+// can render the same struct the JSON/CSV paths emit.
+type incomeCategoryBucket struct {
+	Category string            `json:"category"`
+	Count    int               `json:"count"`
+	Amount   float64           `json:"amount"`
+	Txs      []incomeExpenseTx `json:"-"` // populated only in interactive mode
+}
+
 func runIncomeExpenseReport(direction string, args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		printIncomeExpenseHelp(direction)
@@ -36,14 +61,11 @@ func runIncomeExpenseReport(direction string, args []string) error {
 
 	accountSlug := strings.TrimSpace(GetOption(args, "--account"))
 	jsonOut := GetOption(args, "--format") == "json"
+	interactive := HasFlag(args, "-i", "--interactive")
 
 	dataDir := DataDir()
 
-	type catBucket struct {
-		Category string  `json:"category"`
-		Count    int     `json:"count"`
-		Amount   float64 `json:"amount"`
-	}
+	type catBucket = incomeCategoryBucket
 	type accountBucket struct {
 		Slug   string  `json:"slug"`
 		Name   string  `json:"name,omitempty"`
@@ -99,6 +121,16 @@ func runIncomeExpenseReport(direction string, args []string) error {
 			if tx.Type == "INTERNAL" {
 				continue
 			}
+			// Defensive: a tx tagged `category: internal_transfer` is
+			// an internal transfer even if the rule that set its
+			// category forgot to coerce the type. Categorizer.Apply
+			// already coerces this at generate time, but old
+			// generated files written before that fix still leak
+			// through — skip on category too so the totals stay
+			// honest regardless of when the file was generated.
+			if strings.EqualFold(tx.Category, "internal_transfer") {
+				continue
+			}
 			if !isEURCurrency(tx.Currency) {
 				continue
 			}
@@ -130,6 +162,18 @@ func runIncomeExpenseReport(direction string, args []string) error {
 			}
 			b.Count++
 			b.Amount = roundReportAmount(b.Amount + amount)
+			if interactive {
+				b.Txs = append(b.Txs, incomeExpenseTx{
+					Date:         time.Unix(tx.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02"),
+					Timestamp:    tx.Timestamp,
+					Counterparty: incomeExpenseTxCounterparty(tx),
+					AccountSlug:  resolveSlug(tx),
+					Amount:       amount,
+					Currency:     tx.Currency,
+					Description:  stringMetadata(tx.Metadata, "description"),
+					URI:          tx.ID,
+				})
+			}
 
 			if accountSlug == "" {
 				acctKey := resolveSlug(tx)
@@ -174,6 +218,18 @@ func runIncomeExpenseReport(direction string, args []string) error {
 		}
 		return accountRows[i].Slug < accountRows[j].Slug
 	})
+
+	if interactive {
+		// Sort each category's drill-down list newest-first by absolute
+		// gross amount — that's what the drill view shows.
+		for _, b := range rows {
+			sort.SliceStable(b.Txs, func(i, j int) bool {
+				return b.Txs[i].Amount > b.Txs[j].Amount
+			})
+		}
+		runIncomeExpenseTUI(direction, formatIncomeExpenseRange(spec), accountSlug, rows, totalCount, totalAmount)
+		return nil
+	}
 
 	if jsonOut {
 		out := struct {
@@ -273,6 +329,21 @@ func truncateCategory(s string, max int) string {
 	return s[:max-1] + "…"
 }
 
+// incomeExpenseTxCounterparty returns the best human-readable label
+// for a tx in the interactive drill view: the resolved Counterparty
+// when available (already enriched with Nostr name / Stripe customer
+// / Monerium memo), falling back to metadata.description for fee /
+// payout rows that don't have a counterparty.
+func incomeExpenseTxCounterparty(tx TransactionEntry) string {
+	if cp := strings.TrimSpace(tx.Counterparty); cp != "" {
+		return cp
+	}
+	if d := strings.TrimSpace(stringMetadata(tx.Metadata, "description")); d != "" {
+		return d
+	}
+	return "—"
+}
+
 func formatIncomeExpenseRange(spec DateSpec) string {
 	switch spec.Precision {
 	case "day":
@@ -312,14 +383,17 @@ func printIncomeExpenseHelp(direction string) {
   %s<date-range>%s         %s (e.g. 2025/11, 2025/Q4, 20250101-20250630)
 
 %sOPTIONS%s
+  %s-i%s, %s--interactive%s   Open the TUI: navigate categories, press
+                          [enter] on one to drill into its transactions
+                          (sorted by amount descending)
   %s--account <slug>%s     Filter to one configured account (default: all accounts)
   %s--format json%s        Output as JSON
   %s--help, -h%s           Show this help
 
 %sNOTES%s
   • Only EUR-family currencies (EUR, EURe, EURb) are counted.
-  • Internal transfers between accounts you own (Type=INTERNAL / TRANSFER)
-    are excluded so a wallet-to-wallet move never inflates totals.
+  • Internal transfers between accounts you own are excluded:
+    Type=INTERNAL OR category="internal_transfer" both filter out.
   • Each row shows transactions %s in the date range, grouped by
     metadata.category. Rebuild via %schb generate%s if categories look stale.
 
@@ -337,6 +411,7 @@ func printIncomeExpenseHelp(direction string) {
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset, DateRangeFormatHelp,
 		f.Bold, f.Reset,
+		f.Yellow, f.Reset, f.Yellow, f.Reset, // -i, --interactive
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
