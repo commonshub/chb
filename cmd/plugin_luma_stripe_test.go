@@ -467,3 +467,31 @@ func TestEventTicketTransactionAmountUsesStripeGrossAmount(t *testing.T) {
 		t.Fatalf("refund amount = %.2f, want -10.00", got)
 	}
 }
+
+// TestLumaCollectiveSlugFromURLDoesNotFabricateFromEventID pins the
+// behaviour the user reported: a bare event short-link like
+// `lu.ma/1fi4ogej` MUST NOT yield a collective slug ("1fi4ogej").
+// We can only confidently extract a collective when the URL has at
+// least two path segments — i.e. `luma.com/<collective>/<event-id>`.
+func TestLumaCollectiveSlugFromURLDoesNotFabricateFromEventID(t *testing.T) {
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"https://lu.ma/1fi4ogej", ""},        // bare event short link
+		{"https://luma.com/1fi4ogej", ""},     // same shape, full host
+		{"https://lu.ma/", ""},                // root URL
+		{"https://lu.ma/event/abc", ""},       // wrapper word
+		{"https://lu.ma/embed/abc", ""},       // wrapper word
+		{"https://lu.ma/u/some-user", ""},     // user namespace
+		{"https://luma.com/openletter/evt-x", "openletter"},   // collective namespace
+		{"https://luma.com/genai-collective/evt-x", "genai-collective"},
+		{"https://example.com/some/path", ""}, // non-Luma host
+	}
+	for _, c := range cases {
+		got := lumaCollectiveSlugFromURL(c.url)
+		if got != c.want {
+			t.Errorf("lumaCollectiveSlugFromURL(%q) = %q, want %q", c.url, got, c.want)
+		}
+	}
+}

@@ -528,6 +528,17 @@ func looksLikeLumaTicketTransaction(tx TransactionEntry) bool {
 	return false
 }
 
+// lumaCollectiveSlugFromURL extracts a collective slug from a Luma
+// URL — but ONLY from the namespaced form `luma.com/<collective>/<event>`.
+// Bare event links (`lu.ma/<event-id>` or `luma.com/<event-id>`) have
+// the event's short id as the only path segment; treating that as a
+// collective slug fabricates collectives like "1fi4ogej" out of
+// random event ids. So we require at least two path segments before
+// extracting anything.
+//
+// Returns "" when the URL is not a Luma URL, has no path, has only
+// one path segment, or whose first segment is a known wrapper word
+// (event/embed/checkout/manage/u).
 func lumaCollectiveSlugFromURL(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
@@ -544,13 +555,20 @@ func lumaCollectiveSlugFromURL(raw string) string {
 	if path == "" {
 		return ""
 	}
-	first := strings.Split(path, "/")[0]
-	switch strings.ToLower(first) {
-	case "event", "embed", "checkout", "manage":
+	segments := strings.Split(path, "/")
+	// Single-segment URL = bare event link. We cannot tell whether
+	// the segment is a collective slug or an event short id; default
+	// to "not a collective" to avoid auto-creating collectives like
+	// "1fi4ogej" from event ids.
+	if len(segments) < 2 {
 		return ""
-	default:
-		return normalizeTransactionTagSlug(first)
 	}
+	first := segments[0]
+	switch strings.ToLower(first) {
+	case "event", "embed", "checkout", "manage", "u":
+		return ""
+	}
+	return normalizeTransactionTagSlug(first)
 }
 
 func normalizeLumaMatchText(s string) string {
