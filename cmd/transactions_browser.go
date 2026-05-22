@@ -270,6 +270,13 @@ type TxFilter struct {
 	// for NoCollective.
 	NoCategory  bool
 	NoCollective bool
+	// Unreconciled keeps only transactions whose matching Odoo bank
+	// statement line is NOT reconciled (or whose Odoo line can't be
+	// resolved at all — typically because the tx hasn't been pushed
+	// yet, which is by definition "unreconciled"). Inverse for
+	// Reconciled. Set at most one of the two.
+	Unreconciled bool
+	Reconciled   bool
 }
 
 // AmountFilter is one comparison constraint on the absolute gross of a tx.
@@ -504,6 +511,16 @@ func (f TxFilter) matches(tx TransactionEntry) bool {
 	}
 	if f.NoCollective && txDisplayCollective(tx) != "" {
 		return false
+	}
+	if f.Unreconciled || f.Reconciled {
+		ln, ok := getTxReconciliationLookup().LineFor(tx)
+		isReconciled := ok && ln.IsReconciled
+		if f.Unreconciled && isReconciled {
+			return false
+		}
+		if f.Reconciled && !isReconciled {
+			return false
+		}
 	}
 	if f.Amount != nil {
 		abs := roundCents(math.Abs(txAmount(tx)))
@@ -3070,6 +3087,11 @@ func parseTxListFlags(args []string) (TxFilter, int, int, error) {
 	}
 	f.NoCategory = HasFlag(args, "--no-category")
 	f.NoCollective = HasFlag(args, "--no-collective")
+	f.Unreconciled = HasFlag(args, "--unreconciled")
+	f.Reconciled = HasFlag(args, "--reconciled")
+	if f.Unreconciled && f.Reconciled {
+		return f, 0, 0, fmt.Errorf("--unreconciled and --reconciled are mutually exclusive")
+	}
 	// --daterange sets Since/Until from any spec ParseDateRangeSpec accepts
 	// (2025/Q1, 2026, 20260101-20260331, etc.). Applied before --since /
 	// --until so those still win when given alongside, matching the usual
@@ -3234,6 +3256,10 @@ func printTransactionsBrowserHelp() {
                        (negative) transactions
   %s--no-category%s       Match only transactions with no category set
   %s--no-collective%s     Match only transactions with no collective set
+  %s--unreconciled%s      Match only transactions whose Odoo bank line is NOT
+                       reconciled (or whose Odoo line can't be resolved at all
+                       — typically txs that haven't been pushed yet).
+  %s--reconciled%s        Inverse of --unreconciled (mutually exclusive).
   %s--event <id>%s         Match tag ["event", id]
   %s--application <slug>%s Match tag ["application", slug]
   %s--payment-link <id>%s  Match tag ["paymentLink", id]
@@ -3301,6 +3327,8 @@ func printTransactionsBrowserHelp() {
 		f.Yellow, f.Reset, // --direction
 		f.Yellow, f.Reset, // --no-category
 		f.Yellow, f.Reset, // --no-collective
+		f.Yellow, f.Reset, // --unreconciled
+		f.Yellow, f.Reset, // --reconciled
 		f.Yellow, f.Reset, // --event
 		f.Yellow, f.Reset, // --application
 		f.Yellow, f.Reset, // --payment-link
