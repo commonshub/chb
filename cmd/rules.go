@@ -28,6 +28,13 @@ type RuleMatch struct {
 	// for catching payouts and other system-driven movements that have no
 	// description / IBAN / counterparty for the other matchers to lock onto.
 	Kind string `json:"kind,omitempty"`
+
+	// Invoice / bill matchers (only meaningful when the rule's Target is
+	// "invoice" or "bill"). Title globs the move's printed number /
+	// reference (e.g. "MEM/*", "CHB/*"). Partner globs the customer or
+	// vendor display name from the private invoice/bill file.
+	Title   string `json:"title,omitempty"`
+	Partner string `json:"partner,omitempty"`
 }
 
 // RuleAssign defines what a matching rule assigns.
@@ -42,9 +49,32 @@ type RuleAssign struct {
 }
 
 // Rule is a categorization rule.
+//
+// Target controls which record type the rule fires against:
+//
+//   - ""           ⇒ "transaction" (default; preserves back-compat)
+//   - "transaction" ⇒ ledger transactions (MatchesTransaction)
+//   - "invoice"    ⇒ outgoing invoices (MatchesMove with moveKindInvoice)
+//   - "bill"       ⇒ vendor bills      (MatchesMove with moveKindBill)
+//
+// A rule with no target never matches an invoice/bill — that's the
+// whole point of the field: existing rules.json files keep working
+// untouched, and invoice rules are explicitly opted in.
 type Rule struct {
+	Target string     `json:"target,omitempty"`
 	Match  RuleMatch  `json:"match"`
 	Assign RuleAssign `json:"assign"`
+}
+
+// ruleTarget normalises the Target field for comparison. Empty / blank
+// values default to "transaction" so the existing rules keep firing
+// against transactions without needing a migration.
+func (r *Rule) ruleTarget() string {
+	t := strings.ToLower(strings.TrimSpace(r.Target))
+	if t == "" {
+		return "transaction"
+	}
+	return t
 }
 
 func rulesPath() string {
@@ -82,6 +112,9 @@ func SaveRules(rules []Rule) error {
 
 // MatchesTransaction checks if a rule matches a transaction.
 func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
+	if r.ruleTarget() != "transaction" {
+		return false
+	}
 	m := r.Match
 
 	if m.Account != "" {
@@ -254,8 +287,84 @@ func (r *Rule) RuleSummary() string {
 	if r.Match.Kind != "" {
 		parts = append(parts, fmt.Sprintf("kind: %s", r.Match.Kind))
 	}
+	if r.Match.Title != "" {
+		parts = append(parts, fmt.Sprintf("title: %s", r.Match.Title))
+	}
+	if r.Match.Partner != "" {
+		parts = append(parts, fmt.Sprintf("partner: %s", r.Match.Partner))
+	}
 	if len(parts) == 0 {
 		return "(no conditions)"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// MatchesMove checks whether the rule applies to an invoice / bill row.
+// Returns false unless r.Target is "invoice" / "bill" AND matches kind.
+// A rule with no match conditions matches every row of its target type —
+// the canonical pattern for a default-assign rule (e.g. "every invoice
+// gets collective=commonshub unless overridden").
+func (r *Rule) MatchesMove(m OdooOutgoingInvoicePublic, partner string, kind moveKind) bool {
+	target := r.ruleTarget()
+	if kind.isBill {
+		if target != "bill" {
+			return false
+		}
+	} else {
+		if target != "invoice" {
+			return false
+		}
+	}
+
+	if r.Match.Title != "" {
+		if !globMatch(strings.ToLower(r.Match.Title), strings.ToLower(strings.TrimSpace(m.Title))) {
+			return false
+		}
+	}
+
+	if r.Match.Partner != "" {
+		if !globMatch(strings.ToLower(r.Match.Partner), strings.ToLower(strings.TrimSpace(partner))) {
+			return false
+		}
+	}
+
+	if r.Match.Currency != "" {
+		if !strings.EqualFold(r.Match.Currency, m.Currency) {
+			return false
+		}
+	}
+
+	if r.Match.Amount != nil {
+		if roundCents(m.TotalAmount) != roundCents(*r.Match.Amount) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// ApplyMoveRules walks every rule whose target matches the kind and
+// fills in any (collective, category) the move doesn't already have.
+// Rules without conditions act as default-assigners — keep them at
+// the END of rules.json so explicit overrides win first.
+//
+// Mutates m in place.
+func ApplyMoveRules(m *OdooOutgoingInvoicePublic, partner string, kind moveKind, rules []Rule) {
+	for _, r := range rules {
+		if !r.MatchesMove(*m, partner, kind) {
+			continue
+		}
+		if m.Collective == "" && r.Assign.Collective != "" {
+			m.Collective = r.Assign.Collective
+		}
+		if m.Category == "" && r.Assign.Category != "" {
+			m.Category = r.Assign.Category
+		}
+		// Early exit when both have been filled. First matching rule
+		// wins per field; a later rule can still set a field an
+		// earlier rule didn't touch.
+		if m.Collective != "" && m.Category != "" {
+			return
+		}
+	}
 }

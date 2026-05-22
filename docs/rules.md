@@ -8,6 +8,8 @@ Pattern matching against transaction descriptions, IBANs, amounts, and counterpa
 
 **Match fields are field-scoped, not free-text.** `description` only looks at `metadata.description` + `metadata.memo`; use `counterparty` (any direction) or `sender`/`recipient` (direction-filtered) to match the counterparty. Mixing the two — e.g. "the vendor name in the bank statement" — needs an explicit `counterparty` rule, not a `description` glob.
 
+**Targets.** A rule with no `target` field defaults to `target: "transaction"` — i.e. fires against ledger transactions. Set `"target": "invoice"` or `"target": "bill"` to apply the same rule engine to invoice/bill rows. Invoice/bill rules match on `title` (glob on the move number like `MEM/*`) and `partner` (glob on customer/vendor display name); transaction fields are ignored, and vice versa. A rule with `match: {}` is a catch-all for its target — useful for default-assignments like "every invoice gets collective=commonshub unless overridden".
+
 Lives at `$APP_DATA_DIR/settings/rules.json`. Schema (simplified):
 
 ```json
@@ -40,11 +42,22 @@ Lives at `$APP_DATA_DIR/settings/rules.json`. Schema (simplified):
       "category": "consulting",
       "collective": "brusselspay"
     }
+  },
+
+  {
+    "target": "invoice",
+    "match": { "title": "MEM/*" },
+    "assign": { "category": "membership", "collective": "commonshub" }
+  },
+  {
+    "target": "invoice",
+    "match": {},
+    "assign": { "collective": "commonshub" }
   }
 ]
 ```
 
-Evaluated in file order — most-specific rules first. The first matching rule wins.
+Evaluated in file order — most-specific rules first. The first matching rule wins per (collective, category) field; later rules can still fill in a field an earlier rule left blank, which is why catch-all default-assigns go LAST.
 
 Edit with `chb rules edit` (opens in `$EDITOR`) or via the interactive TUI `chb rules` (which lets you preview matches before committing).
 

@@ -206,5 +206,21 @@
       "type": "INTERNAL",
       "description": "Payout"
     }
+  },
+
+  {
+    "target": "invoice",
+    "match": { "title": "MEM/*" },
+    "assign": { "category": "membership", "collective": "commonshub" }
+  },
+  {
+    "target": "invoice",
+    "match": { "title": "CHB/*" },
+    "assign": { "category": "rental", "collective": "commonshub" }
+  },
+  {
+    "target": "invoice",
+    "match": {},
+    "assign": { "collective": "commonshub" }
   }
 ]

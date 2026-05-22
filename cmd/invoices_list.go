@@ -138,8 +138,16 @@ type moveRow struct {
 // Year/month filters narrow the scope. The private file is consulted
 // for the partner display name — it stays in memory, never written to
 // the public table.
+//
+// Rules from rules.json with target="invoice" / "bill" are applied at
+// the row layer (not in loadMoves) so saveMoveRowAnnotation, which
+// round-trips through loadMoves, doesn't accidentally persist
+// rule-derived defaults onto every row in a month on every edit. The
+// JSON stays a faithful reflection of what Odoo + manual annotations
+// produced; the display + reconcile flow see the rule-filled values.
 func loadMoveRows(kind moveKind, posYear, posMonth string) ([]moveRow, error) {
 	dataDir := DataDir()
+	rules, _ := LoadRules() // best-effort; missing / malformed rules.json is a no-op
 	var out []moveRow
 	err := walkMoveMonths(dataDir, kind, func(year, month string) error {
 		if posYear != "" && year != posYear {
@@ -155,11 +163,13 @@ func loadMoveRows(kind moveKind, posYear, posMonth string) ([]moveRow, error) {
 		}
 		partners := loadMovePartners(dataDir, year, month, kind)
 		for _, m := range moves {
+			partner := partners[m.ID]
+			ApplyMoveRules(&m, partner, kind, rules)
 			out = append(out, moveRow{
 				Year:    year,
 				Month:   month,
 				Move:    m,
-				Partner: partners[m.ID],
+				Partner: partner,
 			})
 		}
 		return nil
