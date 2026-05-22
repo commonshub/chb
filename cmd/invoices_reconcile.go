@@ -13,27 +13,48 @@ import (
 // line with the journal it lives on. Used by the invoice-side
 // reconcile flow: starting from an open invoice/bill, surface every
 // bank line whose absolute amount matches (signed correctly for the
-// move kind), sorted by date proximity to the invoice issue date.
+// move kind), with partner-aware ordering so the most-likely match
+// surfaces first in the TUI picker.
 type invoicePaymentCandidate struct {
 	JournalID   int
 	JournalName string
 	Line        OdooCacheLine
+
+	// PartnerMatch is true when this candidate's partner_id resolves
+	// to the same Odoo partner the invoice references, OR when a
+	// token (≥3 chars) of the invoice's partner display name appears
+	// in the bank line's payment_ref / narration / counterparty name.
+	// The picker badges these and sorts them above amount-only matches.
+	PartnerMatch bool
+
+	// DaysDelta is |bank-line date − invoice date|, used for sorting
+	// within the partner-match and non-partner-match tiers. Always ≥0.
+	DaysDelta int
 }
 
 // findInvoicePaymentCandidates returns the cached bank-statement lines
 // that could be the unattached payment for the given invoice / bill.
-// Strict filters:
+// Strict filters (always applied):
 //
-//   - lines whose IsReconciled flag is set are skipped (already
-//     attached to something else)
+//   - IsReconciled lines are skipped (already attached elsewhere)
 //   - direction is gated by kind: invoices want incoming bank lines
 //     (positive amount); bills want outgoing (negative)
 //   - absolute amount must equal the move's total within ±0.01 EUR
 //   - synthetic (non-imported) cache rows are skipped
 //
-// Returns the candidates sorted by absolute date distance from the
-// invoice's issue date (closest first), so the TUI's first highlighted
-// row is the most likely match.
+// Scoring (soft):
+//
+//   - partner match: try partner_id equality first via the local
+//     partner index; fall back to a fuzzy token match (any ≥3-char
+//     token of the invoice's partner name appearing in the bank
+//     line's payment_ref + narration + cached counterparty name).
+//   - date delta: absolute days between bank-line date and invoice date.
+//
+// Two-tier ordering: partner-matching candidates first (sorted by
+// date proximity), then non-partner-matching candidates (also by date
+// proximity). If the strict-partner pass returns no hits, the picker
+// still has the date-sorted full list — the partner condition relaxes
+// automatically rather than failing silently.
 //
 // Reads only local caches — no Odoo RPCs. Up-to-date results require
 // a recent `chb pull`.
@@ -44,6 +65,15 @@ func findInvoicePaymentCandidates(row moveRow, kind moveKind) []invoicePaymentCa
 	}
 	wantPositive := !kind.isBill // invoices = incoming, bills = outgoing
 	moveDate := row.Move.Date
+
+	// Resolve the invoice's partner_id once. We pull it from the
+	// private side via the partner index when row.Partner is a name —
+	// the public file doesn't carry partner_id directly, so we
+	// reverse-look up by display name. Falls through to "no id" on
+	// no match; the fuzzy token path still works.
+	partnerIdx := loadLatestOdooPartnerIndex(DataDir())
+	invoicePartnerID := partnerIDForMoveRow(row, partnerIdx)
+	partnerTokens := partnerNameTokens(row.Partner)
 
 	var out []invoicePaymentCandidate
 	for _, jid := range allLinkedOdooJournalIDs() {
@@ -66,17 +96,102 @@ func findInvoicePaymentCandidates(row moveRow, kind moveKind) []invoicePaymentCa
 				continue
 			}
 			out = append(out, invoicePaymentCandidate{
-				JournalID:   jid,
-				JournalName: journalName,
-				Line:        ln,
+				JournalID:    jid,
+				JournalName:  journalName,
+				Line:         ln,
+				PartnerMatch: bankLineMatchesPartner(ln, invoicePartnerID, partnerTokens, partnerIdx),
+				DaysDelta:    dateDeltaDaysAbs(ln.Date, moveDate),
 			})
 		}
 	}
+
+	// Two-tier sort: partner-matching first (true > false), then by
+	// date proximity within each tier (smaller delta = better). The
+	// stable sort keeps cache order as the final tiebreaker.
 	sort.SliceStable(out, func(i, j int) bool {
-		return dateDeltaDaysAbs(out[i].Line.Date, moveDate) <
-			dateDeltaDaysAbs(out[j].Line.Date, moveDate)
+		if out[i].PartnerMatch != out[j].PartnerMatch {
+			return out[i].PartnerMatch
+		}
+		return out[i].DaysDelta < out[j].DaysDelta
 	})
 	return out
+}
+
+// partnerIDForMoveRow returns the Odoo partner_id of the invoice's
+// customer / vendor, resolved via the local partner index. Falls back
+// to 0 when the partner display name has zero or multiple matches in
+// the index — the fuzzy-token path still works in those cases.
+func partnerIDForMoveRow(row moveRow, idx *odooPartnerIndex) int {
+	if idx == nil || row.Partner == "" {
+		return 0
+	}
+	matches := idx.byName[strings.ToLower(strings.TrimSpace(row.Partner))]
+	if len(matches) == 1 {
+		return matches[0].ID
+	}
+	return 0
+}
+
+// partnerNameTokens returns the lower-cased ≥3-char word tokens of a
+// partner display name. Drops common noise words (vzw, asbl, srl, …)
+// and pure-digit tokens so the fuzzy match isn't tripped by legal
+// suffixes that match every Belgian entity.
+func partnerNameTokens(name string) []string {
+	stop := map[string]bool{
+		"vzw": true, "asbl": true, "srl": true, "sprl": true, "sa": true,
+		"nv": true, "bv": true, "bvba": true, "ltd": true, "llc": true,
+		"inc": true, "the": true, "and": true, "co": true,
+	}
+	var out []string
+	for _, t := range strings.Fields(strings.ToLower(name)) {
+		t = strings.Trim(t, ",.;:'\"()[]{}")
+		if len(t) < 3 || stop[t] {
+			continue
+		}
+		// Drop pure-numeric tokens (postcodes, account numbers leaked
+		// into the name field).
+		allDigits := true
+		for _, r := range t {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// bankLineMatchesPartner reports whether the bank statement line
+// plausibly came from / went to the invoice's partner. Tries strict
+// partner_id equality first; falls back to a fuzzy substring of any
+// invoice-partner-name token (≥3 chars) inside the bank line's
+// payment_ref + narration + counterparty-name. Either tier is enough
+// to badge the candidate as partner-matched for sorting.
+func bankLineMatchesPartner(ln OdooCacheLine, invoicePartnerID int, tokens []string, idx *odooPartnerIndex) bool {
+	if invoicePartnerID > 0 && ln.PartnerID > 0 && ln.PartnerID == invoicePartnerID {
+		return true
+	}
+	if len(tokens) == 0 {
+		return false
+	}
+	// Build the bank-line haystack: payment_ref + narration + (the
+	// partner name from the partner index when ln.PartnerID is set).
+	hay := strings.ToLower(ln.PaymentRef + " " + ln.Narration)
+	if idx != nil && ln.PartnerID > 0 {
+		if p, ok := idx.byID[ln.PartnerID]; ok {
+			hay += " " + strings.ToLower(p.Name)
+		}
+	}
+	for _, t := range tokens {
+		if strings.Contains(hay, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // attachMoveToBankLine wires up the chosen bank line to the
@@ -145,25 +260,28 @@ func MovesReconcileCommandBills(args []string) error {
 	return MovesReconcileCommand(moveKindBill, args)
 }
 
-// MovesReconcileCommand is the non-interactive entry point for
-// `chb invoices reconcile` and `chb bills reconcile`. Reads
-// unreconciled rows in the requested scope, matches each to bank
-// lines using findInvoicePaymentCandidates, and attaches unambiguous
-// (single-candidate) matches via attachMoveToBankLine.
+// MovesReconcileCommand is the entry point for `chb invoices reconcile`
+// and `chb bills reconcile`. Reads unreconciled rows in the requested
+// scope, matches each to bank lines using findInvoicePaymentCandidates,
+// and either:
 //
-// Default behaviour: dry-run preview (print what would happen, don't
-// touch Odoo). Pass `--yes` / `-y` to apply.
+//   - dry-runs / applies unambiguous matches in batch (default), or
+//   - opens the TUI when -i / --interactive is passed, letting the
+//     operator step through every unreconciled row and pick a
+//     candidate per invoice via the [r] hotkey.
 //
 // Flags:
 //
-//	--yes, -y      apply changes (default is dry-run)
-//	--dry-run      explicit dry-run (overrides --yes)
-//	--verbose, -v  per-row outcome lines (ambiguous + no-match included)
+//	-i, --interactive  open the TUI on the unreconciled subset
+//	--yes, -y          apply changes (default is dry-run)
+//	--dry-run          explicit dry-run (overrides --yes)
+//	--verbose, -v      per-row outcome lines (ambiguous + no-match included)
 func MovesReconcileCommand(kind moveKind, args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		printMovesReconcileHelp(kind)
 		return nil
 	}
+	interactive := HasFlag(args, "-i", "--interactive")
 	dryRun := HasFlag(args, "--dry-run")
 	assumeYes := HasFlag(args, "--yes", "-y")
 	verbose := HasFlag(args, "--verbose", "-v")
@@ -186,6 +304,19 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 	if scope == "" {
 		scope = "all time"
 	}
+
+	if interactive {
+		if len(open) == 0 {
+			fmt.Printf("\n  %sNo unreconciled %s in scope.%s\n\n", Fmt.Dim, kind.labelPl, Fmt.Reset)
+			return nil
+		}
+		// Newest first — matches the regular `chb invoices -i` order
+		// and surfaces the freshest unmatched items at the top.
+		sort.SliceStable(open, func(i, j int) bool { return open[i].Move.Date > open[j].Move.Date })
+		runMovesTUI(kind, scope, open)
+		return nil
+	}
+
 	fmt.Printf("\n  %sReconcile %s — %s%s\n",
 		Fmt.Bold, kind.labelPl, scope, Fmt.Reset)
 	if len(open) == 0 {
@@ -337,10 +468,11 @@ func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []invoicePayme
 	switch decision {
 	case "match":
 		c := cands[0]
-		fmt.Printf("      %s→%s line #%d (%s) %s  %s\n",
+		fmt.Printf("      %s→%s line #%d (%s) %s  %s%s\n",
 			Fmt.Dim, Fmt.Reset,
 			c.Line.ID, c.JournalName, c.Line.Date,
-			Truncate(c.Line.PaymentRef, 50))
+			Truncate(c.Line.PaymentRef, 50),
+			candidatePartnerBadge(c))
 	case "ambiguous":
 		fmt.Printf("      %s? %d matching unreconciled bank line(s) — skipped (pass -i for interactive resolution)%s\n",
 			Fmt.Dim, len(cands), Fmt.Reset)
@@ -350,14 +482,25 @@ func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []invoicePayme
 		}
 		for i := 0; i < limit; i++ {
 			c := cands[i]
-			fmt.Printf("          %s· line #%d (%s) %s  %s%s\n",
+			fmt.Printf("          %s· line #%d (%s) %s  %s%s%s\n",
 				Fmt.Dim, c.Line.ID, c.JournalName, c.Line.Date,
-				Truncate(c.Line.PaymentRef, 40), Fmt.Reset)
+				Truncate(c.Line.PaymentRef, 40),
+				candidatePartnerBadge(c),
+				Fmt.Reset)
 		}
 		if limit < len(cands) {
 			fmt.Printf("          %s… and %d more%s\n", Fmt.Dim, len(cands)-limit, Fmt.Reset)
 		}
 	}
+}
+
+// candidatePartnerBadge returns a colored "  [partner]" suffix when
+// the candidate's PartnerMatch flag is set, empty string otherwise.
+func candidatePartnerBadge(c invoicePaymentCandidate) string {
+	if !c.PartnerMatch {
+		return ""
+	}
+	return fmt.Sprintf("  %s[partner]%s", Fmt.Green, Fmt.Reset)
 }
 
 func printMovesReconcileHelp(kind moveKind) {
@@ -373,19 +516,29 @@ bank lines.
 %sUSAGE%s
   %schb %s reconcile%s                Dry-run preview (all time)
   %schb %s reconcile 2025%s           Dry-run for year 2025
-  %schb %s reconcile 2025/12 --yes%s  Apply for December 2025
+  %schb %s reconcile 2025/12 --yes%s  Apply unambiguous matches for December 2025
+  %schb %s reconcile 2025 -i%s        Open the TUI on unreconciled %s only
 
 %sOPTIONS%s
+  %s-i%s, %s--interactive%s    Open the TUI on the unreconciled subset; press
+                        [r] in the detail view to pick a candidate
+                        bank line per row.
   %s--yes%s, %s-y%s             Apply the unambiguous matches (skips the y/N prompt)
   %s--dry-run%s             Force dry-run even when combined with --yes
   %s-v%s, %s--verbose%s        Per-row outcomes (ambiguous + no-match included)
   %s--help, -h%s           Show this help
 
 %sBEHAVIOUR%s
-  Only %sunambiguous%s matches (exactly one unreconciled bank line whose
-  absolute amount equals the move's total) are eligible for write. Lines
-  are pulled from %s~/.chb/data/latest/providers/odoo/journals/*.json%s, so
-  the result mirrors what %schb odoo journals N reconcile%s would see.
+  Non-interactive (default): only %sunambiguous%s matches (exactly one
+  unreconciled bank line whose absolute amount equals the move's total)
+  are eligible for write. Lines are pulled from
+  %s~/.chb/data/latest/providers/odoo/journals/*.json%s, so the result
+  mirrors what %schb odoo journals N reconcile%s would see.
+
+  Interactive (-i): same scope, but step through each row in the TUI
+  and pick from the full candidate list per invoice. Ambiguous /
+  no-match rows that the batch flow would skip can be resolved by
+  hand here.
 
   Run %schb pull%s first if you suspect the cache is stale.
 
@@ -396,7 +549,9 @@ bank lines.
 		f.Cyan, kind.labelPl, f.Reset,
 		f.Cyan, kind.labelPl, f.Reset,
 		f.Cyan, kind.labelPl, f.Reset,
+		f.Cyan, kind.labelPl, f.Reset, kind.labelPl,
 		f.Bold, f.Reset,
+		f.Yellow, f.Reset, f.Yellow, f.Reset,
 		f.Yellow, f.Reset, f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset, f.Yellow, f.Reset,

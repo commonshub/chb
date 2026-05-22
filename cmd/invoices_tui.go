@@ -198,10 +198,9 @@ func (m movesTUIModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.attachCands = findInvoicePaymentCandidates(row, m.kind)
 		m.attachCursor = 0
 		if len(m.attachCands) == 0 {
-			m.status = fmt.Sprintf("No matching unreconciled bank lines found for %s (amount %s %s).",
+			m.status = fmt.Sprintf("No matching unreconciled bank lines found for %s (amount %s).",
 				kindLabelN(m.kind, 1),
-				fmtAmountCurrency(row.Move.TotalAmount, row.Move.Currency),
-				strings.ToUpper(firstNonEmptyStr(row.Move.Currency, "EUR")))
+				fmtAmountCurrency(row.Move.TotalAmount, row.Move.Currency))
 			m.statusError = false
 			return m, nil
 		}
