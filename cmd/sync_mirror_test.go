@@ -131,7 +131,7 @@ func TestMirrorPullSkippedWhenNoMirrorFlag(t *testing.T) {
 	}
 }
 
-func TestMirrorPullInvokesRsyncForData(t *testing.T) {
+func TestMirrorPullInvokesRsyncForDataAndOutbox(t *testing.T) {
 	appDir := filepath.Join(t.TempDir(), "app")
 	t.Setenv("APP_DATA_DIR", appDir)
 	src := filepath.Join(t.TempDir(), "source-mirror")
@@ -143,17 +143,58 @@ func TestMirrorPullInvokesRsyncForData(t *testing.T) {
 	if err := MirrorPull(nil); err != nil {
 		t.Fatalf("MirrorPull: %v", err)
 	}
-	// Phase 1: data only.
-	if len(cap.argSets) != 1 {
-		t.Fatalf("expected 1 rsync invocation in phase 1, got %d (%v)", len(cap.argSets), cap.labels)
+	// Phase 2: data + outbox up/down + sent up/down → 5 invocations.
+	wantLabels := []string{
+		"data",
+		"nostr/outbox up", "nostr/outbox down",
+		"nostr/sent up", "nostr/sent down",
 	}
-	if cap.labels[0] != "data" {
-		t.Fatalf("rsync label = %q, want %q", cap.labels[0], "data")
+	if !equalStringSlice(cap.labels, wantLabels) {
+		t.Fatalf("rsync labels = %v, want %v", cap.labels, wantLabels)
 	}
-	// The data segment must include --delete so the local copy mirrors
-	// the trusted host authoritatively.
+	// data uses --delete; outbox/sent legs use --update (bidirectional).
 	if !sliceContains(cap.argSets[0], "--delete") {
 		t.Fatalf("data rsync args = %v, want --delete", cap.argSets[0])
+	}
+	for i := 1; i <= 4; i++ {
+		if sliceContains(cap.argSets[i], "--delete") {
+			t.Fatalf("%s rsync used --delete; outbox legs must be --update", cap.labels[i])
+		}
+		if !sliceContains(cap.argSets[i], "--update") {
+			t.Fatalf("%s rsync did not use --update", cap.labels[i])
+		}
+	}
+}
+
+// TestMirrorOutboxUpFailureContinuesToDown asserts the "up first, then
+// down, surface up errors as warnings only" ordering. A failing up-leg
+// must not block the down-leg — otherwise a thin-client that can't write
+// to the trusted host would never get new annotations from teammates.
+func TestMirrorOutboxUpFailureContinuesToDown(t *testing.T) {
+	appDir := filepath.Join(t.TempDir(), "app")
+	t.Setenv("APP_DATA_DIR", appDir)
+	src := filepath.Join(t.TempDir(), "source-mirror")
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	t.Setenv("CHB_SYNC_SOURCE", src)
+	cap := &capturedRsync{}
+	orig := mirrorRunRsync
+	mirrorRunRsync = func(args []string, label string) error {
+		cap.argSets = append(cap.argSets, append([]string(nil), args...))
+		cap.labels = append(cap.labels, label)
+		if strings.HasSuffix(label, " up") {
+			return errors.New("permission denied")
+		}
+		return nil
+	}
+	t.Cleanup(func() { mirrorRunRsync = orig })
+	if err := MirrorPull(nil); err != nil {
+		t.Fatalf("MirrorPull: %v", err)
+	}
+	// Up failures should not abort the loop; we still expect all 5 legs.
+	if len(cap.labels) != 5 {
+		t.Fatalf("expected 5 invocations even when up legs fail, got %d (%v)", len(cap.labels), cap.labels)
 	}
 }
 
@@ -208,10 +249,17 @@ func TestMirrorPullEndToEndLocal(t *testing.T) {
 	t.Setenv("APP_DATA_DIR", appDir)
 	t.Setenv("CHB_SYNC_SOURCE", srcDir)
 
-	// Trusted-host layout: a single provider raw archive and one
-	// latest/ generated file.
+	// Trusted-host layout: a single provider raw archive, one
+	// latest/ generated file, and an empty outbox/sent so the
+	// bidirectional rsync legs have a remote dir to talk to.
 	mustWrite(t, filepath.Join(srcDir, "data/2026/05/providers/stripe/balance.json"), `{"hello":"world"}`)
 	mustWrite(t, filepath.Join(srcDir, "data/latest/generated/summary.txt"), "summary text")
+	if err := os.MkdirAll(filepath.Join(srcDir, "nostr/outbox"), 0755); err != nil {
+		t.Fatalf("mkdir outbox: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(srcDir, "nostr/sent"), 0755); err != nil {
+		t.Fatalf("mkdir sent: %v", err)
+	}
 
 	if err := MirrorPull(nil); err != nil {
 		t.Fatalf("MirrorPull: %v", err)
@@ -227,6 +275,54 @@ func TestMirrorPullEndToEndLocal(t *testing.T) {
 		t.Fatalf("read mirrored summary.txt: %v", err)
 	} else if strings.TrimSpace(string(got)) != "summary text" {
 		t.Fatalf("mirrored summary.txt = %q", string(got))
+	}
+}
+
+// TestMirrorOutboxBidirectionalRoundtrip drives the real rsync against a
+// local-path source and verifies that:
+//
+//  1. A teammate event sitting on the trusted host's outbox lands in our
+//     local outbox after a pull (so we eventually publish it ourselves).
+//  2. A locally-queued event lands on the trusted host's outbox (so the
+//     trusted host's next `chb nostr push` flushes it).
+//
+// Both legs use --update, so the side with the newer mtime wins. We rely
+// on touch order (default file mtime = creation time) to make each side
+// "newer" for its own contribution.
+func TestMirrorOutboxBidirectionalRoundtrip(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not on PATH")
+	}
+	srcDir := filepath.Join(t.TempDir(), "src")
+	appDir := filepath.Join(t.TempDir(), "app")
+	t.Setenv("APP_DATA_DIR", appDir)
+	t.Setenv("CHB_SYNC_SOURCE", srcDir)
+
+	// Remote (trusted host) has one event waiting in the outbox.
+	mustWrite(t, filepath.Join(srcDir, "nostr/outbox/remote-event.json"), `{"id":"remote"}`)
+	// Local has its own queued event.
+	mustWrite(t, filepath.Join(appDir, "nostr/outbox/local-event.json"), `{"id":"local"}`)
+	// Provide an empty sent dir on the remote so its rsync legs don't
+	// emit warnings (the warnings would still be non-fatal, but the
+	// test signal stays clean).
+	if err := os.MkdirAll(filepath.Join(srcDir, "nostr/sent"), 0755); err != nil {
+		t.Fatalf("mkdir sent: %v", err)
+	}
+	mustWrite(t, filepath.Join(srcDir, "data/2026/05/providers/stripe/balance.json"), `{}`)
+
+	if err := MirrorPull(nil); err != nil {
+		t.Fatalf("MirrorPull: %v", err)
+	}
+
+	// Remote event should now exist locally (we learned about it on the
+	// down-leg).
+	if _, err := os.Stat(filepath.Join(appDir, "nostr/outbox/remote-event.json")); err != nil {
+		t.Fatalf("remote event did not arrive locally: %v", err)
+	}
+	// Local event should now exist on the trusted host (we pushed it
+	// on the up-leg).
+	if _, err := os.Stat(filepath.Join(srcDir, "nostr/outbox/local-event.json")); err != nil {
+		t.Fatalf("local event did not arrive on the trusted host: %v", err)
 	}
 }
 

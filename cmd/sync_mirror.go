@@ -196,8 +196,10 @@ func localSubpath(sub string) string {
 // nil when CHB_SYNC_SOURCE is unset (a no-op so the caller can invoke it
 // unconditionally inside main.go's dispatch).
 //
-// Phase 1 scope: only data/ is mirrored (authoritative pull, --delete).
-// Outbox + settings handling land in Phase 2 / Phase 3.
+// Phase 2 scope: data/ is mirrored (authoritative pull, --delete) AND the
+// nostr/outbox + nostr/sent dirs are bidirectionally synced (--update) so
+// teammates' queued annotations are preserved and other teammates see what
+// we've already published. Settings handling lands in Phase 3.
 func MirrorPull(args []string) error {
 	if !MirrorEnabled(args) {
 		return nil
@@ -211,7 +213,11 @@ func MirrorPull(args []string) error {
 	}
 	err := withMirrorLock(func() error {
 		// data/ — authoritative pull. The trusted host always wins.
-		return mirrorRsyncData(src, verbose)
+		if err := mirrorRsyncData(src, verbose); err != nil {
+			return err
+		}
+		// Outbox: bidirectional (preserve queued local annotations).
+		return mirrorRsyncOutbox(src, verbose)
 	})
 	elapsed := time.Since(started).Round(100 * time.Millisecond)
 	if err != nil {
@@ -237,6 +243,46 @@ func mirrorRsyncData(src string, verbose bool) error {
 	rsyncArgs := baseRsyncFlags(verbose)
 	rsyncArgs = append(rsyncArgs, "--delete", remote, local)
 	return mirrorRunRsync(rsyncArgs, "data")
+}
+
+// mirrorRsyncOutbox does a bidirectional sync of the nostr outbox:
+//  1. Push local outbox up FIRST (preserve teammate's queued annotations).
+//  2. Pull remote outbox down to learn about other teammates' pending events.
+//
+// sent/ follows the same pattern so events that one teammate published are
+// visible to the others (the trusted host's `chb nostr push` can then drop
+// stale local entries from its own outbox by URI).
+//
+// rsync --update is used: the side with the newer mtime wins. Combined with
+// the "outbox first up, then down" ordering, this means no event ever gets
+// silently dropped — at worst we re-push something that's already been
+// flushed, which the Nostr relay deduplicates by event ID.
+//
+// BOTH legs are treated as best-effort: the trusted host may be a read-only
+// mount (up fails), or its nostr/ dir may not exist yet on a brand-new
+// install (down fails). We warn and continue so the data/ pull — the
+// load-bearing half of the mirror — is never blocked by an outbox glitch.
+func mirrorRsyncOutbox(src string, verbose bool) error {
+	for _, kind := range []string{"outbox", "sent"} {
+		localDir := filepath.Join(AppDataDir(), "nostr", kind)
+		if err := os.MkdirAll(localDir, 0755); err != nil {
+			return err
+		}
+		remoteDir := mirrorRemoteSubpath(src, "nostr/"+kind) + "/"
+		// Up: local → remote.
+		upArgs := baseRsyncFlags(verbose)
+		upArgs = append(upArgs, "--update", localDir+"/", remoteDir)
+		if err := mirrorRunRsync(upArgs, "nostr/"+kind+" up"); err != nil {
+			Warnf("%s⚠ mirror %s up: %v (continuing)%s", Fmt.Yellow, kind, err, Fmt.Reset)
+		}
+		// Down: remote → local.
+		downArgs := baseRsyncFlags(verbose)
+		downArgs = append(downArgs, "--update", remoteDir, localDir+"/")
+		if err := mirrorRunRsync(downArgs, "nostr/"+kind+" down"); err != nil {
+			Warnf("%s⚠ mirror %s down: %v (continuing)%s", Fmt.Yellow, kind, err, Fmt.Reset)
+		}
+	}
+	return nil
 }
 
 // PrintMirrorGenerateSkipped prints the one-liner shown when `chb generate`
