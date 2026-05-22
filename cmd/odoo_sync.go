@@ -1455,22 +1455,46 @@ func planOdooOwnedLineSync(creds *OdooCredentials, uid int, journalID int, acc *
 	fmt.Printf("  %sPlanning Monerium line metadata repairs for journal #%d...%s\n", Fmt.Dim, journalID, Fmt.Reset)
 	localTxs := loadAccountTransactionsForOdoo(acc)
 	byImportID := map[string]TransactionEntry{}
+	moneriumImportIDs := []interface{}{}
 	for _, tx := range localTxs {
 		importID := buildUniqueImportID(acc, tx)
 		if importID == "" {
 			continue
 		}
 		byImportID[importID] = tx
+		if isMoneriumTransaction(tx) {
+			moneriumImportIDs = append(moneriumImportIDs, importID)
+		}
 	}
 	if len(byImportID) == 0 {
 		return nil, nil
 	}
-	fmt.Printf("  %sChecking Odoo lines with zero-address payment refs...%s\n", Fmt.Dim, Fmt.Reset)
-	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
-		[]interface{}{
-			[]interface{}{"journal_id", "=", journalID},
+	// Two Odoo-side filters union'd via the leading `|`:
+	//   1. payment_ref starts with "0x0000…" — legacy raw-blockchain
+	//      placeholder, the original target of this refresh pass.
+	//   2. unique_import_id is one of our known Monerium lines — catches
+	//      the wider "counterparty leaked into payment_ref" case where
+	//      the Monerium memo wasn't yet enriched at first upload.
+	//
+	// The local builder (buildMoneriumLineSyncUpdate) is the safety gate;
+	// it returns nil for any line whose current payment_ref isn't "safe
+	// to replace" (zero-address / empty / equals tx.Counterparty), so
+	// widening the Odoo query can't accidentally rewrite a manual edit.
+	fmt.Printf("  %sChecking Monerium lines for stale payment_refs...%s\n", Fmt.Dim, Fmt.Reset)
+	domain := []interface{}{
+		[]interface{}{"journal_id", "=", journalID},
+	}
+	if len(moneriumImportIDs) > 0 {
+		domain = append(domain,
+			"|",
 			[]interface{}{"payment_ref", "ilike", "0x0000"},
-		},
+			[]interface{}{"unique_import_id", "in", moneriumImportIDs},
+		)
+	} else {
+		domain = append(domain, []interface{}{"payment_ref", "ilike", "0x0000"})
+	}
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		domain,
 		[]string{"id", "date", "amount", "payment_ref", "narration", "partner_id", "partner_bank_id", "unique_import_id"},
 		"date asc, id asc",
 	)

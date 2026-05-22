@@ -5368,14 +5368,30 @@ func buildOdooLineSyncUpdate(acc *AccountConfig, tx TransactionEntry, row map[st
 }
 
 func buildMoneriumLineSyncUpdate(acc *AccountConfig, tx TransactionEntry, row map[string]interface{}) map[string]interface{} {
-	if !transactionHasTag(tx, []string{"source", "monerium"}) && stringMetadata(tx.Metadata, "moneriumKind") == "" {
+	if !isMoneriumTransaction(tx) {
 		return nil
 	}
-	if !isZeroAddressPaymentRef(odooString(row["payment_ref"])) {
-		return nil
-	}
-	paymentRef := buildOdooPaymentRef(tx)
+	currentRef := strings.TrimSpace(odooString(row["payment_ref"]))
+	paymentRef := strings.TrimSpace(buildOdooPaymentRef(tx))
 	if paymentRef == "" || strings.HasPrefix(strings.ToLower(paymentRef), "0x") {
+		return nil
+	}
+	// Only refresh a payment_ref that looks auto-generated. We never
+	// overwrite an arbitrary string a human (or another Odoo flow)
+	// could have written deliberately. "Safe to replace" cases:
+	//   - empty
+	//   - zero-address placeholder ("EURe from 0x0000...0000") — legacy
+	//     raw-blockchain ingest before the Monerium processor ran
+	//   - the counterparty name verbatim — legacy upload where the
+	//     Monerium order memo wasn't yet enriched at upload time, so
+	//     buildOdooPaymentRef fell back to tx.Counterparty
+	safeToReplace := currentRef == "" ||
+		isZeroAddressPaymentRef(currentRef) ||
+		strings.EqualFold(currentRef, strings.TrimSpace(tx.Counterparty))
+	if !safeToReplace {
+		return nil
+	}
+	if strings.EqualFold(currentRef, paymentRef) {
 		return nil
 	}
 	update := map[string]interface{}{"payment_ref": paymentRef}
@@ -5383,6 +5399,17 @@ func buildMoneriumLineSyncUpdate(acc *AccountConfig, tx TransactionEntry, row ma
 		update["narration"] = narr
 	}
 	return update
+}
+
+// isMoneriumTransaction reports whether a tx is a Monerium-enriched
+// blockchain tx (either via the "source:monerium" tag or via the
+// processor stamping moneriumKind into metadata). Shared between the
+// line-sync planner (which uses it to scope which Odoo lines to fetch)
+// and the per-line builder (which uses it as the safety gate before
+// refreshing payment_ref).
+func isMoneriumTransaction(tx TransactionEntry) bool {
+	return transactionHasTag(tx, []string{"source", "monerium"}) ||
+		stringMetadata(tx.Metadata, "moneriumKind") != ""
 }
 
 func isZeroAddressPaymentRef(ref string) bool {

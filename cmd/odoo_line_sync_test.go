@@ -93,6 +93,56 @@ func TestBuildMoneriumLineSyncUpdateOnlyRepairsZeroAddressPlaceholders(t *testin
 	}
 }
 
+// TestBuildMoneriumLineSyncUpdateRefreshesCounterpartyAsPaymentRef pins
+// the bug fixed in the v3.4.6 patch: Monerium lines uploaded before the
+// memo enrichment ran end up with payment_ref equal to the counterparty
+// name (e.g. "INFLIGHTS BV"). The refresh pass must replace that with
+// the enriched description (e.g. "MEM/2026/00036") so the reconcile
+// matcher's reference strategy can fire.
+func TestBuildMoneriumLineSyncUpdateRefreshesCounterpartyAsPaymentRef(t *testing.T) {
+	acc := &AccountConfig{Provider: "etherscan"}
+	tx := TransactionEntry{
+		Provider:     "etherscan",
+		Counterparty: "INFLIGHTS BV",
+		Tags:         [][]string{{"source", "monerium"}},
+		Metadata: map[string]interface{}{
+			"moneriumKind": "issue",
+			"description":  "MEM/2026/00036",
+		},
+	}
+	row := map[string]interface{}{
+		"payment_ref": "INFLIGHTS BV", // legacy upload before memo enrichment
+		"narration":   "",
+	}
+
+	update := buildMoneriumLineSyncUpdate(acc, tx, row)
+	if update["payment_ref"] != "MEM/2026/00036" {
+		t.Fatalf("payment_ref update = %#v, want %q", update["payment_ref"], "MEM/2026/00036")
+	}
+
+	// Whitespace + case differences between counterparty and current
+	// payment_ref shouldn't block the refresh either.
+	row["payment_ref"] = "  inflights bv "
+	update = buildMoneriumLineSyncUpdate(acc, tx, row)
+	if update["payment_ref"] != "MEM/2026/00036" {
+		t.Fatalf("case-insensitive refresh = %#v, want %q", update["payment_ref"], "MEM/2026/00036")
+	}
+
+	// But a payment_ref that's neither zero-address, empty, nor the
+	// counterparty (i.e. a manually-set value) MUST be left alone —
+	// otherwise the refresh pass would clobber operator edits.
+	row["payment_ref"] = "manual: reimbursement Q3"
+	if update := buildMoneriumLineSyncUpdate(acc, tx, row); len(update) != 0 {
+		t.Fatalf("manual payment_ref update = %#v, want no changes", update)
+	}
+
+	// A payment_ref that already matches the target value is a no-op.
+	row["payment_ref"] = "MEM/2026/00036"
+	if update := buildMoneriumLineSyncUpdate(acc, tx, row); len(update) != 0 {
+		t.Fatalf("already-matching update = %#v, want no changes", update)
+	}
+}
+
 func TestOdooStatementLineMetadataWriteContextSkipsMoveSynchronization(t *testing.T) {
 	ctx := odooStatementLineMetadataWriteContext()
 	raw, ok := ctx["context"].(map[string]interface{})
