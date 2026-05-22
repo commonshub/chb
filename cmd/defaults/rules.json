@@ -210,12 +210,12 @@
 
   {
     "target": "invoice",
-    "match": { "title": "MEM/*" },
+    "match": { "title": "*MEM/*" },
     "assign": { "category": "membership", "collective": "commonshub" }
   },
   {
     "target": "invoice",
-    "match": { "title": "CHB/*" },
+    "match": { "title": "*CHB/*" },
     "assign": { "category": "rental", "collective": "commonshub" }
   },
   {

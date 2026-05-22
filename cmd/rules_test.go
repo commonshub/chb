@@ -162,3 +162,33 @@ func TestApplyMoveRulesFillsBlanksOnly(t *testing.T) {
 		t.Fatalf("non-matching invoice should not get a category, got %q", mv2.Category)
 	}
 }
+
+// TestInvoiceRuleSubstringGlobCatchesReversal pins the lesson learned
+// after v3.4.0 shipped with prefix-anchored title globs: a credit
+// note / reversal whose title is "Reversal of: CHB/2025/00076,
+// Membership cancelled" should still get the rental tag, not be
+// left blank. The fix is on the rule side (use `*CHB/*` so the glob
+// runs as a substring match), but this test pins the behaviour so a
+// future "tidy the embedded defaults" PR can't accidentally re-add
+// the anchor.
+func TestInvoiceRuleSubstringGlobCatchesReversal(t *testing.T) {
+	rules := []Rule{
+		{Target: "invoice", Match: RuleMatch{Title: "*CHB/*"}, Assign: RuleAssign{Category: "rental"}},
+	}
+	cases := []struct {
+		title    string
+		wantCat  string
+	}{
+		{"CHB/2026/00299", "rental"},
+		{"Reversal of: CHB/2025/00076, Membership cancelled", "rental"},
+		{"Refund for CHB/2024/00100", "rental"},
+		{"MEM/2026/00052", ""}, // not a CHB invoice — no category
+	}
+	for _, tc := range cases {
+		mv := OdooOutgoingInvoicePublic{Title: tc.title}
+		ApplyMoveRules(&mv, "Acme", moveKindInvoice, rules)
+		if mv.Category != tc.wantCat {
+			t.Fatalf("title %q: want category %q, got %q", tc.title, tc.wantCat, mv.Category)
+		}
+	}
+}

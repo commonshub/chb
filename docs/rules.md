@@ -8,7 +8,7 @@ Pattern matching against transaction descriptions, IBANs, amounts, and counterpa
 
 **Match fields are field-scoped, not free-text.** `description` only looks at `metadata.description` + `metadata.memo`; use `counterparty` (any direction) or `sender`/`recipient` (direction-filtered) to match the counterparty. Mixing the two — e.g. "the vendor name in the bank statement" — needs an explicit `counterparty` rule, not a `description` glob.
 
-**Targets.** A rule with no `target` field defaults to `target: "transaction"` — i.e. fires against ledger transactions. Set `"target": "invoice"` or `"target": "bill"` to apply the same rule engine to invoice/bill rows. Invoice/bill rules match on `title` (glob on the move number like `MEM/*`) and `partner` (glob on customer/vendor display name); transaction fields are ignored, and vice versa. A rule with `match: {}` is a catch-all for its target — useful for default-assignments like "every invoice gets collective=commonshub unless overridden".
+**Targets.** A rule with no `target` field defaults to `target: "transaction"` — i.e. fires against ledger transactions. Set `"target": "invoice"` or `"target": "bill"` to apply the same rule engine to invoice/bill rows. Invoice/bill rules match on `title` (glob on the move number — use `*MEM/*` for substring so reversal / credit-note titles like `"Reversal of: MEM/2025/0001"` are also caught) and `partner` (glob on customer/vendor display name); transaction fields are ignored, and vice versa. A rule with `match: {}` is a catch-all for its target — useful for default-assignments like "every invoice gets collective=commonshub unless overridden".
 
 Lives at `$APP_DATA_DIR/settings/rules.json`. Schema (simplified):
 
@@ -46,7 +46,7 @@ Lives at `$APP_DATA_DIR/settings/rules.json`. Schema (simplified):
 
   {
     "target": "invoice",
-    "match": { "title": "MEM/*" },
+    "match": { "title": "*MEM/*" },
     "assign": { "category": "membership", "collective": "commonshub" }
   },
   {
