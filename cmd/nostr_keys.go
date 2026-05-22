@@ -23,23 +23,57 @@ type NostrKeys struct {
 	Relays  []string `json:"relays"`
 }
 
+// nostrKeysPath returns the canonical Nostr-keys location:
+// `$APP_DATA_DIR/keys/nostr.json`. The dedicated `keys/` dir follows
+// the SSH convention (private material lives in its own tree, never
+// alongside data the user might share). Mirror mode never rsyncs
+// `keys/`, so a thin-client setup keeps its own Nostr identity even
+// when the rest of the data dir is a read-only mirror of the
+// trusted host.
 func nostrKeysPath() string {
+	return filepath.Join(AppDataDir(), "keys", "nostr.json")
+}
+
+// legacy locations we still read for back-compat. The boot path
+// auto-migrates whichever one is populated; SaveNostrKeys always
+// writes to the new location.
+func legacySettingsNostrKeysPath() string {
 	return settingsFilePath("nostr.json")
 }
 
-func legacyNostrKeysPath() string {
+func legacyTopLevelNostrKeysPath() string {
 	return filepath.Join(AppDataDir(), ".nostr-keys.json")
 }
 
-// LoadNostrKeys reads the Nostr keys from disk. Returns nil if not found.
+// LoadNostrKeys reads the Nostr keys from disk. Tries the canonical
+// `keys/nostr.json` first, then the two legacy paths in order. On
+// fallback hit, performs a one-shot migration to the new path and
+// prints a hint so the operator can remove the legacy file.
+// Returns nil when no keys are found anywhere.
 func LoadNostrKeys() *NostrKeys {
-	data, err := os.ReadFile(nostrKeysPath())
-	if err != nil {
-		data, err = os.ReadFile(legacyNostrKeysPath())
-		if err != nil {
-			return nil
-		}
+	if data, err := os.ReadFile(nostrKeysPath()); err == nil {
+		return parseNostrKeys(data)
 	}
+	for _, legacy := range []string{legacySettingsNostrKeysPath(), legacyTopLevelNostrKeysPath()} {
+		data, err := os.ReadFile(legacy)
+		if err != nil {
+			continue
+		}
+		keys := parseNostrKeys(data)
+		if keys == nil {
+			continue
+		}
+		if err := SaveNostrKeys(keys); err == nil {
+			fmt.Printf("  %s✓ migrated nostr keys to %s%s\n", Fmt.Green, nostrKeysPath(), Fmt.Reset)
+			fmt.Printf("  %s↳ legacy file still at %s — remove it once you've confirmed the new one works%s\n",
+				Fmt.Dim, legacy, Fmt.Reset)
+		}
+		return keys
+	}
+	return nil
+}
+
+func parseNostrKeys(data []byte) *NostrKeys {
 	var keys NostrKeys
 	if json.Unmarshal(data, &keys) != nil {
 		return nil
@@ -47,14 +81,18 @@ func LoadNostrKeys() *NostrKeys {
 	return &keys
 }
 
-// SaveNostrKeys writes the Nostr keys to disk with restricted permissions.
+// SaveNostrKeys writes the Nostr keys to disk with restricted
+// permissions. Always writes to the canonical path; legacy
+// locations are read-only after migration.
 func SaveNostrKeys(keys *NostrKeys) error {
 	data, err := json.MarshalIndent(keys, "", "  ")
 	if err != nil {
 		return err
 	}
 	dir := filepath.Dir(nostrKeysPath())
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
 	return os.WriteFile(nostrKeysPath(), data, 0600)
 }
 

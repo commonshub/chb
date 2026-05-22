@@ -82,13 +82,16 @@ func TestConfigFilesUseAppSettingsDir(t *testing.T) {
 	t.Setenv("APP_DATA_DIR", appDir)
 	settingsPath := filepath.Join(appDir, "settings")
 
+	// Settings dir holds the user-editable config files. Nostr keys
+	// moved OUT of settings into a dedicated keys/ dir (SSH
+	// convention; outside the rsync scope of mirror mode), so they
+	// are tested separately below.
 	cases := map[string]string{
 		"accounts":    accountsConfigPath(),
 		"categories":  categoriesPath(),
 		"collectives": collectivesPath(),
 		"config.env":  configEnvPath(),
 		"rules":       rulesPath(),
-		"nostr keys":  nostrKeysPath(),
 	}
 
 	for name, got := range cases {
@@ -101,27 +104,36 @@ func TestConfigFilesUseAppSettingsDir(t *testing.T) {
 	}
 }
 
-func TestNostrKeysUseSettingsDirWithLegacyFallback(t *testing.T) {
+func TestNostrKeysUseDedicatedKeysDirWithLegacyFallback(t *testing.T) {
 	appDir := filepath.Join(t.TempDir(), "app")
 	t.Setenv("APP_DATA_DIR", appDir)
 
 	if err := SaveNostrKeys(&NostrKeys{Npub: "npub-new", PubHex: "pub-new"}); err != nil {
 		t.Fatalf("SaveNostrKeys: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(appDir, "settings", "nostr.json")); err != nil {
-		t.Fatalf("expected settings/nostr.json: %v", err)
+	if _, err := os.Stat(filepath.Join(appDir, "keys", "nostr.json")); err != nil {
+		t.Fatalf("expected keys/nostr.json: %v", err)
 	}
 	if got := LoadNostrKeys(); got == nil || got.Npub != "npub-new" {
 		t.Fatalf("LoadNostrKeys() = %#v, want npub-new", got)
 	}
 
+	// Drop the new-location file and the legacy paths so the
+	// next LoadNostrKeys read truly falls back rather than
+	// auto-migrating from a previous run's leftovers.
 	if err := os.Remove(nostrKeysPath()); err != nil {
 		t.Fatalf("remove nostr.json: %v", err)
 	}
-	if err := os.WriteFile(legacyNostrKeysPath(), []byte(`{"npub":"npub-legacy","pubHex":"pub-legacy"}`), 0600); err != nil {
+	// Legacy path: ~/.chb/.nostr-keys.json (top-level dotfile).
+	if err := os.WriteFile(legacyTopLevelNostrKeysPath(), []byte(`{"npub":"npub-legacy","pubHex":"pub-legacy"}`), 0600); err != nil {
 		t.Fatalf("write legacy nostr keys: %v", err)
 	}
 	if got := LoadNostrKeys(); got == nil || got.Npub != "npub-legacy" {
 		t.Fatalf("LoadNostrKeys() legacy = %#v, want npub-legacy", got)
+	}
+	// Auto-migration should have written the keys to the new
+	// canonical location.
+	if _, err := os.Stat(nostrKeysPath()); err != nil {
+		t.Fatalf("migration to new path: %v", err)
 	}
 }
