@@ -1188,10 +1188,21 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 	// withOdooMoveTemporarilyDraft handles the "already in draft" case
 	// (Odoo otherwise rejects button_draft) and re-posts only when the
 	// move was posted to begin with.
+	//
+	// The write passes odooStatementLineMetadataWriteContext() as kwargs
+	// — same bypass the metadata stage uses — so Odoo's mid-write
+	// _check_journal_consistency doesn't trip while the move is in a
+	// transient state. The trip was observed during batch reconciles
+	// where an earlier line's draft+write+repost cycle left the move's
+	// related records (partial.reconcile, statement_line synchronization)
+	// in a state that Odoo's recompute interprets as "zero lines on the
+	// bank account" mid-write. The reconcile call below still runs the
+	// full validation, so skipping the intermediate check is safe.
 	if err := withOdooMoveTemporarilyDraft(creds, uid, line.MoveID, func() error {
 		_, werr := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			"account.move.line", "write",
-			[]interface{}{[]interface{}{counterpartID}, map[string]interface{}{"account_id": arAccountID}}, nil)
+			[]interface{}{[]interface{}{counterpartID}, map[string]interface{}{"account_id": arAccountID}},
+			odooStatementLineMetadataWriteContext())
 		if werr != nil {
 			return fmt.Errorf("rewrite counterpart line #%d: %v", counterpartID, werr)
 		}

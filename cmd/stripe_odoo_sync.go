@@ -2972,9 +2972,19 @@ func applyOdooMappingAccountBatch(creds *OdooCredentials, uid int, moveIDs, coun
 		status.Update("Applying account %s: writing %d counterpart lines...", accountCode, len(counterpartIDs))
 	}
 	if err := runOdooIDChunks(status, "Writing counterpart accounts", counterpartIDs, 200, func(chunk []interface{}) error {
+		// Bypass context (same shape used by the metadata stage and
+		// reconcileStatementLineWithMove): tells Odoo to skip its
+		// statement-line ↔ move synchronization and the
+		// _check_journal_consistency constraint while we mutate
+		// account_id. The lifecycle reposts the move afterwards which
+		// re-runs full validation. Without the bypass, batches
+		// occasionally trip "exactly one entry on the bank account"
+		// when an earlier write in the same lifecycle left a
+		// transient inconsistent state.
 		_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			"account.move.line", "write",
-			[]interface{}{chunk, map[string]interface{}{"account_id": accountID}}, nil)
+			[]interface{}{chunk, map[string]interface{}{"account_id": accountID}},
+			odooStatementLineMetadataWriteContext())
 		return err
 	}); err != nil {
 		return fmt.Errorf("write counterpart account %s: %v", accountCode, err)
