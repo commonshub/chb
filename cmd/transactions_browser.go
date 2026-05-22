@@ -3132,18 +3132,27 @@ func emitTransactionsJSON(f TxFilter, limit, skip int, includePII bool) {
 	// uniqueImportId requires the AccountConfig of the tx's account,
 	// which we look up by AccountSlug — building once per slug is much
 	// cheaper than per-tx for large result sets.
-	// Build the slug → AccountConfig index once. Subsequent per-tx
-	// lookups are O(1).
+	// Build the lookup index once. tx.AccountSlug carries different
+	// shapes per provider in the public file: Stripe writes the
+	// acct_… id, Etherscan / Monerium write the wallet address, KBC
+	// writes the IBAN. Index every identifying token so the lookup
+	// hits regardless of provider. Lowercased keys handle case
+	// variations between providers.
 	accCache := map[string]*AccountConfig{}
 	allAccounts := LoadAccountConfigs()
 	for i := range allAccounts {
-		accCache[allAccounts[i].Slug] = &allAccounts[i]
+		a := &allAccounts[i]
+		for _, key := range []string{a.Slug, a.AccountID, a.Address, a.IBAN} {
+			if k := strings.ToLower(strings.TrimSpace(key)); k != "" {
+				accCache[k] = a
+			}
+		}
 	}
 	resolveAcc := func(slug string) *AccountConfig {
 		if slug == "" {
 			return nil
 		}
-		return accCache[slug]
+		return accCache[strings.ToLower(strings.TrimSpace(slug))]
 	}
 
 	for _, tx := range txs {
