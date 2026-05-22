@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -23,6 +24,18 @@ func runIncomeExpenseTUI(direction, rangeLabel, accountSlug string, cats []*inco
 		fmt.Printf("\n%sNo %s in this range.%s\n\n", Fmt.Dim, direction, Fmt.Reset)
 		return
 	}
+	collInput := textinput.New()
+	collInput.Placeholder = "collective (slug)"
+	collInput.Prompt = ""
+	collInput.CharLimit = 64
+	collInput.Width = 32
+
+	catInput := textinput.New()
+	catInput.Placeholder = "category (slug)"
+	catInput.Prompt = ""
+	catInput.CharLimit = 64
+	catInput.Width = 32
+
 	m := incomeTUIModel{
 		direction:   direction,
 		rangeLabel:  rangeLabel,
@@ -30,6 +43,8 @@ func runIncomeExpenseTUI(direction, rangeLabel, accountSlug string, cats []*inco
 		cats:        cats,
 		totalCount:  totalCount,
 		totalAmount: totalAmount,
+		collInput:   collInput,
+		catInput:    catInput,
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
@@ -42,12 +57,13 @@ type incomeTUIMode int
 const (
 	incomeModeList incomeTUIMode = iota
 	incomeModeDrill
+	incomeModeEdit
 )
 
 type incomeTUIModel struct {
-	direction   string  // "income" or "expenses"
-	rangeLabel  string  // human range, e.g. "2025/Q1"
-	accountSlug string  // empty for "all accounts"
+	direction   string // "income" or "expenses"
+	rangeLabel  string // human range, e.g. "2025/Q1"
+	accountSlug string // empty for "all accounts"
 	cats        []*incomeCategoryBucket
 	totalCount  int
 	totalAmount float64
@@ -60,6 +76,15 @@ type incomeTUIModel struct {
 	// in list mode. Stored so the back button can restore the list
 	// cursor at the same row.
 	drillIdx int
+
+	// Edit overlay state — reused across reopens. Pre-filled with the
+	// cursor tx's current (collective, category) when [e] is pressed.
+	collInput  textinput.Model
+	catInput   textinput.Model
+	focusField int // 0 = collective, 1 = category
+
+	status      string
+	statusError bool
 
 	width, height int
 }
@@ -74,6 +99,8 @@ func (m incomeTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch m.mode {
+		case incomeModeEdit:
+			return m.updateEdit(msg)
 		case incomeModeDrill:
 			return m.updateDrill(msg)
 		}
@@ -130,6 +157,7 @@ func (m incomeTUIModel) updateDrill(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = incomeModeList
 		m.cursor = m.drillIdx
 		m.offset = 0
+		m.status = ""
 	case "ctrl+c":
 		return m, tea.Quit
 	case "up", "k":
@@ -154,12 +182,87 @@ func (m incomeTUIModel) updateDrill(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 	case "end", "G":
 		m.cursor = len(txs) - 1
+	case "e":
+		if m.cursor < 0 || m.cursor >= len(txs) {
+			return m, nil
+		}
+		t := txs[m.cursor]
+		if t.URI == "" {
+			m.status = "Cannot edit: tx has no URI."
+			m.statusError = true
+			return m, nil
+		}
+		m.mode = incomeModeEdit
+		m.focusField = 0
+		m.collInput.SetValue(t.Collective)
+		m.catInput.SetValue(t.Category)
+		m.collInput.Focus()
+		m.catInput.Blur()
+		m.status = ""
+		m.statusError = false
+		return m, textinput.Blink
 	}
 	return m, nil
 }
 
+func (m incomeTUIModel) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = incomeModeDrill
+		m.status = "Edit cancelled."
+		m.statusError = false
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	case "tab", "shift+tab":
+		m.focusField = 1 - m.focusField
+		if m.focusField == 0 {
+			m.collInput.Focus()
+			m.catInput.Blur()
+		} else {
+			m.collInput.Blur()
+			m.catInput.Focus()
+		}
+		return m, textinput.Blink
+	case "enter":
+		coll := strings.TrimSpace(m.collInput.Value())
+		cat := strings.TrimSpace(m.catInput.Value())
+		if coll == "" && cat == "" {
+			m.status = "Set at least one of collective or category before pressing enter"
+			m.statusError = true
+			return m, nil
+		}
+		txs := m.cats[m.drillIdx].Txs
+		t := &txs[m.cursor]
+		if err := WriteNostrAnnotation(t.URI, t.Date, cat, coll); err != nil {
+			m.status = fmt.Sprintf("Failed: %v", err)
+			m.statusError = true
+			return m, nil
+		}
+		if coll != "" {
+			t.Collective = coll
+		}
+		if cat != "" {
+			t.Category = cat
+		}
+		m.mode = incomeModeDrill
+		m.status = fmt.Sprintf("✓ Annotation written (collective=%s, category=%s). Run `chb generate` to re-bucket.",
+			defaultString(t.Collective, "—"), defaultString(t.Category, "—"))
+		m.statusError = false
+		return m, nil
+	}
+	var cmd tea.Cmd
+	if m.focusField == 0 {
+		m.collInput, cmd = m.collInput.Update(msg)
+	} else {
+		m.catInput, cmd = m.catInput.Update(msg)
+	}
+	return m, cmd
+}
+
 func (m incomeTUIModel) View() string {
-	if m.mode == incomeModeDrill {
+	switch m.mode {
+	case incomeModeDrill, incomeModeEdit:
 		return m.viewDrill()
 	}
 	return m.viewList()
@@ -375,16 +478,45 @@ func (m incomeTUIModel) viewDrill() string {
 			b.WriteString(t.Description)
 			b.WriteString("\n")
 		}
-		if t.URI != "" {
+		writeKV := func(k, v string) {
 			b.WriteString("  ")
-			b.WriteString(cpTUIDimStyle.Render(padRight("URI", 14)))
-			b.WriteString(t.URI)
+			b.WriteString(cpTUIDimStyle.Render(padRight(k, 14)))
+			b.WriteString(v)
 			b.WriteString("\n")
+		}
+		writeKV("Collective", defaultString(t.Collective, "—"))
+		writeKV("Category", defaultString(t.Category, "—"))
+		if t.URI != "" {
+			writeKV("URI", t.URI)
 		}
 	}
 
-	b.WriteString("\n  ")
-	b.WriteString(cpTUIDimStyle.Render("[↑/↓] navigate   [esc/q] back to categories"))
-	b.WriteString("\n")
+	if m.status != "" {
+		b.WriteString("\n  ")
+		if m.statusError {
+			b.WriteString(cpTUIErrStyle.Render(m.status))
+		} else {
+			b.WriteString(cpTUIOKStyle.Render(m.status))
+		}
+		b.WriteString("\n")
+	}
+
+	if m.mode == incomeModeEdit {
+		b.WriteString("\n")
+		b.WriteString(cpTUIHeaderStyle.Render("✎ Edit collective / category for this tx"))
+		b.WriteString("\n  ")
+		b.WriteString("Collective: ")
+		b.WriteString(m.collInput.View())
+		b.WriteString("\n  ")
+		b.WriteString("Category:   ")
+		b.WriteString(m.catInput.View())
+		b.WriteString("\n\n  ")
+		b.WriteString(cpTUIDimStyle.Render("[tab] switch field   [enter] apply (writes Nostr annotation)   [esc] cancel"))
+		b.WriteString("\n")
+	} else {
+		b.WriteString("\n  ")
+		b.WriteString(cpTUIDimStyle.Render("[↑/↓] navigate   [e] edit collective/category   [esc/q] back to categories"))
+		b.WriteString("\n")
+	}
 	return b.String()
 }

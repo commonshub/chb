@@ -350,9 +350,25 @@ func writeMoveTxAnnotation(rec *OdooReconciledTransaction, category, collective 
 	if rec == nil || rec.ID == "" || rec.Date == "" {
 		return fmt.Errorf("incomplete reconciled tx record")
 	}
-	t, err := time.Parse("2006-01-02", rec.Date[:min(10, len(rec.Date))])
+	return WriteNostrAnnotation(rec.ID, rec.Date, category, collective)
+}
+
+// WriteNostrAnnotation persists a (category, collective) annotation
+// keyed by the tx / move URI into the month's annotation cache. The
+// month is derived from `date` (YYYY-MM-DD prefix). Used by both the
+// invoice TUI [e] flow and the income/expenses drill-view [e] flow.
+// Empty category / collective leave the existing value untouched so
+// the caller can stamp one field without clobbering the other.
+func WriteNostrAnnotation(uri, date, category, collective string) error {
+	if uri == "" {
+		return fmt.Errorf("empty URI")
+	}
+	if len(date) < 10 {
+		return fmt.Errorf("date %q too short", date)
+	}
+	t, err := time.Parse("2006-01-02", date[:10])
 	if err != nil {
-		return fmt.Errorf("parse date %q: %v", rec.Date, err)
+		return fmt.Errorf("parse date %q: %v", date, err)
 	}
 	year := fmt.Sprintf("%04d", t.Year())
 	month := fmt.Sprintf("%02d", t.Month())
@@ -367,9 +383,9 @@ func writeMoveTxAnnotation(rec *OdooReconciledTransaction, category, collective 
 	if cache.Annotations == nil {
 		cache.Annotations = map[string]*TxAnnotation{}
 	}
-	prev := cache.Annotations[rec.ID]
+	prev := cache.Annotations[uri]
 	if prev == nil {
-		prev = &TxAnnotation{URI: rec.ID}
+		prev = &TxAnnotation{URI: uri}
 	}
 	if category != "" {
 		prev.Category = category
@@ -378,7 +394,7 @@ func writeMoveTxAnnotation(rec *OdooReconciledTransaction, category, collective 
 		prev.Collective = collective
 	}
 	prev.CreatedAt = time.Now().Unix()
-	cache.Annotations[rec.ID] = prev
+	cache.Annotations[uri] = prev
 	cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 	return nostrsource.WriteJSON(dataDir, year, month, cache, nostrsource.AnnotationsFile)
 }

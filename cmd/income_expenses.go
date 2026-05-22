@@ -32,6 +32,13 @@ type incomeExpenseTx struct {
 	Currency     string
 	Description  string // metadata.description (if any)
 	URI          string // tx canonical URI for copy-paste / nostr lookup
+
+	// Mutable annotation pair. Reflects the in-memory edit applied by
+	// the TUI [e] hotkey so the drill view shows the new value
+	// immediately. The Nostr annotation cache is the durable store;
+	// `chb generate` re-runs rebucket the rows on the next read.
+	Category   string
+	Collective string
 }
 
 // incomeCategoryBucket aggregates transactions for one category over
@@ -172,6 +179,8 @@ func runIncomeExpenseReport(direction string, args []string) error {
 					Currency:     tx.Currency,
 					Description:  stringMetadata(tx.Metadata, "description"),
 					URI:          tx.ID,
+					Category:     tx.Category,
+					Collective:   tx.Collective,
 				})
 			}
 
