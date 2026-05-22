@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1562,7 +1564,7 @@ func syncStripeOdooAccountsStage(creds *OdooCredentials, uid int, acc *AccountCo
 	return reviewed, updated, nil
 }
 
-func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time, dryRun bool, previewLimit int) (reviewed, updated int, err error) {
+func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time, dryRun, assumeYes bool, previewLimit int) (reviewed, updated int, err error) {
 	status := newStatusLine()
 	defer status.Clear()
 	if !quietOdooContext() {
@@ -1590,8 +1592,11 @@ func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountCo
 		LineID     int
 		MoveID     int
 		UniqueID   string
-		PaymentRef string
-		Narration  string
+		Date       string
+		PaymentRef string // new value
+		Narration  string // new value
+		OldRef     string // current value on Odoo (before)
+		OldNarr    string // current narration on Odoo (before)
 		Changed    []string
 	}
 	var updates []metadataUpdate
@@ -1609,7 +1614,7 @@ func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountCo
 		reviewed++
 		var changed []string
 		if want.PaymentRef != "" && line.PaymentRef != want.PaymentRef {
-			changed = append(changed, "description")
+			changed = append(changed, "payment_ref")
 		}
 		if want.Narration != "" && stripeFeeNarrationNeedsUpdate(line.Metadata, want.Metadata) {
 			changed = append(changed, "narration")
@@ -1617,50 +1622,128 @@ func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountCo
 		if len(changed) == 0 {
 			continue
 		}
+		oldNarr := ""
+		if line.Metadata != nil {
+			oldNarr = metaString(line.Metadata, "stripeDescription")
+			if oldNarr == "" {
+				oldNarr = metaString(line.Metadata, "description")
+			}
+		}
 		updates = append(updates, metadataUpdate{
 			LineID:     line.ID,
 			MoveID:     line.MoveID,
 			UniqueID:   line.UniqueImportID,
+			Date:       line.Date,
 			PaymentRef: want.PaymentRef,
 			Narration:  want.Narration,
+			OldRef:     line.PaymentRef,
+			OldNarr:    oldNarr,
 			Changed:    changed,
 		})
 	}
+	status.Clear()
 	if !quietOdooContext() {
-		status.Clear()
-		fmt.Printf("  %s %d\n", padRight("Lines to process:", 17), reviewed)
-		fmt.Printf("  %s %d (%d updated)\n\n", padRight("Metadata:", 17), len(updates), len(updates))
-		if dryRun && len(updates) > 0 {
-			headers := []string{"Action", "Description", "Reason", "Ref"}
-			var rows [][]string
-			for i, update := range updates {
-				if previewLimit > 0 && i >= previewLimit {
-					break
+		fmt.Printf("  %s %d\n", padRight("Lines reviewed:", 17), reviewed)
+		fmt.Printf("  %s %d stale\n\n", padRight("Metadata:", 17), len(updates))
+	}
+
+	if len(updates) == 0 {
+		if !quietOdooContext() {
+			fmt.Printf("  %s↻ metadata stage: %d line%s reviewed, none stale.%s\n\n",
+				Fmt.Dim, reviewed, plural(reviewed), Fmt.Reset)
+		}
+		return reviewed, 0, nil
+	}
+
+	// Always print the FROM → TO preview so the operator can verify
+	// before any writes happen. Dry-run shows all of them; live mode
+	// caps to previewLimit so a 500-line repair doesn't scroll off
+	// (the operator confirms once and lets it run).
+	if !quietOdooContext() {
+		refCount, narrCount := 0, 0
+		for _, u := range updates {
+			for _, f := range u.Changed {
+				switch f {
+				case "payment_ref":
+					refCount++
+				case "narration":
+					narrCount++
 				}
-				rows = append(rows, []string{
-					"update",
-					Truncate(update.PaymentRef, 48),
-					strings.Join(update.Changed, ", "),
-					update.UniqueID,
-				})
 			}
-			renderTicketsTable(headers, rows, nil, nil)
-			if previewLimit > 0 && len(updates) > previewLimit {
-				fmt.Printf("  %s... %d more%s\n", Fmt.Dim, len(updates)-previewLimit, Fmt.Reset)
+		}
+		fmt.Printf("  %sWill update on each stale line (draft → write → repost):%s\n", Fmt.Dim, Fmt.Reset)
+		if refCount > 0 {
+			fmt.Printf("    %s• payment_ref%s on %d line%s\n", Fmt.Yellow, Fmt.Reset, refCount, plural(refCount))
+		}
+		if narrCount > 0 {
+			fmt.Printf("    %s• narration%s on %d line%s\n", Fmt.Yellow, Fmt.Reset, narrCount, plural(narrCount))
+		}
+		fmt.Println()
+
+		printLimit := previewLimit
+		if dryRun || printLimit <= 0 {
+			printLimit = len(updates)
+		}
+		for i, u := range updates {
+			if i >= printLimit {
+				break
 			}
-			fmt.Println()
+			fmt.Printf("    %sline #%d%s  %s%s%s  [%s]\n",
+				Fmt.Dim, u.LineID, Fmt.Reset,
+				Fmt.Dim, u.Date, Fmt.Reset,
+				strings.Join(u.Changed, " + "))
+			for _, f := range u.Changed {
+				switch f {
+				case "payment_ref":
+					fmt.Printf("      %spayment_ref:%s %s%s%s → %s%s%s\n",
+						Fmt.Dim, Fmt.Reset,
+						Fmt.Yellow, truncate(u.OldRef, 60), Fmt.Reset,
+						Fmt.Green, truncate(u.PaymentRef, 60), Fmt.Reset)
+				case "narration":
+					fmt.Printf("      %snarration:%s  %s%s%s → %s%s%s\n",
+						Fmt.Dim, Fmt.Reset,
+						Fmt.Yellow, truncate(u.OldNarr, 60), Fmt.Reset,
+						Fmt.Green, truncate(narrationPreview(u.Narration), 60), Fmt.Reset)
+				}
+			}
+		}
+		if len(updates) > printLimit {
+			fmt.Printf("    %s… and %d more (--dry-run to see all)%s\n",
+				Fmt.Dim, len(updates)-printLimit, Fmt.Reset)
 		}
 	}
+
 	if dryRun {
+		if !quietOdooContext() {
+			fmt.Printf("\n  %s(dry-run — no writes)%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
 		return reviewed, len(updates), nil
 	}
+
+	// Live mode: confirm before any Odoo writes. --yes / -y skips
+	// the prompt; non-TTY without --yes refuses to avoid silent
+	// writes from CI / pipelines.
+	if !assumeYes && isInteractiveTTY() {
+		fmt.Printf("\n  %sApply %d metadata update%s to journal #%d on %s? [Y/n] %s",
+			Fmt.Bold, len(updates), plural(len(updates)), acc.OdooJournalID, odooCredsHost(creds), Fmt.Reset)
+		reader := bufio.NewReader(os.Stdin)
+		resp, _ := reader.ReadString('\n')
+		resp = strings.TrimSpace(strings.ToLower(resp))
+		if resp == "n" || resp == "no" {
+			fmt.Println("  Aborted.")
+			return reviewed, 0, nil
+		}
+	} else if !assumeYes {
+		return reviewed, 0, fmt.Errorf("refusing to apply %d metadata update(s) on a non-TTY without --yes", len(updates))
+	}
+
 	applied := map[int]stripeOdooDesiredLine{}
 	for i, update := range updates {
 		status.Update("Writing metadata %d/%d...", i, len(updates))
 		vals := map[string]interface{}{}
 		for _, field := range update.Changed {
 			switch field {
-			case "description":
+			case "payment_ref":
 				vals["payment_ref"] = update.PaymentRef
 			case "narration":
 				vals["narration"] = update.Narration
@@ -1673,10 +1756,50 @@ func syncStripeOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountCo
 		updated++
 		status.Update("Writing metadata %d/%d...", i+1, len(updates))
 	}
+	status.Clear()
 	if err := updateOdooJournalLinesCacheMetadata(acc.OdooJournalID, applied); err != nil {
 		Warnf("  %s⚠ Odoo journal cache: %v%s", Fmt.Yellow, err, Fmt.Reset)
 	}
+	if !quietOdooContext() {
+		fmt.Printf("\n  %s✓ %d update%s written%s\n\n",
+			Fmt.Green, updated, plural(updated), Fmt.Reset)
+	}
 	return reviewed, updated, nil
+}
+
+// odooCredsHost returns just the host of the Odoo URL for prompts —
+// "citizenspring-test3.odoo.com" rather than the full URL. Falls back
+// to the raw URL when parsing fails.
+func odooCredsHost(creds *OdooCredentials) string {
+	if creds == nil || creds.URL == "" {
+		return ""
+	}
+	if u, err := url.Parse(creds.URL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return creds.URL
+}
+
+// narrationPreview turns the JSON-encoded narration into a one-line
+// preview suitable for the FROM → TO table. The stored value is
+// `{"category":"stripe_fee","stripeFee":true,…}` which is unhelpful
+// at a glance; surface the human-readable bit.
+func narrationPreview(narr string) string {
+	if narr == "" {
+		return ""
+	}
+	// Try to extract the "description" or "stripeDescription" field
+	// from the JSON. Falls back to the raw value.
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(narr), &m) == nil {
+		for _, key := range []string{"description", "stripeDescription"} {
+			if v, ok := m[key].(string); ok && v != "" {
+				return v
+			}
+		}
+	}
+	one := strings.ReplaceAll(strings.ReplaceAll(narr, "\n", " "), "\t", " ")
+	return one
 }
 
 func stripeFeeNarrationNeedsUpdate(current, desired map[string]interface{}) bool {

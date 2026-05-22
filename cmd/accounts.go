@@ -2603,7 +2603,7 @@ func AccountOdooPush(slug string, args []string) error {
 			}
 		}
 		if syncErr == nil && stages.Explicit && stages.Metadata {
-			reviewed, updated, err := syncStripeOdooMetadataStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun, previewLimit)
+			reviewed, updated, err := syncStripeOdooMetadataStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun, assumeYes, previewLimit)
 			if err != nil {
 				syncErr = err
 			} else if reviewed > 0 {
