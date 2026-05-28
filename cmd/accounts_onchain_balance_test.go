@@ -35,7 +35,7 @@ func TestOnchainBalanceMatchesJournal(t *testing.T) {
 		t.Skipf("Odoo credentials not configured: %v", err)
 	}
 	if !strings.Contains(creds.DB, "test") {
-		t.Fatalf("Safety check: Odoo database must contain 'test', got %q", creds.DB)
+		t.Skipf("Safety check: Odoo database must contain 'test', got %q (point ODOO_DB at a test instance to enable)", creds.DB)
 	}
 	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
 	if err != nil || uid == 0 {

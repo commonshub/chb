@@ -53,11 +53,20 @@ func TestResolveOdooPartnerFromLocalIndexCountsAmbiguous(t *testing.T) {
 	}
 	stats := &syncStats{}
 
-	if got := resolveOdooPartnerFromLocalIndex(idx, "Same Name", "", map[string]int{}, stats); got != 0 {
-		t.Fatalf("ambiguous partner id = %d, want 0", got)
+	// Duplicate partners no longer block the sync; the resolver picks the
+	// oldest (lowest id) and records a merge suggestion (PartnersSkipped is
+	// the merge-suggested counter used in `chb` summary output).
+	if got := resolveOdooPartnerFromLocalIndex(idx, "Same Name", "", map[string]int{}, stats); got != 1 {
+		t.Fatalf("ambiguous partner id = %d, want 1 (oldest)", got)
+	}
+	if stats.PartnersMatched != 1 {
+		t.Fatalf("PartnersMatched = %d, want 1", stats.PartnersMatched)
 	}
 	if stats.PartnersSkipped != 1 {
-		t.Fatalf("PartnersSkipped = %d, want 1", stats.PartnersSkipped)
+		t.Fatalf("PartnersSkipped (merge-suggested) = %d, want 1", stats.PartnersSkipped)
+	}
+	if len(stats.Ambiguous) != 1 {
+		t.Fatalf("Ambiguous suggestions = %d, want 1: %+v", len(stats.Ambiguous), stats.Ambiguous)
 	}
 }
 

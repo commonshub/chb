@@ -671,6 +671,17 @@ func accountKey(acc FinanceAccount) string {
 
 // AccountsCommand routes `chb accounts` subcommands.
 func AccountsCommand(args []string) {
+	// `chb accounts balance [YYYY[/MM[/DD]]]` → aggregate balance of every
+	// account at the end of the period, with a per-currency total. Checked
+	// before the top-level --help so `chb accounts balance --help` reaches
+	// the balance-specific help rather than the general accounts help.
+	if len(args) >= 1 && args[0] == "balance" {
+		if err := AccountsBalance(args[1:]); err != nil {
+			Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
+		}
+		return
+	}
+
 	if HasFlag(args, "--help", "-h", "help") {
 		printAccountsHelp()
 		return
@@ -1719,16 +1730,19 @@ func AccountFetch(slug string, args []string) error {
 	// month touched by the CSV so monthly transactions.json files catch
 	// up with anything the operator dropped under latest/providers/.
 	if acc.Provider == "kbcbrussels" {
-		var kbcErr error
-		if verbose {
-			kbcErr = syncKBCAccount(acc)
-		} else {
-			restore := silenceStdout()
-			kbcErr = syncKBCAccount(acc)
-			restore()
+		// Nothing to read for this account → print actionable guidance
+		// (where to drop the CSV / which IBAN to fix) instead of a
+		// silent "0 new transactions" comparison block. syncKBCAccount
+		// always surfaces this guidance, even in compact mode.
+		if countBefore == 0 {
+			if err := syncKBCAccount(acc, verbose); err != nil {
+				return err
+			}
+			UpdateSyncSource("account:"+strings.ToLower(slug), true)
+			return nil
 		}
-		if kbcErr != nil {
-			return kbcErr
+		if err := syncKBCAccount(acc, verbose); err != nil {
+			return err
 		}
 		UpdateSyncSource("account:"+strings.ToLower(slug), true)
 		refreshAndPersistAccountBalance(acc)
@@ -6549,6 +6563,7 @@ func printAccountsHelp() {
   %schb accounts <slug> push --dry-run%s    Preview what would be pushed
   %schb accounts <slug> push --force%s      Empty the journal first, then re-push
   %schb accounts <slug> link%s              Link account to an Odoo bank journal
+  %schb accounts balance [YYYY[/MM[/DD]]]%s          All accounts + total at end of period
   %schb accounts <slug> balance [YYYY[/MM[/DD]]]%s   Historical balance at end of period
   %schb accounts <slug> payouts%s           List Stripe payouts
 
@@ -6561,10 +6576,10 @@ func printAccountsHelp() {
 `,
 		f.Bold, f.Reset, // title
 		f.Bold, f.Reset, // USAGE
-		// 12 USAGE rows
+		// 13 USAGE rows
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
-		f.Cyan, f.Reset, f.Cyan, f.Reset,
+		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Bold, f.Reset, // Note word
 		f.Bold, f.Reset, // ENVIRONMENT
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

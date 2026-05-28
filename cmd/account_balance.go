@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,24 +44,7 @@ func AccountBalance(slug string, args []string) error {
 		return err
 	}
 
-	txs := loadAccountTransactionsForOdoo(acc)
-
-	var balance float64
-	var counted, future int
-	var latest time.Time
-	for _, tx := range txs {
-		t := time.Unix(tx.Timestamp, 0)
-		if t.After(cutoff) {
-			future++
-			continue
-		}
-		balance += signedOdooAmountForTransaction(acc, tx)
-		counted++
-		if t.After(latest) {
-			latest = t
-		}
-	}
-	balance = roundCents(balance)
+	balance, counted, future, latest := accountBalanceAtCutoff(acc, cutoff)
 
 	currency := accCurrency(acc)
 	fmt.Printf("\n%s%s — %s%s\n", Fmt.Bold, acc.Slug, acc.Name, Fmt.Reset)
@@ -75,6 +59,149 @@ func AccountBalance(slug string, args []string) error {
 		fmt.Printf(", %s ignored after the cutoff", Pluralize(future, "tx", ""))
 	}
 	fmt.Printf("%s\n\n", Fmt.Reset)
+	return nil
+}
+
+// accountBalanceAtCutoff sums the signed amounts of an account's locally-cached
+// transactions up to and including the cutoff. It returns the rounded balance,
+// the number of transactions counted, the number ignored after the cutoff, and
+// the timestamp of the latest counted transaction.
+func accountBalanceAtCutoff(acc *AccountConfig, cutoff time.Time) (balance float64, counted, future int, latest time.Time) {
+	for _, tx := range loadAccountTransactionsForOdoo(acc) {
+		t := time.Unix(tx.Timestamp, 0)
+		if t.After(cutoff) {
+			future++
+			continue
+		}
+		balance += signedOdooAmountForTransaction(acc, tx)
+		counted++
+		if t.After(latest) {
+			latest = t
+		}
+	}
+	return roundCents(balance), counted, future, latest
+}
+
+// AccountsBalance prints the balance of every configured account at the end of
+// the supplied period, plus a per-currency total. It is the aggregate form of
+// `chb accounts <slug> balance` and accepts the same date argument:
+//
+//	chb accounts balance              → today (end of day)
+//	chb accounts balance 2025         → end of 2025
+//	chb accounts balance 2025/12      → end of December 2025
+//	chb accounts balance 2025/12/31   → end of that day
+//
+// Balances come from locally-cached transactions (the same source as the
+// single-account view) — run `chb accounts pull` first for fresh data.
+func AccountsBalance(args []string) error {
+	if HasFlag(args, "--help", "-h", "help") {
+		printAccountsBalanceHelp()
+		return nil
+	}
+
+	cutoff, scope, err := parseAccountBalanceCutoff(args)
+	if err != nil {
+		return err
+	}
+
+	configs := LoadAccountConfigs()
+	if len(configs) == 0 {
+		fmt.Printf("\n%sNo accounts configured.%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+
+	verbose := HasFlag(args, "--verbose", "-v")
+
+	type balanceRow struct {
+		slug     string
+		currency string
+		balance  float64
+		counted  int
+		latest   time.Time
+	}
+
+	rows := make([]balanceRow, 0, len(configs))
+	totals := map[string]float64{}
+	labelWidth := 0
+
+	for i := range configs {
+		acc := &configs[i]
+		balance, counted, _, latest := accountBalanceAtCutoff(acc, cutoff)
+		currency := accCurrency(acc)
+		rows = append(rows, balanceRow{acc.Slug, currency, balance, counted, latest})
+		totals[currency] += balance
+		if len(acc.Slug) > labelWidth {
+			labelWidth = len(acc.Slug)
+		}
+	}
+
+	currencies := make([]string, 0, len(totals))
+	for c := range totals {
+		currencies = append(currencies, c)
+	}
+	sort.Strings(currencies)
+	multiCurrency := len(currencies) > 1
+
+	// "Total <CUR>" labels can be wider than the longest slug.
+	for _, c := range currencies {
+		if w := len("Total " + c); w > labelWidth {
+			labelWidth = w
+		}
+	}
+
+	// Right-align amounts on their plain (un-coloured) width.
+	amtWidth := 0
+	plainAmount := func(v float64, currency string) string {
+		return signPrefix(v) + fmtNumber(math.Abs(v)) + " " + currency
+	}
+	for _, r := range rows {
+		if w := len(plainAmount(r.balance, r.currency)); w > amtWidth {
+			amtWidth = w
+		}
+	}
+	for _, c := range currencies {
+		if w := len(plainAmount(totals[c], c)); w > amtWidth {
+			amtWidth = w
+		}
+	}
+
+	printRow := func(label string, v float64, currency string) {
+		plain := plainAmount(v, currency)
+		pad := strings.Repeat(" ", amtWidth-len(plain))
+		colour := Fmt.Green
+		if v < 0 {
+			colour = Fmt.Red
+		}
+		fmt.Printf("  %s%-*s%s  %s%s%s%s\n",
+			Fmt.Bold, labelWidth, label, Fmt.Reset, pad, colour, plain, Fmt.Reset)
+	}
+
+	fmt.Printf("\n%s💰 Balances at end of %s%s  %s(%s)%s\n\n",
+		Fmt.Bold, scope, Fmt.Reset, Fmt.Dim, Pluralize(len(configs), "account", ""), Fmt.Reset)
+
+	for _, r := range rows {
+		printRow(r.slug, r.balance, r.currency)
+		if verbose {
+			detail := fmt.Sprintf("%s based on %s", Fmt.Dim, Pluralize(r.counted, "local transaction", ""))
+			if !r.latest.IsZero() {
+				detail += fmt.Sprintf(" (latest %s)", r.latest.In(BrusselsTZ()).Format("2006-01-02"))
+			}
+			fmt.Printf("    %s%s\n", detail, Fmt.Reset)
+		} else if r.counted == 0 {
+			fmt.Printf("    %sno local transactions — run `chb accounts %s pull`%s\n", Fmt.Dim, r.slug, Fmt.Reset)
+		}
+	}
+
+	fmt.Println()
+	for _, c := range currencies {
+		label := "Total"
+		if multiCurrency {
+			label = "Total " + c
+		}
+		printRow(label, totals[c], c)
+	}
+	fmt.Printf("\n  %sBased on locally-cached transactions. Run %schb accounts <slug> balance %s%s%s for per-account detail.%s\n\n",
+		Fmt.Dim, Fmt.Reset+Fmt.Cyan, scope, Fmt.Reset, Fmt.Dim, Fmt.Reset)
 	return nil
 }
 
@@ -179,6 +306,43 @@ func printAccountBalanceHelp() {
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset,
+	)
+}
+
+func printAccountsBalanceHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb accounts balance%s — Historical balance of every account
+
+%sUSAGE%s
+  %schb accounts balance%s              End of today
+  %schb accounts balance%s 2025         End of 2025
+  %schb accounts balance%s 2025/12      End of December 2025
+  %schb accounts balance%s 2025/12/31   End of that day
+
+%sNOTES%s
+  • Aggregates %schb accounts <slug> balance%s across all accounts, with a
+    per-currency total. Computed from locally-cached transactions (run
+    %schb accounts pull%s first for fresh data). Dates parsed in Europe/Brussels.
+  • Accepts %sYYYY%s, %sYYYY/MM%s, %sYYYY/MM/DD%s (or %s-%s / %sYYYYMMDD%s).
+
+%sOPTIONS%s
+  %s--verbose, -v%s        Show tx count and latest tx date per account
+  %s--help, -h%s           Show this help
+`,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 	)
 }
 

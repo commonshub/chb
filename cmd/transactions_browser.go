@@ -706,12 +706,11 @@ func transactionTableColumns(showAccount bool, includeSelection bool) []txTableC
 		cols = append(cols, txTableColumn{Header: "Sel", Kind: txColumnSelection, Ratio: 1, MinWidth: 5})
 	}
 	// Date renders as "↳ 02/01" worst case (virtual rows) — 7 columns.
-	// Pin the column there: Ratio=0 means flexbox gives it no share of
-	// the leftover width, MinWidth=7 holds it at exactly that. The
-	// freed width gets redistributed to Counterparty / Description /
-	// Collective, which are the columns that actually benefit from
-	// extra space.
-	cols = append(cols, txTableColumn{Header: "Date", Kind: txColumnDate, Ratio: 0, MinWidth: 7})
+	// stickers v1.5.0 rejects ratio < 1 (log.Fatal), so we use the smallest
+	// allowed share. MinWidth=7 still effectively pins the column at that
+	// width; the freed leftover goes to Counterparty / Description /
+	// Collective, the columns that actually benefit from extra space.
+	cols = append(cols, txTableColumn{Header: "Date", Kind: txColumnDate, Ratio: 1, MinWidth: 7})
 	if showAccount {
 		cols = append(cols, txTableColumn{Header: "Account", Kind: txColumnSource, Ratio: 3, MinWidth: 8})
 	}

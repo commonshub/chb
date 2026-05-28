@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 
@@ -14,25 +15,109 @@ import (
 // CSV in latest/providers/kbcbrussels/ is the source of truth — so "sync"
 // here means "(re)materialize the monthly transactions.json files so the
 // account view and Odoo push see the full history".
-func syncKBCAccount(acc *AccountConfig) error {
+//
+// When there's nothing to read for this account it prints actionable
+// guidance (and returns no error). That guidance is the only feedback the
+// operator gets in this case, so it is always printed regardless of
+// verbosity — only the per-month generate chatter is quietened when not
+// verbose.
+func syncKBCAccount(acc *AccountConfig, verbose bool) error {
 	rows, err := kbcbrusselssource.LoadTransactionsForIBAN(DataDir(), acc.IBAN)
 	if err != nil {
 		return fmt.Errorf("load CSV: %v", err)
 	}
 	if len(rows) == 0 {
-		fmt.Printf("  %sNo CSV rows found for %s under %s%s\n",
-			Fmt.Yellow, acc.IBAN, kbcbrusselssource.LatestDir(DataDir()), Fmt.Reset)
-		fmt.Printf("  %sDownload an export from KBC Brussels and drop it there, then re-run sync.%s\n",
-			Fmt.Dim, Fmt.Reset)
+		printKBCNoDataGuidance(acc)
 		return nil
 	}
 	months := kbcMonthsFromRows(rows)
-	fmt.Printf("  %sSource:%s   manual CSV (%d %s in latest/providers/%s/)\n",
-		Fmt.Dim, Fmt.Reset, len(rows), Pluralize(len(rows), "row", ""), kbcbrusselssource.Source)
-	fmt.Printf("  %sRange:%s    %s → %s (%d %s)\n",
-		Fmt.Dim, Fmt.Reset, rows[0].Date, rows[len(rows)-1].Date, len(months), Pluralize(len(months), "month", ""))
+	if verbose {
+		fmt.Printf("  %sSource:%s   manual CSV (%s in latest/providers/%s/)\n",
+			Fmt.Dim, Fmt.Reset, Pluralize(len(rows), "row", ""), kbcbrusselssource.Source)
+		fmt.Printf("  %sRange:%s    %s → %s (%s)\n",
+			Fmt.Dim, Fmt.Reset, rows[0].Date, rows[len(rows)-1].Date, Pluralize(len(months), "month", ""))
+		fmt.Println()
+		return GenerateTransactionsForMonths(months)
+	}
+	restore := silenceStdout()
+	genErr := GenerateTransactionsForMonths(months)
+	restore()
+	return genErr
+}
+
+// printKBCNoDataGuidance explains why a KBC pull found nothing and tells the
+// operator exactly what to do. It distinguishes the two real causes — no CSV
+// export dropped at all, versus exports present but none matching this
+// account's IBAN — because the fix differs.
+func printKBCNoDataGuidance(acc *AccountConfig) {
+	dir := kbcbrusselssource.LatestDir(DataDir())
+	csvFiles := kbcCSVFileNames(dir)
+
 	fmt.Println()
-	return GenerateTransactionsForMonths(months)
+	if len(csvFiles) == 0 {
+		// Make sure the drop folder exists so the path we point at is real.
+		_ = os.MkdirAll(dir, 0o755)
+		fmt.Printf("  %s⚠ No KBC Brussels CSV export found — nothing to import.%s\n", Fmt.Yellow, Fmt.Reset)
+		fmt.Printf("  %sKBC Brussels has no API; a downloaded CSV export is the only data source.%s\n\n", Fmt.Dim, Fmt.Reset)
+		fmt.Printf("  To import transactions for %s%s%s:\n", Fmt.Bold, acc.Slug, Fmt.Reset)
+		fmt.Printf("    1. In KBC Brussels online banking, export the account's transactions as CSV.\n")
+		fmt.Printf("    2. Drop the file into:\n       %s%s%s\n", Fmt.Cyan, dir, Fmt.Reset)
+		fmt.Printf("       %s(any *.csv works; KBC's default name is export_<IBAN>_<YYYYMMDD>_<HHMM>.csv)%s\n", Fmt.Dim, Fmt.Reset)
+		fmt.Printf("    3. Re-run %schb accounts %s pull --history%s\n\n", Fmt.Cyan, acc.Slug, Fmt.Reset)
+		return
+	}
+
+	// CSV files are present but none carried rows for this account's IBAN.
+	all, _ := kbcbrusselssource.LoadAllTransactions(DataDir())
+	ibans := kbcDistinctIBANs(all)
+	fmt.Printf("  %s⚠ Found %s in the drop folder, but none contain transactions for this account.%s\n",
+		Fmt.Yellow, Pluralize(len(csvFiles), "CSV file", ""), Fmt.Reset)
+	fmt.Printf("  %sFolder:%s %s%s%s\n", Fmt.Dim, Fmt.Reset, Fmt.Cyan, dir, Fmt.Reset)
+	if acc.IBAN != "" {
+		fmt.Printf("  %sConfigured IBAN for '%s':%s %s\n", Fmt.Dim, acc.Slug, Fmt.Reset, acc.IBAN)
+	} else {
+		fmt.Printf("  %sAccount '%s' has no IBAN configured.%s\n", Fmt.Yellow, acc.Slug, Fmt.Reset)
+	}
+	if len(ibans) > 0 {
+		fmt.Printf("  %sIBANs present in the CSVs:%s %s\n", Fmt.Dim, Fmt.Reset, strings.Join(ibans, ", "))
+	}
+	fmt.Printf("\n  %sFix the IBAN configured for '%s' so it matches the export, or drop the right CSV into the folder above.%s\n\n",
+		Fmt.Dim, acc.Slug, Fmt.Reset)
+}
+
+// kbcCSVFileNames lists the *.csv files currently in the drop folder.
+// A missing folder yields an empty slice (no error) — that's the "no
+// export dropped yet" case.
+func kbcCSVFileNames(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".csv") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// kbcDistinctIBANs returns the unique account IBANs seen across the loaded
+// CSV rows, sorted, so the guidance can show what the export actually
+// contained when it doesn't match the configured account.
+func kbcDistinctIBANs(rows []kbcbrusselssource.Transaction) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rows {
+		if r.AccountIBAN == "" || seen[r.AccountIBAN] {
+			continue
+		}
+		seen[r.AccountIBAN] = true
+		out = append(out, r.AccountIBAN)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // kbcMonthsFromRows returns the set of "YYYY-MM" labels covered by the

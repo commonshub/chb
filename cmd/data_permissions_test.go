@@ -9,6 +9,11 @@ import (
 
 func TestWriteDataFileSetsPublicPermissions(t *testing.T) {
 	dataDir := t.TempDir()
+	// t.TempDir picks up the user's umask (commonly 0775 on group-writable
+	// systems); normalize so the post-write assertion is environment-stable.
+	if err := os.Chmod(dataDir, 0755); err != nil {
+		t.Fatalf("chmod temp data dir: %v", err)
+	}
 	t.Setenv("DATA_DIR", dataDir)
 
 	path := filepath.Join(DataDir(), "2026", "04", "generated", "events.json")

@@ -12,15 +12,15 @@ func TestCalendarsShowsSummaryAndOptionalMonthlyBreakdown(t *testing.T) {
 	t.Setenv("APP_DATA_DIR", filepath.Join(home, "app"))
 	t.Setenv("DATA_DIR", dataDir)
 
-	writeJSONFixture(t, filepath.Join(home, "app", "settings", "settings.json"), `{}`)
-	writeJSONFixture(t, filepath.Join(home, "app", "settings", "calendars.json"), `{
+	seedSettingsFixture(t, "settings.json", `{}`)
+	seedSettingsFixture(t, "calendars.json", `{
 	  "sources": [
 	    {"slug":"ostrom","name":"Ostrom","provider":"ics","url":"https://example.com/ostrom.ics","visibility":"private","room":"ostrom"},
 	    {"slug":"luma","name":"Luma","provider":"ics","url":"https://example.com/luma.ics","visibility":"public"},
 	    {"slug":"privatecal","name":"Private Calendar","provider":"ics","url":"https://example.com/private.ics","visibility":"private"}
 	  ]
 	}`)
-	writeJSONFixture(t, filepath.Join(home, "app", "settings", "rooms.json"), `{
+	seedSettingsFixture(t, "rooms.json", `{
 	  "rooms": [{
 	    "name": "Ostrom",
 	    "slug": "ostrom",
@@ -145,14 +145,14 @@ func TestLoadAllBookingsUsesRoomCalendarReference(t *testing.T) {
 	t.Setenv("APP_DATA_DIR", filepath.Join(home, "app"))
 	t.Setenv("DATA_DIR", dataDir)
 
-	writeJSONFixture(t, filepath.Join(home, "app", "settings", "settings.json"), `{}`)
-	writeJSONFixture(t, filepath.Join(home, "app", "settings", "calendars.json"), `{
+	seedSettingsFixture(t, "settings.json", `{}`)
+	seedSettingsFixture(t, "calendars.json", `{
 	  "sources": [
 	    {"slug":"ostrom-calendar","name":"Ostrom Feed","provider":"ics","url":"https://example.com/ostrom.ics","visibility":"auto","room":"ostrom"},
 	    {"slug":"privatecal","name":"Private Calendar","provider":"ics","url":"https://example.com/private.ics","visibility":"private"}
 	  ]
 	}`)
-	writeJSONFixture(t, filepath.Join(home, "app", "settings", "rooms.json"), `{
+	seedSettingsFixture(t, "rooms.json", `{
 	  "rooms": [{
 	    "name": "Ostrom",
 	    "slug": "ostrom",

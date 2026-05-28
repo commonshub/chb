@@ -12,13 +12,13 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	t.Setenv("HOME", home)
 	dataDir := filepath.Join(home, ".chb", "data")
 
-	if err := os.MkdirAll(filepath.Join(home, ".chb"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".chb", "settings"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "rooms.json"), []byte(`{"rooms":[{"id":"ostrom","slug":"ostrom","discordChannelId":"1443322327159803945"}]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "rooms.json"), []byte(`{"rooms":[{"id":"ostrom","slug":"ostrom","discordChannelId":"1443322327159803945"}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,13 +117,13 @@ func TestRunDoctorChecksFindsMissingRoomChannelDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	dataDir := filepath.Join(home, ".chb", "data")
 
-	if err := os.MkdirAll(filepath.Join(home, ".chb"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".chb", "settings"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "rooms.json"), []byte(`{"rooms":[{"id":"ostrom","slug":"ostrom","discordChannelId":"1443322327159803945"}]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "rooms.json"), []byte(`{"rooms":[{"id":"ostrom","slug":"ostrom","discordChannelId":"1443322327159803945"}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -144,13 +144,13 @@ func TestRunDoctorChecksFindsBrokenImagesJSON(t *testing.T) {
 	t.Setenv("HOME", home)
 	dataDir := filepath.Join(home, ".chb", "data")
 
-	if err := os.MkdirAll(filepath.Join(home, ".chb"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".chb", "settings"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -198,13 +198,13 @@ func TestRunDoctorChecksIgnoresRoomICSOnlyMonth(t *testing.T) {
 	t.Setenv("HOME", home)
 	dataDir := filepath.Join(home, ".chb", "data")
 
-	if err := os.MkdirAll(filepath.Join(home, ".chb"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".chb", "settings"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,13 +227,13 @@ func TestRunDoctorChecksFindsBrokenHomepageLatestEvents(t *testing.T) {
 	t.Setenv("HOME", home)
 	dataDir := filepath.Join(home, ".chb", "data")
 
-	if err := os.MkdirAll(filepath.Join(home, ".chb"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".chb", "settings"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,13 +286,13 @@ func TestRunDoctorChecksFindsMissingLatestEventsFileWhenMonthlyEventsExist(t *te
 	t.Setenv("HOME", home)
 	dataDir := filepath.Join(home, ".chb", "data")
 
-	if err := os.MkdirAll(filepath.Join(home, ".chb"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".chb", "settings"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "settings.json"), []byte(`{"discord":{"guildId":"g","roles":{},"channels":{}}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".chb", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".chb", "settings", "rooms.json"), []byte(`{"rooms":[]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -15,7 +15,7 @@ func TestProvidersCommandListsProvidersAndCommands(t *testing.T) {
 	for _, want := range []string{
 		"chb providers",
 		"ics        sync|generate",
-		"chb sync       Same as chb providers * sync",
+		"chb pull       Same as chb providers * pull",
 		"chb generate   Same as chb providers * generate",
 	} {
 		if !strings.Contains(out, want) {
@@ -33,7 +33,7 @@ func TestProvidersCommandShowsProviderHelp(t *testing.T) {
 
 	for _, want := range []string{
 		"chb providers ics",
-		"chb providers ics sync",
+		"chb providers ics pull",
 		"chb providers ics generate",
 	} {
 		if !strings.Contains(out, want) {

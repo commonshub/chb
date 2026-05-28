@@ -29,7 +29,7 @@ func TestStripe2024Balance(t *testing.T) {
 		t.Skipf("Odoo credentials not configured: %v", err)
 	}
 	if !strings.Contains(creds.DB, "test") {
-		t.Fatalf("Safety check: database name must contain 'test', got %q", creds.DB)
+		t.Skipf("Safety check: database name must contain 'test', got %q (point ODOO_DB at a test instance to enable)", creds.DB)
 	}
 	if os.Getenv("STRIPE_SECRET_KEY") == "" {
 		t.Skip("STRIPE_SECRET_KEY not set")

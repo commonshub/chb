@@ -190,7 +190,7 @@ func TestBulkCategoryAssignmentUpdatesSelectedTransactions(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("bulk assignment did not start Nostr publish command")
 	}
-	if !strings.Contains(m.statusText, "Posting 2 Nostr event(s) to 0 relay(s)") {
+	if !strings.Contains(m.statusText, "Posting 2 Nostr events to 0 relays") {
 		t.Fatalf("posting status = %q", m.statusText)
 	}
 	msg := cmd()
@@ -281,7 +281,7 @@ func TestCategoryPickerReturnsToTableAndShowsPublishStatus(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected Nostr publish command")
 	}
-	if !strings.Contains(got.statusText, "Posting 1 Nostr event(s) to 0 relay(s)") {
+	if !strings.Contains(got.statusText, "Posting 1 Nostr event to 0 relays") {
 		t.Fatalf("status after picker = %q", got.statusText)
 	}
 
@@ -460,7 +460,7 @@ func TestEditAssignmentUpdatesCategoryAndCollectiveWithOnePublishCommand(t *test
 	if got := m.txs[0].Category; got != "accounting" {
 		t.Fatalf("category = %q, want accounting", got)
 	}
-	if !strings.Contains(m.statusText, "Posting 1 Nostr event(s)") {
+	if !strings.Contains(m.statusText, "Posting 1 Nostr event") {
 		t.Fatalf("status = %q", m.statusText)
 	}
 

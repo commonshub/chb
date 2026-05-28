@@ -76,6 +76,9 @@ func TestStoreOGResultRemovesExistingNegativeOrStaleEntry(t *testing.T) {
 }
 
 func TestCountICALEventsInMonthRange(t *testing.T) {
+	// YearMonth() is normalized to Europe/Brussels (UTC+2 in April DST), so
+	// 2026-03-31 23:00 UTC falls into April locally; 2026-05-01 09:00 UTC
+	// stays in May.
 	events := []ical.Event{
 		{Start: time.Date(2026, 3, 31, 23, 0, 0, 0, time.UTC)},
 		{Start: time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)},
@@ -84,8 +87,8 @@ func TestCountICALEventsInMonthRange(t *testing.T) {
 	}
 
 	got := countICALEventsInMonthRange(events, "2026-04", "2026-04")
-	if got != 2 {
-		t.Fatalf("countICALEventsInMonthRange() = %d, want 2", got)
+	if got != 3 {
+		t.Fatalf("countICALEventsInMonthRange() = %d, want 3", got)
 	}
 }
 

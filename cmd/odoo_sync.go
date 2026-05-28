@@ -1130,7 +1130,9 @@ referencing the source journal are listed and can be moved too.
   %scheck%s        Report invalid balances
   %sfix%s          Repair the journal      (chb odoo journals <id> fix --help)
   %sreconcile%s    Match lines vs. invoices/bills (chb odoo journals <id> reconcile --help)
-  %s--merge-with%s Move reconciliations to another journal, then delete this journal
+  %s--merge-with%s Move reconciliations into another journal, then delete this one
+               (chb odoo journals <id> --merge-with --help)
+               Supports %s--convert-invoice-payments%s for j30 A/R → j48 revenue merges
   %s--reset%s      Empty the journal (delete all statements + lines)
 `,
 				f.Bold, f.Reset,
@@ -1141,6 +1143,7 @@ referencing the source journal are listed and can be moved too.
 				f.Cyan, f.Reset,
 				f.Cyan, f.Reset,
 				f.Cyan, f.Reset,
+				f.Yellow, f.Reset,
 				f.Yellow, f.Reset,
 				f.Yellow, f.Reset,
 			)
