@@ -110,19 +110,25 @@ func TestAccountDetailShowsOnchainAndLocalDiagnostics(t *testing.T) {
 	})
 
 	assertContains(t, out, "https://app.safe.global/balances?safe=gno:0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf")
-	assertContains(t, out, "Account:      Savings")
-	assertContains(t, out, "Address:      gnosis 0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf")
-	assertContains(t, out, "URL:          https://app.safe.global/balances?safe=gno:0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf")
-	assertContains(t, out, "Balance:      125.50 EURe")
-	assertContains(t, out, "Transactions: 2 transactions from 2024-01-01 till 2024-01-02")
-	assertContains(t, out, "Last sync:    2026-05-07 10:30 (2 transactions from 2024-01-01 till 2024-01-02)")
-	assertContains(t, out, "Last full:    2026-05-01 09:00")
+	assertContains(t, out, "Account:")
+	assertContains(t, out, "Savings")
+	assertContains(t, out, "Address:")
+	assertContains(t, out, "gnosis 0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf")
+	assertContains(t, out, "URL:")
+	// Three labelled balances, each with its own tx count + provenance.
+	assertContains(t, out, "Live balance:")
+	assertContains(t, out, "125.50 EURe  (2 txs · on-chain, cached 2026-05-07 10:00)")
+	assertContains(t, out, "Local balance:")
+	assertContains(t, out, "70.50 EURe  (2 txs · 2024-01-01 → 2024-01-02)")
+	// Last sync and last full on a single line.
+	assertContains(t, out, "Last sync: 2026-05-07 10:30")
+	assertContains(t, out, "last full: 2026-05-01 09:00")
 	assertContains(t, out, "Balance mismatch:")
 	assertContains(t, out, "computed 70.50 EURe vs on-chain 125.50 EURe")
 	assertContains(t, out, "Fix:")
 	assertContains(t, out, "chb accounts savings sync --history")
 	assertContains(t, out, "chb accounts savings --refresh")
-	if strings.Index(out, "Balance mismatch:") < strings.Index(out, "Last full:") {
+	if strings.Index(out, "Balance mismatch:") < strings.Index(out, "Last sync:") {
 		t.Fatalf("balance mismatch should be printed after summary:\n%s", out)
 	}
 }
@@ -149,7 +155,7 @@ func TestAccountDetailPromptsHistoryWhenNeverFullySynced(t *testing.T) {
 		printAccountDetailSummary(&acc, nil)
 	})
 
-	assertContains(t, out, "URL:          https://txinfo.xyz/gnosis/address/0x1111111111111111111111111111111111111111")
+	assertContains(t, out, "https://txinfo.xyz/gnosis/address/0x1111111111111111111111111111111111111111")
 	assertContains(t, out, "This account has never been fully synced yet, please run `chb accounts wallet sync --history`")
 }
 

@@ -797,14 +797,21 @@ func AccountDetail(slug string, args []string) {
 		return
 	}
 
+	// The full command/options/examples reference is opt-in via --help; the
+	// bare `chb accounts <slug>` stays a clean, instant status glance.
+	if HasFlag(args, "--help", "-h", "help") {
+		printAccountSlugHelp(slug)
+		return
+	}
+
 	if JSONMode(args) {
 		emitAccountDetailJSON(acc, args)
 		return
 	}
 
 	printAccountDetailSummary(acc, args)
-	fmt.Println()
-	printAccountSlugHelp(slug)
+	fmt.Printf("\n  %sRun `chb accounts %s --help` for commands · `-r` to refresh live balances.%s\n\n",
+		Fmt.Dim, slug, Fmt.Reset)
 }
 
 func printAccountDetailSummary(acc *AccountConfig, args []string) {
@@ -820,82 +827,191 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	}
 	s := summaries[accountKey(fa)]
 	totals := computeAccountTotals(acc)
+	currency := accCurrency(acc)
 
-	currency := acc.Currency
-	if currency == "" && acc.Token != nil {
-		currency = acc.Token.Symbol
-	}
-	if currency == "" {
-		currency = "EUR"
-	}
-
-	// On --refresh, hit the live source for this one account and update
-	// just this account's entry in the shared balance cache.
+	// On --refresh, hit the live source for this one account and update just
+	// this account's entry in the shared balance cache. Without --refresh the
+	// whole summary is built from local files only (instant — no network).
 	if refresh {
 		fmt.Printf("\n  %sRefreshing %s balance for %s…%s\n", Fmt.Dim, accountLiveBalanceLabel(acc), acc.Slug, Fmt.Reset)
 		refreshAndPersistAccountBalance(acc)
 	}
 
-	// Prefer the cached live on-chain balance (token-scoped) over the
-	// tx-history-derived summary balance. Mirrors the list view logic.
-	var balance float64
-	hasBalance := false
-	var balanceSource string
+	// Live balance: the provider's own figure (Stripe API / on-chain), as
+	// last cached locally. The tx count is how many raw source rows back it.
+	var liveBalance float64
+	hasLive := false
+	var liveFetchedAt string
 	if cache := loadBalanceCache(); cache != nil {
 		for _, key := range []string{acc.Address, acc.AccountID, acc.IBAN, acc.Slug} {
 			if key == "" {
 				continue
 			}
 			if v, ok := cache.Balances[strings.ToLower(key)]; ok {
-				balance = v
-				hasBalance = true
-				balanceSource = accountBalanceSourceLabel(acc.Provider, cache.FetchedAt)
+				liveBalance = v
+				hasLive = true
+				liveFetchedAt = cache.FetchedAt
 				break
 			}
 		}
 	}
-	if !hasBalance && s != nil && s.TxCount > 0 {
-		balance = s.Balance
-		hasBalance = true
-		balanceSource = "from tx history"
-	}
 
 	fmt.Println()
-	fmt.Printf("  %sAccount:%s      %s\n", Fmt.Dim, Fmt.Reset, accountDisplayName(acc))
+	printAccountField("  ", "Account", accountDisplayName(acc))
 	printAccountOnlineLink(acc, "  ")
-	if hasBalance {
-		fmt.Printf("  %sBalance:%s      %s\n", Fmt.Dim, Fmt.Reset, formatAccountDataBalance(balance, currency))
-	} else {
-		fmt.Printf("  %sBalance:%s      unknown\n", Fmt.Dim, Fmt.Reset)
+	fmt.Println()
+
+	// Three balances, each with its own transaction count + provenance, so the
+	// operator can see at a glance where they disagree.
+	printAccountField("  ", "Live balance", liveBalanceDetail(acc, liveBalance, hasLive, currency, liveFetchedAt))
+
+	localBalance, localCount, localFirst, localLast := accountLocalBalance(totals, s)
+	printAccountField("  ", "Local balance", localBalanceDetail(localBalance, localCount, localFirst, localLast, currency))
+
+	if acc.OdooJournalID > 0 {
+		printAccountField("  ", "Journal balance", journalBalanceDetail(acc, currency, refresh))
 	}
 
-	txCount, firstTx, lastTx := accountDetailTransactionRange(totals, s)
-	fmt.Printf("  %sTransactions:%s %s\n", Fmt.Dim, Fmt.Reset, formatAccountTransactionRange(txCount, firstTx, lastTx))
-
+	// Last sync + last full sync on one line.
+	fmt.Println()
 	source := "account:" + strings.ToLower(acc.Slug)
 	lastSync := LastSyncTime(source)
-	if !lastSync.IsZero() {
-		fmt.Printf("  %sLast sync:%s    %s (%s)\n",
-			Fmt.Dim, Fmt.Reset,
-			lastSync.In(BrusselsTZ()).Format("2006-01-02 15:04"),
-			formatAccountTransactionRange(txCount, firstTx, lastTx))
-	} else {
-		fmt.Printf("  %sLast sync:%s    never\n", Fmt.Dim, Fmt.Reset)
-	}
 	lastFull := LastFullSyncTime(source)
-	if !lastFull.IsZero() {
-		fmt.Printf("  %sLast full:%s    %s\n", Fmt.Dim, Fmt.Reset, lastFull.In(BrusselsTZ()).Format("2006-01-02 15:04"))
+	syncVal := "never"
+	if !lastSync.IsZero() {
+		syncVal = lastSync.In(BrusselsTZ()).Format("2006-01-02 15:04")
 	}
+	fullVal := Fmt.Yellow + "never" + Fmt.Reset
+	if !lastFull.IsZero() {
+		fullVal = lastFull.In(BrusselsTZ()).Format("2006-01-02 15:04")
+	}
+	fmt.Printf("  %sLast sync:%s %s %s·%s last full: %s\n", Fmt.Dim, Fmt.Reset, syncVal, Fmt.Dim, Fmt.Reset, fullVal)
 
-	printAccountDetailOdooJournal(acc, currency)
-
-	neverFullySynced := lastFull.IsZero()
-	if neverFullySynced {
+	if lastFull.IsZero() {
 		fmt.Printf("\n  %sThis account has never been fully synced yet, please run `chb accounts %s sync --history`%s\n",
 			Fmt.Yellow, acc.Slug, Fmt.Reset)
 	}
 	if totals != nil {
-		printAccountBalanceMismatch(acc, totals.CurrentBalance, totals.Currency, hasBalance, balance, balanceSource)
+		printAccountBalanceMismatch(acc, totals.CurrentBalance, totals.Currency, hasLive, liveBalance, accountBalanceSourceLabel(acc.Provider, liveFetchedAt))
+	}
+}
+
+// accountLocalBalance returns the balance, tx count and date range derived from
+// the locally-generated transactions (preferring the richer totals view, then
+// the lighter summary). Used for the "Local balance" detail row.
+func accountLocalBalance(totals *accountTotals, s *accountSummary) (balance float64, count int, first, last time.Time) {
+	if totals != nil {
+		return totals.CurrentBalance, totals.TxCount, totals.FirstTxAt, totals.LastTxAt
+	}
+	if s != nil {
+		return s.Balance, s.TxCount, time.Time{}, s.LastTxAt
+	}
+	return 0, 0, time.Time{}, time.Time{}
+}
+
+// liveBalanceDetail renders the value side of the "Live balance" row, e.g.
+// "125.50 EURe  (2 txs · on-chain, cached 2026-05-07 10:00)".
+func liveBalanceDetail(acc *AccountConfig, balance float64, has bool, currency, fetchedAt string) string {
+	if !has {
+		if acc.Provider == "kbcbrussels" {
+			return Fmt.Dim + "n/a (KBC has no live API)" + Fmt.Reset
+		}
+		return Fmt.Dim + "not cached — run with -r" + Fmt.Reset
+	}
+	parts := []string{}
+	if n, ok := liveSourceTxCount(acc); ok {
+		parts = append(parts, Pluralize(n, "tx", ""))
+	}
+	prov := liveBalanceSourceShort(acc)
+	if fetchedAt != "" {
+		if t, err := time.Parse(time.RFC3339, fetchedAt); err == nil {
+			prov += ", cached " + t.In(BrusselsTZ()).Format("2006-01-02 15:04")
+		}
+	}
+	parts = append(parts, prov)
+	return fmt.Sprintf("%s  %s(%s)%s", formatAccountDataBalance(balance, currency), Fmt.Dim, strings.Join(parts, " · "), Fmt.Reset)
+}
+
+// localBalanceDetail renders the value side of the "Local balance" row.
+func localBalanceDetail(balance float64, count int, first, last time.Time, currency string) string {
+	if count == 0 {
+		return Fmt.Dim + "no local transactions — run `chb accounts <slug> pull`" + Fmt.Reset
+	}
+	detail := Pluralize(count, "tx", "")
+	if !first.IsZero() && !last.IsZero() {
+		detail += fmt.Sprintf(" · %s → %s", first.In(BrusselsTZ()).Format("2006-01-02"), last.In(BrusselsTZ()).Format("2006-01-02"))
+	} else if !last.IsZero() {
+		detail += " · latest " + last.In(BrusselsTZ()).Format("2006-01-02")
+	}
+	return fmt.Sprintf("%s  %s(%s)%s", formatAccountDataBalance(balance, currency), Fmt.Dim, detail, Fmt.Reset)
+}
+
+// journalBalanceDetail renders the value side of the "Journal balance" row from
+// the linked Odoo journal. It reads the local journal-lines cache by default
+// (instant); --refresh pulls the live figures from Odoo.
+func journalBalanceDetail(acc *AccountConfig, currency string, refresh bool) string {
+	name := OdooJournalName(acc.OdooJournalID)
+	snap, ok := accountJournalSnapshot(acc, currency, refresh)
+	label := fmt.Sprintf("journal #%d", acc.OdooJournalID)
+	if name != "" {
+		label = fmt.Sprintf("journal #%d %s", acc.OdooJournalID, name)
+	}
+	if !ok {
+		return Fmt.Dim + label + " — no local cache, run `chb accounts " + acc.Slug + " push` or -r" + Fmt.Reset
+	}
+	return fmt.Sprintf("%s  %s(%s · %s)%s",
+		formatAccountDataBalance(snap.Balance, snap.Currency), Fmt.Dim, Pluralize(snap.TxCount, "tx", ""), label, Fmt.Reset)
+}
+
+// accountJournalSnapshot returns the linked journal's balance/tx snapshot.
+// Without refresh it uses the local journal-lines cache (no network); with
+// refresh it queries Odoo and refreshes the cached journal name.
+func accountJournalSnapshot(acc *AccountConfig, currency string, refresh bool) (accountOdooSyncSnapshot, bool) {
+	if acc == nil || acc.OdooJournalID == 0 {
+		return accountOdooSyncSnapshot{}, false
+	}
+	if refresh {
+		if creds, err := ResolveOdooCredentials(); err == nil {
+			if uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password); err == nil && uid != 0 {
+				if OdooJournalName(acc.OdooJournalID) == "" {
+					_, _ = FetchAndCacheOdooJournalName(creds, uid, acc.OdooJournalID)
+				}
+				if snap, err := fetchOdooJournalSnapshot(creds, uid, acc.OdooJournalID, currency); err == nil {
+					return snap, true
+				}
+			}
+		}
+	}
+	return fetchOdooJournalSnapshotLocal(acc.OdooJournalID, currency)
+}
+
+// liveSourceTxCount returns how many raw source transactions are cached locally
+// for this account — the data backing the live balance figure.
+func liveSourceTxCount(acc *AccountConfig) (int, bool) {
+	switch acc.Provider {
+	case "etherscan":
+		if st := loadAccountOnchainStats(acc); st != nil {
+			return st.TxCount, true
+		}
+	case "stripe":
+		if txs, err := stripesource.LoadTransactions(DataDir(), acc.AccountID); err == nil && len(txs) > 0 {
+			return len(txs), true
+		}
+	}
+	return 0, false
+}
+
+// liveBalanceSourceShort is the compact provenance word for the live balance.
+func liveBalanceSourceShort(acc *AccountConfig) string {
+	switch acc.Provider {
+	case "stripe":
+		return "Stripe"
+	case "etherscan":
+		return "on-chain"
+	case "kbcbrussels":
+		return "KBC CSV"
+	default:
+		return "live"
 	}
 }
 
@@ -934,58 +1050,6 @@ func accountDisplayName(acc *AccountConfig) string {
 		return acc.Name
 	}
 	return acc.Slug
-}
-
-func accountDetailTransactionRange(totals *accountTotals, summary *accountSummary) (int, time.Time, time.Time) {
-	if totals != nil {
-		return totals.TxCount, totals.FirstTxAt, totals.LastTxAt
-	}
-	if summary != nil {
-		return summary.TxCount, time.Time{}, summary.LastTxAt
-	}
-	return 0, time.Time{}, time.Time{}
-}
-
-func formatAccountTransactionRange(count int, first, last time.Time) string {
-	label := "transactions"
-	if count == 1 {
-		label = "transaction"
-	}
-	if count == 0 {
-		return "0 transactions"
-	}
-	if !first.IsZero() && !last.IsZero() {
-		return fmt.Sprintf("%d %s from %s till %s", count, label, first.In(BrusselsTZ()).Format("2006-01-02"), last.In(BrusselsTZ()).Format("2006-01-02"))
-	}
-	if !last.IsZero() {
-		return fmt.Sprintf("%d %s till %s", count, label, last.In(BrusselsTZ()).Format("2006-01-02"))
-	}
-	return fmt.Sprintf("%d %s", count, label)
-}
-
-func printAccountDetailOdooJournal(acc *AccountConfig, currency string) {
-	if acc == nil || acc.OdooJournalID == 0 {
-		return
-	}
-	lastSync := LastSyncTime(fmt.Sprintf("odoo:journal:%d", acc.OdooJournalID))
-	line := fmt.Sprintf("  %sOdoo journal:%s #%d", Fmt.Dim, Fmt.Reset, acc.OdooJournalID)
-	if !lastSync.IsZero() {
-		line += fmt.Sprintf(", last sync: %s", lastSync.In(BrusselsTZ()).Format("2006-01-02 15:04"))
-	}
-	if creds, err := ResolveOdooCredentials(); err == nil {
-		if uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password); err == nil && uid != 0 {
-			if snap, err := fetchOdooJournalSnapshot(creds, uid, acc.OdooJournalID, currency); err == nil {
-				line += fmt.Sprintf(" (%s)", formatAccountTransactionRange(snap.TxCount, snap.FirstTxAt, snap.LastTxAt))
-			}
-			if OdooJournalName(acc.OdooJournalID) == "" {
-				_, _ = FetchAndCacheOdooJournalName(creds, uid, acc.OdooJournalID)
-			}
-		}
-	}
-	if name := OdooJournalName(acc.OdooJournalID); name != "" {
-		line += fmt.Sprintf(" %s(%s)%s", Fmt.Dim, name, Fmt.Reset)
-	}
-	fmt.Println(line)
 }
 
 func printAccountOnchainData(acc *AccountConfig, currency string, hasBalance bool, balance float64) {
@@ -1092,9 +1156,9 @@ func printAccountField(indent, label, value string) {
 	fmt.Printf("%s%s%-*s%s %s\n", indent, Fmt.Dim, accountFieldLabelWidth, label+":", Fmt.Reset, value)
 }
 
-// accountFieldLabelWidth aligns account detail rows; "Transactions:" is the
+// accountFieldLabelWidth aligns account detail rows; "Journal balance:" is the
 // longest label rendered in the summary.
-const accountFieldLabelWidth = 13
+const accountFieldLabelWidth = 16
 
 func stripeDashboardURL(acc *AccountConfig) string {
 	if acc == nil || acc.Provider != "stripe" {
@@ -1308,8 +1372,14 @@ func Accounts(args []string) {
 		cacheTime = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	// Fetch Odoo sync status for accounts with linked journals
-	odooStatuses := fetchOdooSyncStatuses(configs, summaries)
+	// Odoo sync status for accounts with linked journals. Local-cache only by
+	// default so `chb accounts` stays instant; --refresh queries Odoo live.
+	var odooStatuses map[int]*odooSyncStatus
+	if refresh {
+		odooStatuses = fetchOdooSyncStatuses(configs, summaries)
+	} else {
+		odooStatuses = localOdooSyncStatuses(configs, summaries)
+	}
 
 	fmt.Printf("\n%s💰 Configured Accounts%s (%d)", Fmt.Bold, Fmt.Reset, len(configs))
 	if cacheTime != "" {
@@ -1508,6 +1578,45 @@ type odooSyncStatus struct {
 
 // fetchOdooSyncStatuses checks Odoo for each account with a linked journal.
 // Returns a map of journalID → sync status.
+// localOdooSyncStatuses builds the same per-journal status as
+// fetchOdooSyncStatuses but purely from the locally-cached journal lines (no
+// network). It powers the default, instant `chb accounts` view; --refresh
+// swaps in the live fetcher.
+func localOdooSyncStatuses(configs []AccountConfig, summaries map[string]*accountSummary) map[int]*odooSyncStatus {
+	result := map[int]*odooSyncStatus{}
+	faAccounts := ToFinanceAccounts(configs)
+	for i, acc := range configs {
+		if acc.OdooJournalID == 0 {
+			continue
+		}
+		cache, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID)
+		if !ok {
+			continue
+		}
+		var lastDate time.Time
+		for _, ln := range cache {
+			if t, err := time.Parse("2006-01-02", ln.Date); err == nil && t.After(lastDate) {
+				lastDate = t
+			}
+		}
+		localCount := 0
+		if s := summaries[accountKey(faAccounts[i])]; s != nil {
+			localCount = s.TxCount
+		}
+		missing := localCount - len(cache)
+		if missing < 0 {
+			missing = 0
+		}
+		result[acc.OdooJournalID] = &odooSyncStatus{
+			Missing:        missing,
+			TotalOdoo:      len(cache),
+			TotalLocal:     localCount,
+			LastOdooTxDate: lastDate,
+		}
+	}
+	return result
+}
+
 func fetchOdooSyncStatuses(configs []AccountConfig, summaries map[string]*accountSummary) map[int]*odooSyncStatus {
 	result := map[int]*odooSyncStatus{}
 
@@ -1979,10 +2088,10 @@ func isOdooSyntheticLine(ln OdooCacheLine) bool {
 // printAccountFetchSummary prints the aligned 3-row comparison block after
 // a per-account pull:
 //
-//	  0 new transactions
-//	  Stripe:           3,593 txs  balance:    982.62 EUR
-//	  Local:            3,593 txs  balance:    982.62 EUR  ✓
-//	  Odoo journal #48: 3,593 txs  balance:    983.60 EUR  ✗
+//	0 new transactions
+//	Stripe:           3,593 txs  balance:    982.62 EUR
+//	Local:            3,593 txs  balance:    982.62 EUR  ✓
+//	Odoo journal #48: 3,593 txs  balance:    983.60 EUR  ✗
 //
 // ✓ on Local means it matches the Provider snapshot we just fetched.
 // ✓ on Odoo means the linked Odoo journal cache matches Local. Mismatches

@@ -21,7 +21,13 @@ func emitAccountsJSON(args []string, configs []AccountConfig) {
 		fetchedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	odooStatuses := fetchOdooSyncStatuses(configs, summaries)
+	// Local-cache only by default (instant); --refresh queries Odoo live.
+	var odooStatuses map[int]*odooSyncStatus
+	if refresh {
+		odooStatuses = fetchOdooSyncStatuses(configs, summaries)
+	} else {
+		odooStatuses = localOdooSyncStatuses(configs, summaries)
+	}
 	faAccounts := ToFinanceAccounts(configs)
 
 	out := AccountsJSON{
