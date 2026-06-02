@@ -9,7 +9,9 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -325,6 +327,31 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 const rpcMaxRetries = 5
 const rpcRetryBaseDelay = 2 * time.Second
 
+// rpcHTTPClient bounds every JSON-RPC request with a per-call deadline.
+// Go's http.Post uses http.DefaultClient, which has NO timeout: a SaaS
+// instance that accepts the TCP connection but never sends a response body
+// would hang the caller indefinitely. Under `chb sync` that freezes the
+// whole hourly cron on whatever step it reached (e.g. "verifying cache
+// freshness"), which is exactly the failure this guards against. A finite
+// deadline turns the stall into a clean, surfaced error (handled by
+// friendlyOdooNetworkError) so the run fails fast and the next cron retries.
+//
+// The default is generous enough for large paginated reads; override with
+// ODOO_RPC_TIMEOUT_SECONDS for an unusually slow instance (0 / unset uses
+// the default).
+const defaultRPCHTTPTimeout = 120 * time.Second
+
+var rpcHTTPClient = &http.Client{Timeout: resolveRPCHTTPTimeout()}
+
+func resolveRPCHTTPTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("ODOO_RPC_TIMEOUT_SECONDS")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return defaultRPCHTTPTimeout
+}
+
 func rpc(odooURL, service, method string, args []interface{}) (json.RawMessage, error) {
 	payload := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -340,7 +367,7 @@ func rpc(odooURL, service, method string, args []interface{}) (json.RawMessage, 
 
 	delay := rpcRetryBaseDelay
 	for attempt := 0; ; attempt++ {
-		resp, err := http.Post(odooURL+"/jsonrpc", "application/json", bytes.NewReader(data))
+		resp, err := rpcHTTPClient.Post(odooURL+"/jsonrpc", "application/json", bytes.NewReader(data))
 		if err != nil {
 			return nil, friendlyOdooNetworkError(odooURL, err)
 		}

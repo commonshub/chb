@@ -1219,7 +1219,6 @@ func loadAccountOnchainStats(acc *AccountConfig) *accountOnchainStats {
 		return nil
 	}
 	dataDir := DataDir()
-	filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
 	stats := &accountOnchainStats{Currency: acc.Token.Symbol}
 	yearDirs, _ := os.ReadDir(dataDir)
 	for _, yd := range yearDirs {
@@ -1231,7 +1230,10 @@ func loadAccountOnchainStats(acc *AccountConfig) *accountOnchainStats {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			path := etherscansource.Path(dataDir, yd.Name(), md.Name(), acc.Chain, filename)
+			path, found := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+			if !found {
+				continue
+			}
 			cache, ok := etherscansource.LoadCache(path)
 			if !ok {
 				continue
@@ -3552,7 +3554,6 @@ func loadAccountOnchainTransfers(acc *AccountConfig) []etherscansource.TokenTran
 		return nil
 	}
 	dataDir := DataDir()
-	filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
 	var transfers []etherscansource.TokenTransfer
 	yearDirs, _ := os.ReadDir(dataDir)
 	for _, yd := range yearDirs {
@@ -3564,7 +3565,10 @@ func loadAccountOnchainTransfers(acc *AccountConfig) []etherscansource.TokenTran
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			path := etherscansource.Path(dataDir, yd.Name(), md.Name(), acc.Chain, filename)
+			path, found := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+			if !found {
+				continue
+			}
 			cache, ok := etherscansource.LoadCache(path)
 			if !ok {
 				continue
@@ -3604,7 +3608,6 @@ func accountSourceMonthFingerprints(acc *AccountConfig) map[string]string {
 		return out
 	}
 	dataDir := DataDir()
-	filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
 	yearDirs, _ := os.ReadDir(dataDir)
 	for _, yd := range yearDirs {
 		if !yd.IsDir() || len(yd.Name()) != 4 {
@@ -3616,7 +3619,10 @@ func accountSourceMonthFingerprints(acc *AccountConfig) map[string]string {
 				continue
 			}
 			ym := yd.Name() + "-" + md.Name()
-			path := etherscansource.Path(dataDir, yd.Name(), md.Name(), acc.Chain, filename)
+			path, found := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+			if !found {
+				continue
+			}
 			cache, ok := etherscansource.LoadCache(path)
 			if !ok {
 				continue
@@ -6056,7 +6062,10 @@ func internalTransactionDirectionFromRaw(acc *AccountConfig, tx TransactionEntry
 	if chain == "" || slug == "" || currency == "" {
 		return ""
 	}
-	path := etherscansource.Path(DataDir(), t.Format("2006"), t.Format("01"), chain, etherscansource.FileName(slug, currency))
+	path, found := etherscansource.FindFileForAddr(DataDir(), t.Format("2006"), t.Format("01"), chain, slug, account, currency)
+	if !found {
+		return ""
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""

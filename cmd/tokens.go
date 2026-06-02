@@ -212,7 +212,6 @@ func tokenTxStats(dataDir string, t TokenConfig) tokenTxStatsResult {
 	if t.Slug == "" || t.Symbol == "" || t.Chain == "" {
 		return out
 	}
-	filename := etherscansource.FileName(t.Slug, t.Symbol)
 	yearDirs, _ := os.ReadDir(dataDir)
 	for _, yd := range yearDirs {
 		if !yd.IsDir() || len(yd.Name()) != 4 {
@@ -223,7 +222,10 @@ func tokenTxStats(dataDir string, t TokenConfig) tokenTxStatsResult {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			path := etherscansource.Path(dataDir, yd.Name(), md.Name(), t.Chain, filename)
+			path, found := etherscansource.FindFile(dataDir, yd.Name(), md.Name(), t.Chain, t.Slug, t.Symbol)
+			if !found {
+				continue
+			}
 			cache, ok := etherscansource.LoadCache(path)
 			if !ok {
 				continue

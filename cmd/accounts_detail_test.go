@@ -92,7 +92,7 @@ func TestAccountDetailShowsOnchainAndLocalDiagnostics(t *testing.T) {
 			{Hash: "0x2", TimeStamp: "1704153600", From: acc.Address, To: "0xbbb", Value: "29500000000000000000", TokenSymbol: "EURe", TokenDecimal: "18"},
 		},
 	}
-	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, token.Symbol)), raw)
+	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, token.Symbol)), raw)
 
 	chain := acc.Chain
 	local := TransactionsFile{
@@ -212,11 +212,11 @@ func TestAccountSyncVerificationReportsMissingTransfersByMonth(t *testing.T) {
 			{Hash: "0xmissing-jan", TimeStamp: "1704153600", From: "0xbbb", To: acc.Address, Value: "25000000000000000000", TokenSymbol: "EURe", TokenDecimal: "18"},
 		},
 	}
-	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Token.Symbol)), raw)
+	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)), raw)
 	raw.Transactions = []etherscansource.TokenTransfer{
 		{Hash: "0xmissing-feb", TimeStamp: "1706745600", From: acc.Address, To: "0xccc", Value: "10000000000000000000", TokenSymbol: "EURe", TokenDecimal: "18"},
 	}
-	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "02", acc.Chain, etherscansource.FileName(acc.Slug, acc.Token.Symbol)), raw)
+	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "02", acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)), raw)
 
 	chain := acc.Chain
 	local := TransactionsFile{
@@ -346,11 +346,11 @@ func TestAccountSourceChangedMonthsUsesTransactionContentOnly(t *testing.T) {
 			{Hash: "0x1", TimeStamp: "1704067200", From: "0xaaa", To: acc.Address, Value: "100000000000000000000", TokenSymbol: "EURe", TokenDecimal: "18"},
 		},
 	}
-	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Token.Symbol)), raw)
+	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)), raw)
 	before = accountSourceMonthFingerprints(&acc)
 
 	raw.CachedAt = "changed"
-	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Token.Symbol)), raw)
+	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)), raw)
 	if changed := accountChangedSourceMonths(&acc, before); len(changed) != 0 {
 		t.Fatalf("changed months after cachedAt-only change = %#v, want none", changed)
 	}
@@ -358,7 +358,7 @@ func TestAccountSourceChangedMonthsUsesTransactionContentOnly(t *testing.T) {
 	raw.Transactions = append(raw.Transactions, etherscansource.TokenTransfer{
 		Hash: "0x2", TimeStamp: "1704153600", From: acc.Address, To: "0xbbb", Value: "25000000000000000000", TokenSymbol: "EURe", TokenDecimal: "18",
 	})
-	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Token.Symbol)), raw)
+	writeJSONFileForTest(t, etherscansource.Path(DataDir(), "2024", "01", acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)), raw)
 	changed := accountChangedSourceMonths(&acc, before)
 	if len(changed) != 1 || changed[0] != "2024-01" {
 		t.Fatalf("changed months = %#v, want [2024-01]", changed)

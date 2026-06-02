@@ -929,8 +929,10 @@ func printTransactionsSummary(dataDir, year, month string) {
 
 	for _, acc := range settings.Finance.Accounts {
 		if acc.Provider == "etherscan" && acc.Token != nil {
-			filePath := etherscansource.Path(dataDir, year, month, acc.Chain,
-				etherscansource.FileName(acc.Slug, acc.Token.Symbol))
+			filePath, found := etherscansource.FindFileForAddr(dataDir, year, month, acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+			if !found {
+				continue
+			}
 
 			data, err := os.ReadFile(filePath)
 			if err != nil {

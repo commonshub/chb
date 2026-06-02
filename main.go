@@ -397,8 +397,14 @@ func main() {
 		}
 	case "accounts":
 		cmd.AccountsCommand(args[1:])
+	case "status":
+		cmd.Status(args[1:])
 	case "stats":
 		cmd.Stats(args[1:])
+	case "clean":
+		if err := cmd.Clean(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "doctor":
 		if err := cmd.Doctor(args[1:]); err != nil {
 			exitWithError(err)

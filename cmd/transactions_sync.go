@@ -175,10 +175,9 @@ func TransactionsSync(args []string) (int, error) {
 
 					// Check if we can skip the full fetch by peeking at the latest tx
 					if !force {
-						filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
 						peekHash, peekErr := etherscansource.PeekLatest(etherscanAccount(acc), apiKey)
 						if peekErr == nil {
-							cachedLatest := etherscansource.LatestCachedTxHashGlobal(DataDir(), acc.Chain, filename)
+							cachedLatest := etherscansource.LatestCachedTxHashGlobal(DataDir(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
 							if cachedLatest == "" {
 								cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol)
 							}
@@ -186,7 +185,13 @@ func TransactionsSync(args []string) (int, error) {
 								// Peek matches, but only skip if we're not missing data for months in range.
 								// Etherscan accounts may have data in months we haven't cached yet.
 								relPathFn := func(year, month string) string {
-									return etherscansource.RelPath(acc.Chain, filename)
+									if p, ok := etherscansource.FindFileForAddr(DataDir(), year, month, acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol); ok {
+										if rel, err := filepath.Rel(filepath.Join(DataDir(), year, month), p); err == nil {
+											return rel
+										}
+									}
+									// No cached file for this month → return a path that won't exist.
+									return etherscansource.RelPath(acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol))
 								}
 								if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
 									printBlockchainNewTxStatus(0, accountSyncMode, "latest unchanged")
@@ -235,9 +240,9 @@ func TransactionsSync(args []string) (int, error) {
 						}
 						year, month := parts[0], parts[1]
 
-						// Save to data/YYYY/MM/providers/etherscan/{chain}/{slug}.{token}.json
+						// Save to data/YYYY/MM/providers/etherscan/{chain}/{slug}.{0xaddr}.{token}.json
 						dataDir := DataDir()
-						filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
+						filename := etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)
 						relPath := etherscansource.RelPath(acc.Chain, filename)
 						filePath := filepath.Join(dataDir, year, month, relPath)
 
@@ -748,7 +753,6 @@ func existingTokenTransferKeys(acc FinanceAccount) map[string]bool {
 		return out
 	}
 	dataDir := DataDir()
-	filename := etherscansource.FileName(acc.Slug, acc.Token.Symbol)
 	yearDirs, _ := os.ReadDir(dataDir)
 	for _, yd := range yearDirs {
 		if !yd.IsDir() || len(yd.Name()) != 4 {
@@ -759,7 +763,11 @@ func existingTokenTransferKeys(acc FinanceAccount) map[string]bool {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			cache, ok := etherscansource.LoadCache(etherscansource.Path(dataDir, yd.Name(), md.Name(), acc.Chain, filename))
+			path, ok := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+			if !ok {
+				continue
+			}
+			cache, ok := etherscansource.LoadCache(path)
 			if !ok {
 				continue
 			}
@@ -1102,10 +1110,18 @@ func currentMonthCacheFile(dataDir string, relPathFn func(year, month string) st
 	return filepath.Join(dataDir, year, month, relPathFn(year, month))
 }
 
+// peekHashPath is the internal-cache location for a peek checkpoint. It lives
+// under latest/.cache/ — deliberately NOT in the providers/ archive tree — so
+// these sync-optimization dotfiles don't pollute (or get published with) the
+// real provider data. See `chb clean`, which prunes any left in the old
+// providers/etherscan location.
+func peekHashPath(dataDir, chain, slug string) string {
+	return filepath.Join(dataDir, "latest", ".cache", "etherscan", strings.ToLower(chain), "peek-"+slug)
+}
+
 // readLastPeekHash reads the stored latest tx hash from a previous sync.
 func readLastPeekHash(dataDir, chain, slug string) string {
-	fp := etherscansource.Path(dataDir, "latest", "", chain, ".peek-"+slug)
-	data, err := os.ReadFile(fp)
+	data, err := os.ReadFile(peekHashPath(dataDir, chain, slug))
 	if err != nil {
 		return ""
 	}
@@ -1114,8 +1130,7 @@ func readLastPeekHash(dataDir, chain, slug string) string {
 
 // writeLastPeekHash stores the latest tx hash so we can compare on next sync.
 func writeLastPeekHash(dataDir, chain, slug, hash string) {
-	fp := etherscansource.Path(dataDir, "latest", "", chain, ".peek-"+slug)
-	_ = writeDataFile(fp, []byte(hash+"\n"))
+	_ = writeDataFile(peekHashPath(dataDir, chain, slug), []byte(hash+"\n"))
 }
 
 func printTransactionsSyncHelp() {

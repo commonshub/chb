@@ -22,17 +22,17 @@ import (
 )
 
 type MonthlyReportFile struct {
-	Year        string                      `json:"year"`
-	Month       string                      `json:"month"`
-	GeneratedAt string                      `json:"generatedAt"`
-	Summary     MonthlyReportSummary        `json:"summary"`
-	Accounts    []MonthlyReportAccount      `json:"accounts"`
-	Tokens      []MonthlyReportTokenData    `json:"tokens,omitempty"`
-	Currencies  []MonthlyReportCurrency     `json:"currencies,omitempty"`
-	Collectives []TaggedSummary             `json:"collectives,omitempty"`
-	Categories  []TaggedSummary             `json:"categories,omitempty"`
-	Sources     []MonthlyReportSource       `json:"sources"`
-	Notes       []string                    `json:"notes,omitempty"`
+	Year        string                   `json:"year"`
+	Month       string                   `json:"month"`
+	GeneratedAt string                   `json:"generatedAt"`
+	Summary     MonthlyReportSummary     `json:"summary"`
+	Accounts    []MonthlyReportAccount   `json:"accounts"`
+	Tokens      []MonthlyReportTokenData `json:"tokens,omitempty"`
+	Currencies  []MonthlyReportCurrency  `json:"currencies,omitempty"`
+	Collectives []TaggedSummary          `json:"collectives,omitempty"`
+	Categories  []TaggedSummary          `json:"categories,omitempty"`
+	Sources     []MonthlyReportSource    `json:"sources"`
+	Notes       []string                 `json:"notes,omitempty"`
 }
 
 // TaggedSummary groups currency flows under a single tag (collective or
@@ -639,7 +639,10 @@ func buildMonthlyReportToken(dataDir, year, month string, token TokenConfig) (Mo
 		if len(parts) != 2 {
 			continue
 		}
-		path := etherscansource.Path(dataDir, parts[0], parts[1], token.Chain, etherscansource.FileName(token.Slug, token.Symbol))
+		path, found := etherscansource.FindFile(dataDir, parts[0], parts[1], token.Chain, token.Slug, token.Symbol)
+		if !found {
+			continue
+		}
 		cache, ok := etherscansource.LoadCache(path)
 		if !ok {
 			continue
