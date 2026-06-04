@@ -5,8 +5,167 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+// collectFlagValues returns every value passed to a repeatable `--flag value`
+// option (e.g. all `--pair a:b --pair c:d`).
+func collectFlagValues(args []string, flag string) []string {
+	var out []string
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
+// applyReconcilePairs applies explicit move↔bank-line links chosen by a
+// reviewer, given pairs of "<moveID>:<lineID>" (':' or '=' separated). It
+// resolves each move from the local caches and each bank line from the linked
+// journal caches, previews the plan, and (with --yes / a y/N confirm) attaches
+// them on Odoo via the same path the interactive picker uses.
+func applyReconcilePairs(kind moveKind, pairs []string, dryRun, assumeYes bool) error {
+	type pp struct{ moveID, lineID int }
+	var parsed []pp
+	for _, p := range pairs {
+		fields := strings.FieldsFunc(p, func(r rune) bool { return r == ':' || r == '=' })
+		if len(fields) != 2 {
+			return fmt.Errorf("bad --pair %q (want <moveID>:<lineID>)", p)
+		}
+		mv, e1 := strconv.Atoi(strings.TrimSpace(fields[0]))
+		ln, e2 := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if e1 != nil || e2 != nil {
+			return fmt.Errorf("bad --pair %q (want integer IDs)", p)
+		}
+		parsed = append(parsed, pp{mv, ln})
+	}
+
+	rows, err := loadMoveRows(kind, "", "")
+	if err != nil {
+		return err
+	}
+	rowByID := map[int]moveRow{}
+	for _, r := range rows {
+		rowByID[r.Move.ID] = r
+	}
+
+	type lineHit struct {
+		ln    OdooCacheLine
+		jid   int
+		jname string
+	}
+	lineByID := map[int]lineHit{}
+	for _, jid := range allLinkedOdooJournalIDs() {
+		lines, ok := loadLatestOdooJournalLinesCache(jid)
+		if !ok {
+			continue
+		}
+		jname := ""
+		if acc := linkedAccountForJournal(jid); acc != nil {
+			jname = acc.Slug
+		}
+		for _, ln := range lines {
+			lineByID[ln.ID] = lineHit{ln, jid, jname}
+		}
+	}
+
+	type job struct {
+		row  moveRow
+		hit  lineHit
+		sugg Suggestion
+	}
+	var jobs []job
+	fmt.Printf("\n  %sApply %d reconcile pair(s) — %s%s\n", Fmt.Bold, len(parsed), kind.labelPl, Fmt.Reset)
+	for _, pr := range parsed {
+		row, okMove := rowByID[pr.moveID]
+		hit, okLine := lineByID[pr.lineID]
+		if !okMove {
+			fmt.Printf("  %s✗ %s #%d not found in cache (run `chb %s pull`)%s\n", Fmt.Red, kind.label, pr.moveID, kind.labelPl, Fmt.Reset)
+			continue
+		}
+		if !okLine {
+			fmt.Printf("  %s✗ bank line #%d not found in any linked journal cache%s\n", Fmt.Red, pr.lineID, Fmt.Reset)
+			continue
+		}
+		sugg := Suggestion{
+			Kind: "bank-line", ID: hit.ln.ID, Date: hit.ln.Date,
+			Amount: absFloat(hit.ln.Amount), Currency: "EUR",
+			Reference: hit.ln.PaymentRef, Line: hit.ln,
+			JournalID: hit.jid, JournalName: hit.jname,
+			AlreadyAttached: hit.ln.IsReconciled,
+		}
+		flag := ""
+		if hit.ln.IsReconciled {
+			flag = Fmt.Yellow + " [already reconciled — will unreconcile + reattach]" + Fmt.Reset
+		}
+		fmt.Printf("  %s%s%s ← line #%d (%s, %s, %s) %s%s\n",
+			Fmt.Bold, firstNonEmptyStr(row.Move.Title, fmt.Sprintf("#%d", row.Move.ID)), Fmt.Reset,
+			hit.ln.ID, hit.jname, hit.ln.Date, fmtAmountCurrency(absFloat(hit.ln.Amount), "EUR"),
+			Truncate(hit.ln.PaymentRef, 40), flag)
+		jobs = append(jobs, job{row, hit, sugg})
+	}
+
+	if len(jobs) == 0 {
+		fmt.Printf("\n  %sNothing to apply.%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+	if dryRun {
+		fmt.Printf("\n  %s(dry-run — re-run with --yes to apply.)%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+	if !assumeYes {
+		if !isInteractiveTTY() {
+			fmt.Printf("\n  %sRefusing to write on a non-interactive shell without --yes.%s\n\n", Fmt.Yellow, Fmt.Reset)
+			return nil
+		}
+		fmt.Printf("\n  %sApply %d pair(s) on Odoo?%s [y/N] ", Fmt.Bold, len(jobs), Fmt.Reset)
+		resp, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if r := strings.TrimSpace(strings.ToLower(resp)); r != "y" && r != "yes" {
+			fmt.Println("  Aborted.")
+			return nil
+		}
+	}
+
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return err
+	}
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
+	if err != nil || uid == 0 {
+		return fmt.Errorf("Odoo authentication failed: %v", err)
+	}
+	printOdooWriteBannerOnce(creds.URL, creds.DB)
+
+	var applied, failed int
+	touched := make([]int, 0, len(jobs))
+	for i := range jobs {
+		j := jobs[i]
+		row := j.row
+		if err := attachMoveToBankLine(creds, uid, &row, j.sugg); err != nil {
+			failed++
+			fmt.Printf("  %s✗%s %s #%d ← line #%d: %v\n", Fmt.Red, Fmt.Reset, kind.label, row.Move.ID, j.hit.ln.ID, err)
+			continue
+		}
+		applied++
+		touched = append(touched, row.Move.ID)
+		fmt.Printf("  %s✓%s %s #%d ← line #%d (%s, %s)\n", Fmt.Green, Fmt.Reset,
+			kind.label, row.Move.ID, j.hit.ln.ID, j.hit.jname, j.hit.ln.Date)
+	}
+	fmt.Printf("\n  %sReconciled %d %s%s", Fmt.Green, applied, kindLabelN(kind, applied), Fmt.Reset)
+	if failed > 0 {
+		fmt.Printf(" (%s%d failed%s)", Fmt.Red, failed, Fmt.Reset)
+	}
+	fmt.Println()
+	if applied > 0 {
+		if _, err := refreshTouchedInvoiceCache(creds, uid, touched); err != nil {
+			fmt.Printf("  %s⚠ cache refresh failed: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
+	fmt.Println()
+	return nil
+}
 
 // invoicePaymentCandidate + findInvoicePaymentCandidates have been
 // replaced by Suggestion + SuggestForMove in cmd/reconcile_suggest.go,
@@ -190,6 +349,14 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 	if dryRun {
 		assumeYes = false
 	}
+
+	// Explicit pairs: `--pair <moveID>:<lineID>` (repeatable) applies a
+	// reviewer's chosen move↔bank-line links directly — the apply path for a
+	// reconcile worksheet. Dry-run by default; --yes (or a y/N prompt) writes.
+	if pairs := collectFlagValues(args, "--pair"); len(pairs) > 0 {
+		return applyReconcilePairs(kind, pairs, dryRun, assumeYes)
+	}
+
 	posYear, posMonth, _ := ParseYearMonthArg(args)
 
 	rows, err := loadMoveRows(kind, posYear, posMonth)
@@ -212,10 +379,9 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 			fmt.Printf("\n  %sNo unreconciled %s in scope.%s\n\n", Fmt.Dim, kind.labelPl, Fmt.Reset)
 			return nil
 		}
-		// Newest first — matches the regular `chb invoices -i` order
-		// and surfaces the freshest unmatched items at the top.
+		// Newest first — surfaces the freshest unmatched items at the top.
 		sort.SliceStable(open, func(i, j int) bool { return open[i].Move.Date > open[j].Move.Date })
-		runMovesTUI(kind, scope, open)
+		runReconcileReviewTUI(kind, scope, open)
 		return nil
 	}
 
@@ -229,41 +395,46 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 
 	type plan struct {
 		Row      moveRow
-		Cands    []Suggestion
-		Decision string // "match" | "ambiguous" | "none"
+		Pick     Suggestion   // the candidate to apply (Decision == "match")
+		Cands    []Suggestion // all scored candidates (for review/verbose)
+		Decision string       // "match" | "review" | "none"
 	}
 	plans := make([]plan, 0, len(open))
-	var matched, ambiguous, none int
+	var matched, review, none int
 	for _, r := range open {
-		// Non-interactive batch stays narrow: only act on unambiguous
-		// UNRECONCILED matches. Filter out AlreadyAttached candidates
-		// (the suggester's widening fallback) — those need the
-		// interactive picker so the operator can confirm the
-		// unreconcile + reattach.
-		all := SuggestForMove(r, kind)
-		cands := make([]Suggestion, 0, len(all))
-		for _, s := range all {
-			if !s.AlreadyAttached {
-				cands = append(cands, s)
+		// Batch is intentionally conservative: it only auto-applies when the
+		// bank-line memo NAMES the invoice number (near-certain) and exactly
+		// one such unreconciled line exists. Everything else — amount-only
+		// matches, multiple memo hits, already-paid lines — is left for the
+		// guided `-i` review where the operator confirms by hand.
+		cands := SuggestBankLinesForMove(r, kind)
+		var memo []Suggestion
+		for _, s := range cands {
+			if s.MemoConfirmed && !s.AlreadyAttached {
+				memo = append(memo, s)
 			}
 		}
 		p := plan{Row: r, Cands: cands}
 		switch {
-		case len(cands) == 0:
+		case len(memo) == 1:
+			p.Decision, p.Pick = "match", memo[0]
+			matched++
+		case len(cands) > 0:
+			p.Decision = "review"
+			review++
+		default:
 			p.Decision = "none"
 			none++
-		case len(cands) == 1:
-			p.Decision = "match"
-			matched++
-		default:
-			p.Decision = "ambiguous"
-			ambiguous++
 		}
 		plans = append(plans, p)
 	}
 
-	fmt.Printf("  %sCandidates%s  matched: %d  ambiguous: %d  no-match: %d%s\n",
-		Fmt.Bold, Fmt.Dim, matched, ambiguous, none, Fmt.Reset)
+	fmt.Printf("  %sCandidates%s  memo-confirmed: %d  needs review: %d  no-match: %d%s\n",
+		Fmt.Bold, Fmt.Dim, matched, review, none, Fmt.Reset)
+	if review > 0 {
+		fmt.Printf("  %s↳ %d %s have candidates but no unique memo match — run with -i to review them.%s\n",
+			Fmt.Dim, review, kindLabelN(kind, review), Fmt.Reset)
+	}
 
 	if verbose {
 		for _, p := range plans {
@@ -273,16 +444,16 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 		fmt.Println()
 		for _, p := range plans {
 			if p.Decision == "match" {
-				printMovesReconcilePlanRow(kind, p.Row, p.Cands, p.Decision)
+				printMovesReconcilePlanRow(kind, p.Row, []Suggestion{p.Pick}, p.Decision)
 			}
 		}
 	}
 
 	if dryRun || matched == 0 {
 		if matched == 0 {
-			fmt.Printf("\n  %sNothing to reconcile.%s\n", Fmt.Dim, Fmt.Reset)
+			fmt.Printf("\n  %sNothing to auto-reconcile (use -i to review the rest).%s\n", Fmt.Dim, Fmt.Reset)
 		} else {
-			fmt.Printf("\n  %s(dry-run — re-run with --yes to apply.)%s\n", Fmt.Dim, Fmt.Reset)
+			fmt.Printf("\n  %s(dry-run — re-run with --yes to apply the memo-confirmed matches.)%s\n", Fmt.Dim, Fmt.Reset)
 		}
 		fmt.Println()
 		return nil
@@ -324,13 +495,13 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 		}
 		Progress(fmt.Sprintf("attaching %d/%d", applied+failed+1, matched))
 		row := p.Row
-		if err := attachMoveToBankLine(creds, uid, &row, p.Cands[0]); err != nil {
+		if err := attachMoveToBankLine(creds, uid, &row, p.Pick); err != nil {
 			failed++
 			LogErrorf("attach %s #%d to line #%d failed: %v",
-				kind.label, row.Move.ID, p.Cands[0].Line.ID, err)
+				kind.label, row.Move.ID, p.Pick.Line.ID, err)
 			if verbose {
 				fmt.Printf("  %s✗%s %s #%d → line #%d: %v\n",
-					Fmt.Red, Fmt.Reset, kind.label, row.Move.ID, p.Cands[0].Line.ID, err)
+					Fmt.Red, Fmt.Reset, kind.label, row.Move.ID, p.Pick.Line.ID, err)
 			}
 			continue
 		}
@@ -338,8 +509,8 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 		touched = append(touched, row.Move.ID)
 		if verbose {
 			fmt.Printf("  %s✓%s %s #%d ← line #%d (%s, %s)\n",
-				Fmt.Green, Fmt.Reset, kind.label, row.Move.ID, p.Cands[0].Line.ID,
-				p.Cands[0].JournalName, p.Cands[0].Line.Date)
+				Fmt.Green, Fmt.Reset, kind.label, row.Move.ID, p.Pick.Line.ID,
+				p.Pick.JournalName, p.Pick.Line.Date)
 		}
 	}
 	fmt.Printf("\n  %sReconciled %d %s%s",
@@ -380,14 +551,21 @@ func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []Suggestion, 
 		Truncate(firstNonEmptyStr(row.Move.Title, fmt.Sprintf("#%d", row.Move.ID)), 50))
 	switch decision {
 	case "match":
+		if len(cands) == 0 {
+			return
+		}
 		c := cands[0]
-		fmt.Printf("      %s→%s line #%d (%s) %s  %s%s\n",
+		reason := c.MatchReason
+		if reason == "" {
+			reason = "memo-confirmed"
+		}
+		fmt.Printf("      %s→%s line #%d (%s) %s  %s  %s(%s)%s\n",
 			Fmt.Dim, Fmt.Reset,
 			c.Line.ID, c.JournalName, c.Line.Date,
-			Truncate(c.Line.PaymentRef, 50),
-			candidatePartnerBadge(c))
-	case "ambiguous":
-		fmt.Printf("      %s? %d matching unreconciled bank line(s) — skipped (pass -i for interactive resolution)%s\n",
+			Truncate(c.Line.PaymentRef, 44),
+			Fmt.Green, reason, Fmt.Reset)
+	case "review":
+		fmt.Printf("      %s? %d candidate(s), no unique memo match — run -i to review%s\n",
 			Fmt.Dim, len(cands), Fmt.Reset)
 		limit := len(cands)
 		if limit > 3 {
@@ -395,10 +573,10 @@ func printMovesReconcilePlanRow(kind moveKind, row moveRow, cands []Suggestion, 
 		}
 		for i := 0; i < limit; i++ {
 			c := cands[i]
-			fmt.Printf("          %s· line #%d (%s) %s  %s%s%s\n",
-				Fmt.Dim, c.Line.ID, c.JournalName, c.Line.Date,
-				Truncate(c.Line.PaymentRef, 40),
-				candidatePartnerBadge(c),
+			fmt.Printf("          %s· %s line #%d (%s) %s  %s  [%s]%s\n",
+				Fmt.Dim, suggestionConfidenceBadge(c), c.Line.ID, c.JournalName, c.Line.Date,
+				Truncate(c.Line.PaymentRef, 36),
+				firstNonEmptyStr(c.MatchReason, "—"),
 				Fmt.Reset)
 		}
 		if limit < len(cands) {
@@ -433,25 +611,28 @@ bank lines.
   %schb %s reconcile 2025 -i%s        Open the TUI on unreconciled %s only
 
 %sOPTIONS%s
-  %s-i%s, %s--interactive%s    Open the TUI on the unreconciled subset; press
-                        [r] in the detail view to pick a candidate
-                        bank line per row.
-  %s--yes%s, %s-y%s             Apply the unambiguous matches (skips the y/N prompt)
+  %s-i%s, %s--interactive%s    Guided review: step through each open item, see
+                        scored candidates (memo > amount > partner), and
+                        [a]ccept / [s]kip / [/]search by amount, counterpart,
+                        IBAN or memo.
+  %s--yes%s, %s-y%s             Apply the memo-confirmed matches (skips the y/N prompt)
   %s--dry-run%s             Force dry-run even when combined with --yes
+  %s--pair%s <id>:<id>      Apply a chosen move↔bank-line link (repeatable);
+                        e.g. --pair 31168:14642. Dry-run unless --yes.
   %s-v%s, %s--verbose%s        Per-row outcomes (ambiguous + no-match included)
   %s--help, -h%s           Show this help
 
 %sBEHAVIOUR%s
-  Non-interactive (default): only %sunambiguous%s matches (exactly one
-  unreconciled bank line whose absolute amount equals the move's total)
-  are eligible for write. Lines are pulled from
+  Non-interactive (default): only %smemo-confirmed%s matches (exactly one
+  unreconciled bank line whose memo names the invoice number) are
+  eligible for write. Lines are pulled from
   %s~/.chb/data/latest/providers/odoo/journals/*.json%s, so the result
   mirrors what %schb odoo journals N reconcile%s would see.
 
-  Interactive (-i): same scope, but step through each row in the TUI
-  and pick from the full candidate list per invoice. Ambiguous /
-  no-match rows that the batch flow would skip can be resolved by
-  hand here.
+  Interactive (-i): a guided review — one item at a time, with scored
+  candidates (memo > exact amount > partner) and a [/] search across all
+  bank lines (amount, counterpart, IBAN or memo) for anything the
+  auto-matcher missed. Writes to Odoo only on an explicit [a]ccept.
 
   Run %schb pull%s first if you suspect the cache is stale.
 
@@ -466,6 +647,7 @@ bank lines.
 		f.Bold, f.Reset,
 		f.Yellow, f.Reset, f.Yellow, f.Reset,
 		f.Yellow, f.Reset, f.Yellow, f.Reset,
+		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset, f.Yellow, f.Reset,
 		f.Yellow, f.Reset,

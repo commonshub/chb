@@ -29,6 +29,8 @@ func PrintHelp(version string) {
   %sbookings stats%s      Show booking statistics
   %stransactions pull%s   Fetch blockchain / Stripe / Monerium transactions
   %stransactions stats%s  Show transaction statistics
+  %ssearch%s              Spotlight search across txs, invoices & bills (-i for TUI)
+  %scontacts%s            Look up a contact + its invoices, bills & transactions
   %snostr pull/push%s     Fetch/publish Nostr annotations
   %sinvoices pull%s       Fetch outgoing invoices from Odoo
   %sbills pull%s          Fetch vendor bills from Odoo
@@ -95,10 +97,10 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset, // chb in usage
 		f.Bold, f.Reset, // COMMANDS
-		// 30 command rows (events, calendars, calendars pull, events stats,
+		// 32 command rows (events, calendars, calendars pull, events stats,
 		// rooms, bookings, bookings stats, transactions pull, transactions stats,
-		// nostr pull/push, invoices pull, bills pull, attachments pull,
-		// messages pull, messages stats, images pull, providers, pull,
+		// search, contacts, nostr pull/push, invoices pull, bills pull, attachments
+		// pull, messages pull, messages stats, images pull, providers, pull,
 		// generate, push, sync, members pull, report, income, expenses,
 		// status, stats, clean, doctor, tools)
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
@@ -107,6 +109,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
+		f.Cyan, f.Reset, f.Cyan, f.Reset, // search + contacts (31st, 32nd rows)
 		f.Bold, f.Reset, // OPTIONS
 		// 8 options rows
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

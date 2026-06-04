@@ -297,6 +297,11 @@ func saveBalanceCache(cache *balanceCache) {
 // Returns ("", 0, nil) if the account has no supported live source.
 func refreshAccountBalance(acc *AccountConfig) (float64, string, error) {
 	if acc.Provider == "etherscan" && acc.Address != "" && acc.Token != nil {
+		// Note: PriorTokens are NOT summed here. Monerium's V2 upgrade keeps
+		// the old and new EURe contract addresses reporting the SAME balanceOf
+		// for a wallet, so adding them would double-count. The primary Token
+		// already reflects the true current balance; PriorTokens exist only to
+		// pull historical transfer events the new contract doesn't carry.
 		v, err := fetchTokenBalance(acc.ChainID, acc.Token.Address, acc.Address, acc.Token.Decimals)
 		if err != nil {
 			return 0, "", err
@@ -349,6 +354,7 @@ func fetchLiveBalances(configs []AccountConfig) map[string]float64 {
 
 	for _, acc := range configs {
 		if acc.Provider == "etherscan" && acc.Address != "" && acc.Token != nil {
+			// PriorTokens are intentionally not summed — see refreshAccountBalance.
 			balance, err := fetchTokenBalance(acc.ChainID, acc.Token.Address, acc.Address, acc.Token.Decimals)
 			if err == nil {
 				balances[strings.ToLower(acc.Address)] = balance
@@ -758,7 +764,7 @@ func AccountsCommand(args []string) {
 				// 20-row default cap. --csv / --json imply full export; an
 				// explicit -n / --limit also wins over the default.
 				txArgs := append([]string{"--account", slug}, args[2:]...)
-				wantsFullExport := HasFlag(args[2:], "--csv") || HasFlag(args[2:], "--json")
+				wantsFullExport := HasFlag(args[2:], "--csv") || HasFlag(args[2:], "--json", "--jsonl")
 				explicitLimit := GetOption(args[2:], "-n", "--limit") != ""
 				if !wantsFullExport && !explicitLimit {
 					txArgs = append(txArgs, "-n", "20")

@@ -164,9 +164,12 @@ func main() {
 			break
 		}
 		switch invSub {
-		case "sync":
+		case "pull", "sync":
+			if invSub == "sync" {
+				cmd.Warnf("%s'chb invoices sync' is deprecated — use 'chb invoices pull' instead%s", cmd.Fmt.Dim, cmd.Fmt.Reset)
+			}
 			if len(args) > 2 && args[2] == "nostr" {
-				exitWithUsage("%s`chb invoices sync nostr` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+				exitWithUsage("%s`chb invoices %s nostr` was removed. Use `chb nostr sync invoices`.%s", cmd.Fmt.Yellow, invSub, cmd.Fmt.Reset)
 			}
 			if _, err := cmd.InvoicesSync(args[1:]); err != nil {
 				exitWithError(err)
@@ -203,9 +206,12 @@ func main() {
 			break
 		}
 		switch billSub {
-		case "sync":
+		case "pull", "sync":
+			if billSub == "sync" {
+				cmd.Warnf("%s'chb bills sync' is deprecated — use 'chb bills pull' instead%s", cmd.Fmt.Dim, cmd.Fmt.Reset)
+			}
 			if len(args) > 2 && args[2] == "nostr" {
-				exitWithUsage("%s`chb bills sync nostr` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+				exitWithUsage("%s`chb bills %s nostr` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, billSub, cmd.Fmt.Reset)
 			}
 			if _, err := cmd.BillsSync(args[1:]); err != nil {
 				exitWithError(err)
@@ -311,6 +317,28 @@ func main() {
 			if _, err := cmd.OdooPartnersSync(partnerArgs); err != nil {
 				exitWithError(err)
 			}
+		case "contacts":
+			contactArgs := args[2:]
+			sub := ""
+			if len(contactArgs) > 0 {
+				sub = contactArgs[0]
+			}
+			switch sub {
+			case "apply":
+				if err := cmd.OdooContactsApply(contactArgs[1:]); err != nil {
+					exitWithError(err)
+				}
+			case "merge", "":
+				rest := contactArgs
+				if sub == "merge" {
+					rest = contactArgs[1:]
+				}
+				if err := cmd.OdooContactsMerge(rest); err != nil {
+					exitWithError(err)
+				}
+			default:
+				exitWithUsage("%sUsage: chb odoo contacts [merge|apply]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+			}
 		case "invoices":
 			invArgs := args[2:]
 			if len(invArgs) > 0 && invArgs[0] == "sync" {
@@ -397,6 +425,14 @@ func main() {
 		}
 	case "accounts":
 		cmd.AccountsCommand(args[1:])
+	case "search":
+		if err := cmd.Search(args[1:]); err != nil {
+			exitWithError(err)
+		}
+	case "contacts":
+		if err := cmd.Contacts(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "status":
 		cmd.Status(args[1:])
 	case "stats":

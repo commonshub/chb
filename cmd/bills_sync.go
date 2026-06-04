@@ -390,10 +390,10 @@ func loadCachedBillMonth(dataDir, year, month string) []OdooOutgoingInvoice {
 func printBillsSyncHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb bills sync%s — Fetch vendor bills from Odoo
+%schb bills pull%s — Fetch vendor bills from Odoo
 
 %sUSAGE%s
-  %schb bills sync%s [year[/month]] [options]
+  %schb bills pull%s [year[/month]] [options]
 
 %sOPTIONS%s
   %s<year>%s               Sync all months of a year (e.g. 2025)

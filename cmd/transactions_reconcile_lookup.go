@@ -82,14 +82,30 @@ func (l *txReconciliationLookup) LineFor(tx TransactionEntry) (OdooCacheLine, bo
 // an invoice/bill reference is extractable from the bank line's
 // payment_ref / narration / unique_import_id.
 func (l *txReconciliationLookup) ReconciledRef(tx TransactionEntry) string {
+	refs := l.InvoiceRefs(tx)
 	ln, ok := l.LineFor(tx)
 	if !ok || !ln.IsReconciled {
 		return ""
 	}
+	if len(refs) == 0 {
+		return "✓"
+	}
+	return "✓ " + strings.Join(refs, ", ")
+}
+
+// InvoiceRefs returns the distinct invoice/bill references (e.g. INV/2024/123,
+// BILL/2025/4) extractable from the reconciled Odoo bank line's payment_ref /
+// narration / unique_import_id. Returns nil when the tx isn't reconciled or no
+// reference matches the pattern.
+func (l *txReconciliationLookup) InvoiceRefs(tx TransactionEntry) []string {
+	ln, ok := l.LineFor(tx)
+	if !ok || !ln.IsReconciled {
+		return nil
+	}
 	text := ln.PaymentRef + " " + ln.Narration + " " + ln.UniqueImportID
 	matches := odooInvoiceReferencePattern.FindAllString(strings.ToUpper(text), -1)
 	if len(matches) == 0 {
-		return "✓"
+		return nil
 	}
 	seen := map[string]bool{}
 	uniq := make([]string, 0, len(matches))
@@ -100,5 +116,5 @@ func (l *txReconciliationLookup) ReconciledRef(tx TransactionEntry) string {
 		seen[m] = true
 		uniq = append(uniq, m)
 	}
-	return "✓ " + strings.Join(uniq, ", ")
+	return uniq
 }

@@ -153,7 +153,33 @@ func TransactionsSync(args []string) (int, error) {
 			}
 		}
 
-		if len(etherscanAccounts) > 0 {
+		// Expand each account into one pull job per token contract: the primary
+		// Token plus every PriorTokens entry (earlier contract versions of the
+		// same currency, e.g. Monerium's pre-migration EURe). Each job carries a
+		// fileToken — the filename/cache-key disambiguator — so two contracts on
+		// the same wallet+chain never share an archive file. The primary keeps
+		// the bare symbol (unchanged filenames); priors get symbol+"-"+short.
+		type etherscanJob struct {
+			acc       FinanceAccount
+			fileToken string
+		}
+		var etherscanJobs []etherscanJob
+		for _, acc := range etherscanAccounts {
+			if acc.Token == nil {
+				continue
+			}
+			etherscanJobs = append(etherscanJobs, etherscanJob{acc: acc, fileToken: acc.Token.Symbol})
+			for _, pt := range acc.PriorTokens {
+				clone := acc
+				clone.Token = financeToken(pt.Address, pt.Name, pt.Symbol, pt.Decimals)
+				etherscanJobs = append(etherscanJobs, etherscanJob{
+					acc:       clone,
+					fileToken: pt.Symbol + "-" + etherscansource.ShortAddr(pt.Address),
+				})
+			}
+		}
+
+		if len(etherscanJobs) > 0 {
 			apiKey := os.Getenv("ETHERSCAN_API_KEY")
 			if apiKey == "" {
 				apiKey = os.Getenv("GNOSISSCAN_API_KEY")
@@ -164,7 +190,9 @@ func TransactionsSync(args []string) (int, error) {
 				if !accountSyncMode {
 					fmt.Printf("%s⛓️  Syncing blockchain transactions%s\n\n", Fmt.Bold, Fmt.Reset)
 				}
-				for _, acc := range etherscanAccounts {
+				for _, job := range etherscanJobs {
+					acc := job.acc
+					fileToken := job.fileToken
 					if !accountSyncMode {
 						fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
 						fmt.Printf("    %sAddress:%s %s\n", Fmt.Dim, Fmt.Reset, acc.Address)
@@ -177,21 +205,21 @@ func TransactionsSync(args []string) (int, error) {
 					if !force {
 						peekHash, peekErr := etherscansource.PeekLatest(etherscanAccount(acc), apiKey)
 						if peekErr == nil {
-							cachedLatest := etherscansource.LatestCachedTxHashGlobal(DataDir(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+							cachedLatest := etherscansource.LatestCachedTxHashGlobal(DataDir(), acc.Chain, acc.Slug, acc.Address, fileToken)
 							if cachedLatest == "" {
-								cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol)
+								cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+fileToken)
 							}
 							if peekHash == cachedLatest {
 								// Peek matches, but only skip if we're not missing data for months in range.
 								// Etherscan accounts may have data in months we haven't cached yet.
 								relPathFn := func(year, month string) string {
-									if p, ok := etherscansource.FindFileForAddr(DataDir(), year, month, acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol); ok {
+									if p, ok := etherscansource.FindFileForAddr(DataDir(), year, month, acc.Chain, acc.Slug, acc.Address, fileToken); ok {
 										if rel, err := filepath.Rel(filepath.Join(DataDir(), year, month), p); err == nil {
 											return rel
 										}
 									}
 									// No cached file for this month → return a path that won't exist.
-									return etherscansource.RelPath(acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol))
+									return etherscansource.RelPath(acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, fileToken))
 								}
 								if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
 									printBlockchainNewTxStatus(0, accountSyncMode, "latest unchanged")
@@ -202,7 +230,7 @@ func TransactionsSync(args []string) (int, error) {
 						}
 					}
 
-					existingKeys := existingTokenTransferKeys(acc)
+					existingKeys := existingTokenTransferKeys(acc, fileToken)
 					Progress(fmt.Sprintf("fetching %s transfers (%s)", acc.Token.Symbol, acc.Name))
 					transfers, err := etherscansource.FetchTokenTransfers(etherscanAccount(acc), apiKey)
 					if err != nil {
@@ -242,7 +270,7 @@ func TransactionsSync(args []string) (int, error) {
 
 						// Save to data/YYYY/MM/providers/etherscan/{chain}/{slug}.{0xaddr}.{token}.json
 						dataDir := DataDir()
-						filename := etherscansource.FileName(acc.Slug, acc.Address, acc.Token.Symbol)
+						filename := etherscansource.FileName(acc.Slug, acc.Address, fileToken)
 						relPath := etherscansource.RelPath(acc.Chain, filename)
 						filePath := filepath.Join(dataDir, year, month, relPath)
 
@@ -280,7 +308,7 @@ func TransactionsSync(args []string) (int, error) {
 
 					// Save the latest tx hash so we can skip next time if nothing changed
 					if len(transfers) > 0 {
-						writeLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+acc.Token.Symbol, transfers[0].Hash)
+						writeLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+fileToken, transfers[0].Hash)
 					}
 
 					// Rate limit between accounts
@@ -747,7 +775,11 @@ func fetchTokenTransfers(acc FinanceAccount, apiKey string) ([]TokenTransfer, er
 	return etherscansource.FetchTokenTransfers(etherscanAccount(acc), apiKey)
 }
 
-func existingTokenTransferKeys(acc FinanceAccount) map[string]bool {
+// existingTokenTransferKeys collects the dedup keys of all transfers already
+// archived for one (account, contract) scope. fileToken is the filename
+// disambiguator segment for that contract (== Token.Symbol for the primary
+// contract, symbol+"-"+contractShort for a prior contract).
+func existingTokenTransferKeys(acc FinanceAccount, fileToken string) map[string]bool {
 	out := map[string]bool{}
 	if acc.Token == nil {
 		return out
@@ -763,7 +795,7 @@ func existingTokenTransferKeys(acc FinanceAccount) map[string]bool {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			path, ok := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
+			path, ok := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, fileToken)
 			if !ok {
 				continue
 			}
@@ -975,6 +1007,22 @@ func fileExists(path string) bool {
 
 func parseTokenValue(rawValue string, decimals int) float64 {
 	return etherscansource.ParseTokenValue(rawValue, decimals)
+}
+
+// financeToken builds a FinanceAccount.Token pointer. The field is an anonymous
+// struct, so a small constructor keeps the prior-contract expansion readable.
+func financeToken(addr, name, symbol string, decimals int) *struct {
+	Address  string `json:"address"`
+	Name     string `json:"name"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+} {
+	return &struct {
+		Address  string `json:"address"`
+		Name     string `json:"name"`
+		Symbol   string `json:"symbol"`
+		Decimals int    `json:"decimals"`
+	}{Address: addr, Name: name, Symbol: symbol, Decimals: decimals}
 }
 
 func etherscanAccount(acc FinanceAccount) etherscansource.Account {

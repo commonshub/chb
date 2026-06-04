@@ -4,6 +4,19 @@ Read [docs/philosophy.md](docs/philosophy.md) before doing any non-trivial work
 on `sync`, `generate`, or anything that emits files under `providers/` or
 `generated/`.
 
+## Operating principles (always apply)
+
+See [docs/operating-principles.md](docs/operating-principles.md). In short:
+
+1. **Offline-first.** Work on the local mirror under `$DATA_DIR`; never fetch
+   inline. If data is missing/stale, stop and run the relevant `pull`/`sync`
+   first, then re-run. `generate` is local-only.
+2. **Writes go to an outbox**, never straight to the remote — Odoo →
+   `providers/odoo/pending/<YYYY-MM>.json`, Nostr → `outbox/`. `push` is the
+   only verb that writes to a remote.
+3. **Preview, then confirm.** Show the full change set (`--dry-run`, pending
+   listings) and commit only after explicit confirmation.
+
 ## The hard rule: `sync` vs `generate`
 
 - **`sync` only downloads raw provider data into `providers/`. No transformation,

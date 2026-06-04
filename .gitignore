@@ -3,3 +3,7 @@
 .codex
 dist/
 *.log
+
+# Local reconciliation worksheets — contain partner names/IBANs/amounts, never commit to this public repo
+reconcile*.md
+reconciliation-*.md

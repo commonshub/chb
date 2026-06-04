@@ -33,6 +33,22 @@ type AccountConfig struct {
 		Symbol   string `json:"symbol"`
 		Decimals int    `json:"decimals"`
 	} `json:"token,omitempty"`
+	// PriorTokens lists earlier contract versions of the SAME logical currency
+	// (e.g. the pre-migration Monerium EURe contract). The sync pulls each one
+	// in addition to Token; transfers from every contract are merged into this
+	// account's history at generate time. Each prior contract is archived under
+	// its own filename ({slug}.{addr}.{symbol}-{contractShort}.json) so it never
+	// clobbers the primary token's file. See https://docs.monerium.com/contracts-v2.
+	PriorTokens []AccountToken `json:"priorTokens,omitempty"`
+}
+
+// AccountToken is a single ERC20 contract an account tracks. Same shape as the
+// inline Token field; named so it can back the PriorTokens slice.
+type AccountToken struct {
+	Address  string `json:"address"`
+	Name     string `json:"name"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
 }
 
 // IsSafe returns true only when this is explicitly configured as a Safe wallet.
@@ -140,6 +156,9 @@ func ToFinanceAccounts(configs []AccountConfig) []FinanceAccount {
 				Symbol:   c.Token.Symbol,
 				Decimals: c.Token.Decimals,
 			}
+		}
+		if len(c.PriorTokens) > 0 {
+			fa.PriorTokens = append([]AccountToken(nil), c.PriorTokens...)
 		}
 		accounts = append(accounts, fa)
 	}

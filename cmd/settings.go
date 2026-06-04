@@ -364,6 +364,9 @@ type FinanceAccount struct {
 		Symbol   string `json:"symbol"`
 		Decimals int    `json:"decimals"`
 	} `json:"token,omitempty"`
+	// PriorTokens carries earlier contract versions of the same currency so the
+	// sync can pull each one in addition to Token. See AccountConfig.PriorTokens.
+	PriorTokens []AccountToken `json:"priorTokens,omitempty"`
 }
 
 // RoomInfo represents a single room from rooms.json

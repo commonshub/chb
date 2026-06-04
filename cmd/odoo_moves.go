@@ -93,6 +93,107 @@ func loadMovePartners(dataDir, year, month string, kind moveKind) map[int]string
 	return out
 }
 
+// loadMoveReferences reads the month's private cache and returns a map of move
+// ID -> structured communication / payment reference (e.g.
+// "+++000/0031/16831+++"). This lives in the private file only; it's surfaced
+// in the local reconcile review (to help match a bank transfer) and never in
+// the public export.
+func loadMoveReferences(dataDir, year, month string, kind moveKind) map[int]string {
+	path := filepath.Join(dataDir, year, month, kind.privateRelPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[int]string{}
+	}
+	out := map[int]string{}
+	var recs []OdooOutgoingInvoicePrivate
+	if kind.isBill {
+		var f OdooVendorBillsPrivateFile
+		if json.Unmarshal(data, &f) != nil {
+			return out
+		}
+		recs = f.Bills
+	} else {
+		var f OdooOutgoingInvoicesPrivateFile
+		if json.Unmarshal(data, &f) != nil {
+			return out
+		}
+		recs = f.Invoices
+	}
+	for _, r := range recs {
+		if ref := strings.TrimSpace(r.Reference); ref != "" {
+			out[r.ID] = ref
+		}
+	}
+	return out
+}
+
+// loadMoveIBANs reads the month's private cache and returns a map of move ID ->
+// counterparty bank account number / IBAN (from PartnerBank). Lives in the
+// private file only; surfaced for local search.
+func loadMoveIBANs(dataDir, year, month string, kind moveKind) map[int]string {
+	path := filepath.Join(dataDir, year, month, kind.privateRelPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[int]string{}
+	}
+	out := map[int]string{}
+	var recs []OdooOutgoingInvoicePrivate
+	if kind.isBill {
+		var f OdooVendorBillsPrivateFile
+		if json.Unmarshal(data, &f) != nil {
+			return out
+		}
+		recs = f.Bills
+	} else {
+		var f OdooOutgoingInvoicesPrivateFile
+		if json.Unmarshal(data, &f) != nil {
+			return out
+		}
+		recs = f.Invoices
+	}
+	for _, r := range recs {
+		if r.PartnerBank == nil {
+			continue
+		}
+		if iban := firstNonEmptyStr(r.PartnerBank.SanitizedNumber, r.PartnerBank.AccountNumber); iban != "" {
+			out[r.ID] = iban
+		}
+	}
+	return out
+}
+
+// loadMovePartnerIDs reads the month's private cache and returns a map of move
+// ID -> Odoo partner id. Lets the contact aggregation reliably group a partner's
+// invoices/bills (the public cache only carries the partner display name).
+func loadMovePartnerIDs(dataDir, year, month string, kind moveKind) map[int]int {
+	path := filepath.Join(dataDir, year, month, kind.privateRelPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return map[int]int{}
+	}
+	out := map[int]int{}
+	var recs []OdooOutgoingInvoicePrivate
+	if kind.isBill {
+		var f OdooVendorBillsPrivateFile
+		if json.Unmarshal(data, &f) != nil {
+			return out
+		}
+		recs = f.Bills
+	} else {
+		var f OdooOutgoingInvoicesPrivateFile
+		if json.Unmarshal(data, &f) != nil {
+			return out
+		}
+		recs = f.Invoices
+	}
+	for _, r := range recs {
+		if r.Partner.ID != 0 {
+			out[r.ID] = r.Partner.ID
+		}
+	}
+	return out
+}
+
 // loadMoves reads a single month's public moves file (invoices.json or
 // bills.json) and returns the unmarshalled records. Returns (nil, nil) if
 // the file doesn't exist — callers should treat that as "empty month".

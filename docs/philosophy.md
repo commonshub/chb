@@ -1,5 +1,9 @@
 # Architecture Philosophy
 
+> See also [operating-principles.md](operating-principles.md) for the three
+> outward-facing rules this architecture enforces: offline-first (sync before
+> use), writes go to an outbox, and preview-then-confirm before committing.
+
 CHB has two complementary phases. Keep them separate.
 
 ## `sync` — download raw provider data

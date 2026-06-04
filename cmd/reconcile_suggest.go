@@ -77,6 +77,16 @@ type Suggestion struct {
 	PartnerMatch    bool // partner match against the query side
 	DaysDelta       int  // absolute days between candidate and query date
 	AlreadyAttached bool // bank line: IsReconciled; move: paymentState ∈ {paid,in_payment,partial}
+
+	// Rich match metadata (populated by SuggestBankLinesForMove and the
+	// reconcile search pool). MatchScore ranks the candidate; MemoConfirmed
+	// is set when the bank-line memo names the invoice number (the strongest
+	// signal). IBAN is the counterpart IBAN from the Monerium order cache,
+	// when known (2026-03+). MatchReason is a human-readable "why".
+	MatchScore    int
+	MatchReason   string
+	MemoConfirmed bool
+	IBAN          string
 }
 
 // Direction returns the direction implied by the suggestion's payload

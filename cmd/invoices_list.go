@@ -197,31 +197,63 @@ func runMoveList(args []string, kind moveKind) error {
 	// Newest first.
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Move.Date > rows[j].Move.Date })
 
-	if !all && !interactive && limit > 0 && len(rows) > limit {
-		rows = rows[:limit]
+	// Filter-wide tallies, computed before pagination so the header/footer
+	// reflect the whole matching set regardless of how many rows are shown.
+	total := len(rows)
+	creditOpen, invoiceOpen := openMoveBreakdown(rows)
+
+	skip := GetNumber(args, []string{"--skip"}, 0)
+	if skip < 0 {
+		skip = 0
 	}
+
+	// Page the table / CSV views (the interactive TUI navigates the full set).
+	paged := rows
+	if skip < len(paged) {
+		paged = paged[skip:]
+	} else {
+		paged = paged[:0]
+	}
+	if !all && limit > 0 && len(paged) > limit {
+		paged = paged[:limit]
+	}
+
+	page := movePage{skip: skip, shown: len(paged), total: total, creditOpen: creditOpen, invoiceOpen: invoiceOpen}
 
 	switch {
 	case csv:
-		printMoveListCSV(kind, rows)
+		printMoveListCSV(kind, paged)
 	case interactive:
 		runMovesTUI(kind, counterpartiesScopeLabel(posYear, posMonth), rows)
 	default:
-		printMoveListTable(kind, posYear, posMonth, rows)
+		printMoveListTable(kind, posYear, posMonth, paged, page)
 	}
 	return nil
 }
 
 // moveIsOpen reports whether an invoice / bill is still awaiting a
 // payment — i.e. fair game for `--unreconciled` filtering and for the
-// invoice-side reconcile flow. PaymentState "paid" is excluded; an
-// already-attached ReconciledTransaction is excluded; everything else
-// (not_paid / in_payment / partial / blank) stays open.
+// invoice-side reconcile flow.
+//
+// Excluded (settled / not a live receivable, so no bank-line match is needed):
+//   - cancel / draft moves — never posted a receivable;
+//   - an already-attached ReconciledTransaction;
+//   - payment_state "paid" — settled by a payment;
+//   - payment_state "reversed" — the move was reversed by a credit note and its
+//     receivable is reconciled against that reverse move. Reversing in Odoo
+//     already closes the balance, so these must NOT show up as "unreconciled".
+//
+// Everything else (not_paid / in_payment / partial / blank) stays open.
 func moveIsOpen(m OdooOutgoingInvoicePublic) bool {
+	switch strings.ToLower(m.State) {
+	case "cancel", "draft":
+		return false
+	}
 	if m.ReconciledTransaction != nil && m.ReconciledTransaction.ID != "" {
 		return false
 	}
-	if strings.EqualFold(m.PaymentState, "paid") {
+	switch strings.ToLower(m.PaymentState) {
+	case "paid", "reversed":
 		return false
 	}
 	return true
@@ -241,6 +273,9 @@ type moveRow struct {
 	Year, Month   string
 	Move          OdooOutgoingInvoicePublic
 	Partner       string // customer (invoices) or vendor (bills) display name
+	PartnerID     int    // Odoo partner id, from the private cache
+	Reference     string // structured communication (+++…+++), from the private cache
+	IBAN          string // counterparty bank account / IBAN, from the private cache
 	RawCategory   string
 	RawCollective string
 }
@@ -273,6 +308,9 @@ func loadMoveRows(kind moveKind, posYear, posMonth string) ([]moveRow, error) {
 			return nil
 		}
 		partners := loadMovePartners(dataDir, year, month, kind)
+		references := loadMoveReferences(dataDir, year, month, kind)
+		ibans := loadMoveIBANs(dataDir, year, month, kind)
+		partnerIDs := loadMovePartnerIDs(dataDir, year, month, kind)
 		for _, m := range moves {
 			partner := partners[m.ID]
 			rawCat := m.Category
@@ -283,6 +321,9 @@ func loadMoveRows(kind moveKind, posYear, posMonth string) ([]moveRow, error) {
 				Month:         month,
 				Move:          m,
 				Partner:       partner,
+				PartnerID:     partnerIDs[m.ID],
+				Reference:     references[m.ID],
+				IBAN:          ibans[m.ID],
 				RawCategory:   rawCat,
 				RawCollective: rawColl,
 			})
@@ -303,9 +344,70 @@ func moveListTitle(kind moveKind, scope string) string {
 	return fmt.Sprintf("%s %s — %s", icon, titleASCII(kind.labelPl), scope)
 }
 
-func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow) {
+// movePage carries the pagination + filter-wide tallies for the table view.
+// shown/total are pre-pagination counts; creditOpen/invoiceOpen count open
+// items across the whole filtered set (not just the shown page).
+type movePage struct {
+	skip        int
+	shown       int
+	total       int
+	creditOpen  int
+	invoiceOpen int
+}
+
+// creditNoteNumberRE matches the R-prefixed move numbers Odoo assigns to credit
+// notes (RCHB/…, RMEM/…). The strict letters-then-slash shape avoids matching
+// free-text titles like "Reversal of: …" that belong to regular invoices.
+var creditNoteNumberRE = regexp.MustCompile(`^R[A-Z]{2,}/`)
+
+// isMoveCreditNote reports whether a move is a credit note / refund
+// (out_refund / in_refund) rather than a regular invoice / bill.
+func isMoveCreditNote(m OdooOutgoingInvoicePublic) bool {
+	if mt := strings.ToLower(m.MoveType); mt != "" {
+		return strings.Contains(mt, "refund")
+	}
+	// Fallback for caches synced before moveType was captured: credit-note
+	// numbers are R-prefixed. Re-run `chb invoices pull` to populate moveType.
+	return creditNoteNumberRE.MatchString(strings.TrimSpace(m.Title))
+}
+
+// openMoveBreakdown counts, over the already-filtered rows, how many open items
+// (moveIsOpen — still need matching) are credit notes vs regular invoices/bills.
+func openMoveBreakdown(rows []moveRow) (creditOpen, invoiceOpen int) {
+	for _, r := range rows {
+		if !moveIsOpen(r.Move) {
+			continue
+		}
+		if isMoveCreditNote(r.Move) {
+			creditOpen++
+		} else {
+			invoiceOpen++
+		}
+	}
+	return creditOpen, invoiceOpen
+}
+
+// printMoveSummaryFooter prints the filter-wide tally below the table: how many
+// rows are shown vs match the filter, then the open items still needing a match
+// split into credit notes (apply to an invoice / refund) and regular
+// invoices/bills (need a payment record).
+func printMoveSummaryFooter(kind moveKind, page movePage) {
+	creditLabel := "credit notes"
+	if kind.isBill {
+		creditLabel = "vendor credit notes"
+	}
+	fmt.Printf("\n  %s%d/%d %s%s · %d %s unmatched · %d %s unreconciled %s(no payment record)%s\n\n",
+		Fmt.Bold, page.shown, page.total, kind.labelPl, Fmt.Reset,
+		page.creditOpen, creditLabel,
+		page.invoiceOpen, kind.labelPl,
+		Fmt.Dim, Fmt.Reset)
+}
+
+func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow, page movePage) {
 	scope := counterpartiesScopeLabel(posYear, posMonth)
-	fmt.Printf("\n%s%s%s\n\n", Fmt.Bold, moveListTitle(kind, scope), Fmt.Reset)
+	fmt.Printf("\n%s%s%s\n", Fmt.Bold, moveListTitle(kind, scope), Fmt.Reset)
+	fmt.Printf("%sShowing %s %d-%d out of %d%s\n\n",
+		Fmt.Dim, kind.labelPl, page.skip, page.skip+page.shown, page.total, Fmt.Reset)
 
 	headers := []string{"Date", partnerColumnLabel(kind), "Reference", "Description", "Gross", "VAT", "Net", "Paid", "Collective", "Category"}
 	rightAlign := map[int]bool{4: true, 5: true, 6: true, 7: true}
@@ -349,6 +451,7 @@ func printMoveListTable(kind moveKind, posYear, posMonth string, rows []moveRow)
 		"",
 	}
 	renderTicketsTable(headers, cells, totalRow, rightAlign)
+	printMoveSummaryFooter(kind, page)
 }
 
 // movePaidCell returns the table-cell string for the "Paid" column:
@@ -547,8 +650,10 @@ func printMoveListHelp(kind moveKind) {
   %s-i%s, %s--interactive%s    Open a TUI: navigate, drill in, set collective/category,
                        and on rows with no payment, press [r] to pick from
                        candidate bank lines and reconcile in place.
-  %s--unreconciled%s       Only %s whose payment_state ≠ paid AND that have no
-                       attached payment yet. Pair with -i to triage open items.
+  %s--unreconciled%s       Only %s that still await a payment. Excludes paid,
+                       already-attached, cancelled/draft, and reversed moves
+                       (a reversed invoice is settled by its credit note — no
+                       bank match needed). Pair with -i to triage open items.
   %s--no-category%s        Only rows whose rendered Category column is blank — i.e.
                        neither Odoo's source data nor any rule in rules.json
                        has assigned one. Useful for finding invoices that
@@ -557,6 +662,7 @@ func printMoveListHelp(kind moveKind) {
                        (match: {}, assign collective: commonshub) this will
                        return zero rows unless you remove that fallback.
   %s-n%s <N>, %s--limit%s <N>   Limit output rows (default %d, use --all to show all)
+  %s--skip%s <N>           Skip the first N rows (pagination; pairs with -n)
   %s--all%s                Show every row
   %s--csv%s                Output CSV instead of a formatted table
   %s--help, -h%s           Show this help
@@ -584,6 +690,7 @@ func printMoveListHelp(kind moveKind) {
 		f.Yellow, f.Reset, // --no-category
 		f.Yellow, f.Reset, // --no-collective
 		f.Yellow, f.Reset, f.Yellow, f.Reset, invoicesDefaultLimit, // -n / --limit
+		f.Yellow, f.Reset, // --skip
 		f.Yellow, f.Reset, // --all
 		f.Yellow, f.Reset, // --csv
 		f.Yellow, f.Reset, // --help

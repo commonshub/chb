@@ -170,6 +170,54 @@ func txDisplayCounterparty(tx TransactionEntry) string {
 	return shortAddr(cp)
 }
 
+// txCounterpartyName returns the human-readable counterparty name (from PII
+// enrichment / Stripe customer), never an IBAN or 0x address. Empty when the
+// only thing we know is an address.
+func txCounterpartyName(tx TransactionEntry) string {
+	if tx.Provider == "stripe" {
+		if name := stringMetadata(tx.Metadata, "customerName"); name != "" {
+			return name
+		}
+		cp := tx.Counterparty
+		if desc := stringMetadata(tx.Metadata, "description"); desc != "" && cp != "" && cp != desc {
+			return cp
+		}
+		return "Stripe"
+	}
+	cp := strings.TrimSpace(tx.Counterparty)
+	if strings.HasPrefix(cp, "0x") {
+		return ""
+	}
+	if normalizeIBAN(cp) != "" {
+		return ""
+	}
+	return cp
+}
+
+// txCounterpartyAddress returns the counterparty's machine identifier — the
+// IBAN (from PII enrichment) when present, otherwise a 0x wallet address.
+// Token-contract addresses (Monerium's EURe/EURb contracts) are skipped since
+// they aren't the real counterparty.
+func txCounterpartyAddress(tx TransactionEntry) string {
+	if iban, ok := tx.Metadata["iban"].(string); ok {
+		if n := normalizeIBAN(iban); n != "" {
+			return n
+		}
+	}
+	cp := tx.CounterpartyID
+	if strings.HasPrefix(cp, "ethereum:") && !strings.Contains(cp, ":token:") {
+		parts := strings.Split(cp, ":")
+		last := parts[len(parts)-1]
+		if strings.HasPrefix(last, "0x") {
+			return last
+		}
+	}
+	if addr := strings.TrimSpace(tx.Counterparty); strings.HasPrefix(addr, "0x") {
+		return addr
+	}
+	return ""
+}
+
 func txDisplayDescription(tx TransactionEntry) string {
 	if desc, ok := tx.Metadata["description"]; ok {
 		if s, ok := desc.(string); ok && s != "" {
@@ -212,6 +260,28 @@ func txDisplayCollective(tx TransactionEntry) string {
 		}
 	}
 	return ""
+}
+
+// txAccountSlug returns the configured, human-friendly account slug for a tx.
+// Most providers already store it in AccountSlug; Stripe stores the raw
+// "acct_…" id there, so we reverse-map it through accounts.json when possible.
+func txAccountSlug(tx TransactionEntry) string {
+	slug := tx.AccountSlug
+	if slug == "" {
+		return ""
+	}
+	if findAccountConfigBySlug(slug) != nil {
+		return slug
+	}
+	for _, acc := range LoadAccountConfigs() {
+		if acc.Slug == "" {
+			continue
+		}
+		if strings.EqualFold(acc.AccountID, slug) || strings.EqualFold(acc.Address, slug) {
+			return acc.Slug
+		}
+	}
+	return slug
 }
 
 func txSource(tx TransactionEntry) string {
@@ -268,7 +338,7 @@ type TxFilter struct {
 	// NoCategory keeps only transactions with no category set anywhere
 	// (Category field, "category" tag, metadata["category"]). Same shape
 	// for NoCollective.
-	NoCategory  bool
+	NoCategory   bool
 	NoCollective bool
 	// Unreconciled keeps only transactions whose matching Odoo bank
 	// statement line is NOT reconciled (or whose Odoo line can't be
@@ -281,7 +351,7 @@ type TxFilter struct {
 
 // AmountFilter is one comparison constraint on the absolute gross of a tx.
 type AmountFilter struct {
-	Op    string  // "==", ">", "<", ">=", "<="
+	Op    string // "==", ">", "<", ">=", "<="
 	Value float64
 }
 
@@ -2677,12 +2747,15 @@ func createRuleFromBrowser(allTxs []TransactionEntry) {
 
 // ── Command ──
 
-// printTransactionsCSV emits one row per transaction with the same
-// columns as the table (date, account, collective, category,
-// counterparty, description, amount, currency).
+// printTransactionsCSV emits one row per transaction with the columns:
+// date, account-slug, amount, category, collective, counterparty (name),
+// counterparty-address (IBAN or 0x), description, reference (invoice/bill),
+// currency. The reference comes from the matched Odoo bank line when the tx
+// has been reconciled.
 func printTransactionsCSV(txs []TransactionEntry) {
-	fmt.Println("date,account,collective,category,counterparty,description,amount,currency")
+	fmt.Println("date,account-slug,amount,category,collective,counterparty,counterparty-address,description,reference,currency")
 	tz := BrusselsTZ()
+	lookup := getTxReconciliationLookup()
 	for _, tx := range txs {
 		date := time.Unix(tx.Timestamp, 0).In(tz).Format("2006-01-02")
 		amt := txAmount(tx)
@@ -2691,14 +2764,16 @@ func printTransactionsCSV(txs []TransactionEntry) {
 		} else {
 			amt = math.Abs(amt)
 		}
-		fmt.Printf("%s,%s,%s,%s,%s,%s,%.2f,%s\n",
+		fmt.Printf("%s,%s,%.2f,%s,%s,%s,%s,%s,%s,%s\n",
 			csvCell(date),
-			csvCell(txSource(tx)),
-			csvCell(txDisplayCollective(tx)),
-			csvCell(txDisplayCategory(tx)),
-			csvCell(txDisplayCounterparty(tx)),
-			csvCell(txDisplayDescription(tx)),
+			csvCell(txAccountSlug(tx)),
 			amt,
+			csvCell(txDisplayCategory(tx)),
+			csvCell(txDisplayCollective(tx)),
+			csvCell(txCounterpartyName(tx)),
+			csvCell(txCounterpartyAddress(tx)),
+			csvCell(txDisplayDescription(tx)),
+			csvCell(strings.Join(lookup.InvoiceRefs(tx), " ")),
 			csvCell(tx.Currency),
 		)
 	}
@@ -2707,9 +2782,9 @@ func printTransactionsCSV(txs []TransactionEntry) {
 // printTransactionsTable renders a non-interactive, plain-text view to
 // stdout — the default output for `chb transactions`. The layout is:
 //
-//   1. one-line per-currency totals (in / out / fees / net)
-//   2. per-category gross breakdown
-//   3. the actual rows table
+//  1. one-line per-currency totals (in / out / fees / net)
+//  2. per-category gross breakdown
+//  3. the actual rows table
 //
 // Putting the summary on top means an operator scanning a wide period can
 // answer "how much did we make this quarter?" without scrolling past
@@ -2883,6 +2958,14 @@ func printTransactionsTable(filter TxFilter, txs []TransactionEntry) {
 	renderTicketsTable(headers, rows, totalRow, rightAlign)
 }
 
+// txWantsJSON reports whether the caller explicitly asked for machine output.
+// Unlike most commands, `chb transactions` does NOT auto-switch to JSON when
+// piped — so `chb transactions | less` stays the human-readable table. JSON
+// (JSONL, one tx per line) is opt-in via --json / --jsonl.
+func txWantsJSON(args []string) bool {
+	return HasFlag(args, "--json", "--jsonl")
+}
+
 func TransactionsBrowser(args []string) {
 	if HasFlag(args, "--help", "-h", "help") {
 		printTransactionsBrowserHelp()
@@ -2891,7 +2974,7 @@ func TransactionsBrowser(args []string) {
 
 	filter, n, skip, err := parseTxListFlags(args)
 	if err != nil {
-		if JSONMode(args) {
+		if txWantsJSON(args) {
 			EmitJSONError(err)
 			os.Exit(1)
 		}
@@ -2899,7 +2982,7 @@ func TransactionsBrowser(args []string) {
 		os.Exit(1)
 	}
 
-	if JSONMode(args) {
+	if txWantsJSON(args) {
 		emitTransactionsJSON(filter, n, skip, HasFlag(args, "--with-pii"))
 		return
 	}
@@ -3234,9 +3317,9 @@ func printTransactionsBrowserHelp() {
   %schb transactions --daterange 2026/Q1%s              Filter to any range Parse­DateRangeSpec accepts
   %schb transactions --since 20260101 --until 20260131%s   Date range (inclusive)
   %schb transactions -n 50 --skip 100%s                 Paginate
-  %schb transactions ... | odoo attach <ref>%s          Pipe matches into odoo-cli
-  %schb transactions --json%s                           Force JSONL (auto when piped)
-  %schb transactions --text%s                           Force pretty table (auto when TTY)
+  %schb transactions --json | odoo attach <ref>%s       Pipe matches into odoo-cli
+  %schb transactions --json%s                           JSONL stream, opt-in (one tx/line)
+  %schb transactions | less%s                           Human table, even when piped (default)
   %schb transactions stats%s                            Show transaction statistics
 
 %sFILTERS%s
@@ -3272,14 +3355,19 @@ func printTransactionsBrowserHelp() {
   %s--until <date>%s       Inclusive upper bound on transaction date
   %s-n N%s                 Limit to N transactions (most recent first)
   %s--skip N%s             Skip the first N matches before applying -n
-  %s--json%s               Force JSONL (one TX per line) on stdout. Auto-enabled
-                       when stdout isn't a TTY (i.e. piped or redirected). Each
-                       record includes a computed uniqueImportId so downstream
-                       tools (e.g. 'odoo attach') can find the matching Odoo
-                       bank.statement.line without heuristics. Use --text to
-                       force the table format despite being piped.
-  %s--text%s               Force the pretty table even when stdout is piped.
+  %s--json%s, --jsonl      Output JSONL (one TX per line) on stdout. Opt-in: the
+                       default is ALWAYS the human table, even when piped, so
+                       'chb transactions | less' stays readable. Each record
+                       includes a computed uniqueImportId so downstream tools
+                       (e.g. 'odoo attach') can find the matching Odoo
+                       bank.statement.line without heuristics.
+  %s--text%s               Accepted for compatibility; the table is the default.
                        Useful for 'chb transactions ... --text | less'.
+  %s--csv%s                Output CSV on stdout. Columns: date, account-slug,
+                       amount, category, collective, counterparty,
+                       counterparty-address (IBAN or 0x), description,
+                       reference (invoice/bill ref from the reconciled
+                       Odoo bank line, when matched), currency.
   %s--with-pii%s           With --json, merge private enrichment into results
 
 %sINTERACTIVE KEYS%s
@@ -3315,6 +3403,7 @@ func printTransactionsBrowserHelp() {
 		f.Cyan, f.Reset, // | odoo attach
 		f.Cyan, f.Reset, // --json (new doc line)
 		f.Cyan, f.Reset, // --text
+		f.Cyan, f.Reset, // --csv
 		f.Bold, f.Reset, // FILTERS
 		f.Yellow, f.Reset, // --account
 		f.Yellow, f.Reset, // --currency

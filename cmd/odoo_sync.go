@@ -969,21 +969,21 @@ collective / accountCode / partnerId from each tx (written by
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset,
 			f.Bold, f.Reset,
-			f.Yellow, f.Reset,                       // --dry-run
-			f.Yellow, f.Reset, f.Yellow, f.Reset,    // -n, --limit
-			f.Yellow, f.Reset,                       // --force
-			f.Yellow, f.Reset,                       // --reset
-			f.Yellow, f.Reset, f.Yellow, f.Reset,    // -y, --yes
-			f.Yellow, f.Reset,                       // --history
-			f.Yellow, f.Reset,                       // --since
-			f.Yellow, f.Reset,                       // --months
-			f.Yellow, f.Reset,                       // --until
-			f.Yellow, f.Reset,                       // --skip-reconciliation
-			f.Yellow, f.Reset,                       // --transactions
-			f.Yellow, f.Reset,                       // --partners
-			f.Yellow, f.Reset,                       // --accounts
-			f.Yellow, f.Reset,                       // --metadata
-			f.Yellow, f.Reset,                       // --payout
+			f.Yellow, f.Reset, // --dry-run
+			f.Yellow, f.Reset, f.Yellow, f.Reset, // -n, --limit
+			f.Yellow, f.Reset, // --force
+			f.Yellow, f.Reset, // --reset
+			f.Yellow, f.Reset, f.Yellow, f.Reset, // -y, --yes
+			f.Yellow, f.Reset, // --history
+			f.Yellow, f.Reset, // --since
+			f.Yellow, f.Reset, // --months
+			f.Yellow, f.Reset, // --until
+			f.Yellow, f.Reset, // --skip-reconciliation
+			f.Yellow, f.Reset, // --transactions
+			f.Yellow, f.Reset, // --partners
+			f.Yellow, f.Reset, // --accounts
+			f.Yellow, f.Reset, // --metadata
+			f.Yellow, f.Reset, // --payout
 		)
 	case "sync-all":
 		fmt.Printf(`
@@ -3204,7 +3204,12 @@ func OdooSyncAll(args []string) error {
 	step("invoices", func() error { _, err := InvoicesSync(args); return err })
 	step("bills", func() error { _, err := BillsSync(args); return err })
 	step("journal lines", func() error { return refreshAllOdooJournalLineCaches() })
-	fmt.Printf("\n  %sTo push local changes to Odoo: chb odoo journals push%s\n\n", Fmt.Dim, Fmt.Reset)
+	printPendingMergesSummary()
+	fmt.Printf("\n  %sTo push local changes to Odoo: chb odoo journals push%s", Fmt.Dim, Fmt.Reset)
+	if len(pendingPartnerMerges()) > 0 {
+		fmt.Printf("%s + chb odoo contacts apply%s", Fmt.Dim, Fmt.Reset)
+	}
+	fmt.Printf("\n\n")
 	return nil
 }
 

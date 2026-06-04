@@ -88,6 +88,7 @@ type OdooOutgoingInvoice struct {
 type OdooOutgoingInvoicePublic struct {
 	ID                    int                        `json:"id"`
 	Title                 string                     `json:"title,omitempty"`
+	MoveType              string                     `json:"moveType,omitempty"`
 	State                 string                     `json:"state,omitempty"`
 	PaymentState          string                     `json:"paymentState,omitempty"`
 	Date                  string                     `json:"date,omitempty"`
@@ -1551,6 +1552,7 @@ func buildPublicInvoices(invoices []OdooOutgoingInvoice) []OdooOutgoingInvoicePu
 		out = append(out, OdooOutgoingInvoicePublic{
 			ID:                    inv.ID,
 			Title:                 inv.Title,
+			MoveType:              inv.MoveType,
 			State:                 inv.State,
 			PaymentState:          inv.PaymentState,
 			Date:                  firstNonEmpty(inv.InvoiceDate, inv.Date),
@@ -1999,10 +2001,10 @@ func firstNonNil(values ...interface{}) interface{} {
 func printInvoicesSyncHelp() {
 	f := Fmt
 	fmt.Printf(`
-%schb invoices sync%s — Fetch outgoing invoices from Odoo
+%schb invoices pull%s — Fetch outgoing invoices from Odoo
 
 %sUSAGE%s
-  %schb invoices sync%s [year[/month]] [options]
+  %schb invoices pull%s [year[/month]] [options]
 
 %sOPTIONS%s
   %s<year>%s               Sync all months of a year (e.g. 2025)

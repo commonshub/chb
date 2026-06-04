@@ -2705,7 +2705,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	}
 
 	// Check for known chain directories
-	for _, chain := range []string{"celo", "gnosis", "ethereum"} {
+	for _, chain := range []string{"celo", "gnosis", "ethereum", "polygon"} {
 		processChainDir(chain)
 	}
 
