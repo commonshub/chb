@@ -129,6 +129,9 @@ func migrateLegacySettingsSchemas(dir string) {
 	if data, err := os.ReadFile(accountsPath); err == nil {
 		migrateLegacyOdooJournalNames(data)
 	}
+	// Move per-account Odoo journal IDs into odoo-journals.json before the
+	// reconciler force-overwrites accounts.json and discards them.
+	migrateOdooJournalLinks(dir)
 }
 
 // forceOverwriteDefaults are embedded defaults whose content the embedded copy

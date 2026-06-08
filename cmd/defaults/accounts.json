@@ -7,7 +7,6 @@
     "chainId": 100,
     "address": "0xb01cCCE2d75d517EE520De31eAE6aFCa735aadc1",
     "walletType": "safe",
-    "odooJournalId": 56,
     "token": {
       "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
       "name": "EURe",
@@ -31,7 +30,6 @@
     "chainId": 100,
     "address": "0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf",
     "walletType": "safe",
-    "odooJournalId": 47,
     "token": {
       "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
       "name": "EURe",
@@ -55,7 +53,6 @@
     "chainId": 100,
     "address": "0xD578e7cd845e1ecD979b04784e77068D5eBd8716",
     "walletType": "safe",
-    "odooJournalId": 44,
     "token": {
       "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
       "name": "EURe",
@@ -99,8 +96,7 @@
     "slug": "stripe",
     "provider": "stripe",
     "accountId": "acct_1Nn0FaFAhaWeDyow",
-    "currency": "EUR",
-    "odooJournalId": 48
+    "currency": "EUR"
   },
   {
     "name": "🍻 Fridge",
@@ -110,7 +106,6 @@
     "chainId": 100,
     "address": "0x0492b5c6bd2564826ead6eeec9e1a9756603825e",
     "walletType": "EOA",
-    "odooJournalId": 51,
     "token": {
       "address": "0x5815E61eF72c9E6107b5c5A05FD121F334f7a7f1",
       "name": "EURb",
@@ -126,7 +121,6 @@
     "chainId": 100,
     "address": "0xab33f1bc3a9d35fe6dad14dd2947e774cf58bc78",
     "walletType": "EOA",
-    "odooJournalId": 52,
     "token": {
       "address": "0x5815E61eF72c9E6107b5c5A05FD121F334f7a7f1",
       "name": "EURb",
@@ -139,8 +133,7 @@
     "slug": "kbc",
     "provider": "kbcbrussels",
     "iban": "BE46734072238636",
-    "currency": "EUR",
-    "odooJournalId": 28
+    "currency": "EUR"
   },
   {
     "name": "🔑 EOA (Brussels Pay)",

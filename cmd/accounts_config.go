@@ -79,6 +79,10 @@ func LoadAccountConfigs() []AccountConfig {
 		return nil
 	}
 	migrateLegacyOdooJournalNames(data)
+	// The account↔Odoo-journal mapping is instance-specific and lives in
+	// odoo-journals.json (not the force-overwritten accounts.json); overlay it
+	// so downstream readers keep using acc.OdooJournalID.
+	applyOdooJournalLinks(accounts)
 	return accounts
 }
 
