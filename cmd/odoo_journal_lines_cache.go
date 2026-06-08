@@ -239,10 +239,17 @@ func odooJournalAggregate(creds *OdooCredentials, uid int, journalID int) (count
 // lines. The error suggests `chb odoo pull` as the fix.
 func verifyOdooJournalCacheFresh(creds *OdooCredentials, uid int, journalID int) error {
 	Progress("verifying cache freshness")
-	cached, ok := loadLatestOdooJournalLinesCache(journalID)
+	file, ok := loadLatestOdooJournalLinesFile(journalID)
 	if !ok {
 		return fmt.Errorf("no local cache for journal #%d — run `chb odoo pull` first", journalID)
 	}
+	// If the cache was just refreshed (e.g. by the pull phase of `chb sync`),
+	// trust it and skip the live read_group RPC — that round-trip is what made
+	// this step appear to hang.
+	if t, perr := time.Parse(time.RFC3339, file.FetchedAt); perr == nil && time.Since(t) < journalCacheTrustWindow {
+		return nil
+	}
+	cached := file.Lines
 	// Sum cents as int64 — float64 accumulation drifts by ±1 cent over
 	// hundreds of lines, which would falsely flag the cache as stale
 	// against Odoo's exact server-side NUMERIC sum.
@@ -387,17 +394,35 @@ func fetchOdooJournalLinesForCache(creds *OdooCredentials, uid int, journalID in
 }
 
 func loadLatestOdooJournalLinesCache(journalID int) ([]OdooCacheLine, bool) {
-	path := odoosource.Path(DataDir(), "latest", "", "journals", journalLinesCacheName(journalID))
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	var file OdooJournalLinesFile
-	if err := json.Unmarshal(data, &file); err != nil || file.JournalID != journalID {
+	file, ok := loadLatestOdooJournalLinesFile(journalID)
+	if !ok {
 		return nil, false
 	}
 	return file.Lines, true
 }
+
+// loadLatestOdooJournalLinesFile returns the full cache file (including
+// FetchedAt) for a journal, or (_, false) when missing/unparseable.
+func loadLatestOdooJournalLinesFile(journalID int) (OdooJournalLinesFile, bool) {
+	path := odoosource.Path(DataDir(), "latest", "", "journals", journalLinesCacheName(journalID))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return OdooJournalLinesFile{}, false
+	}
+	var file OdooJournalLinesFile
+	if err := json.Unmarshal(data, &file); err != nil || file.JournalID != journalID {
+		return OdooJournalLinesFile{}, false
+	}
+	return file, true
+}
+
+// journalCacheTrustWindow is how recently the journal-lines cache must have been
+// fetched for the pre-push freshness check to trust it WITHOUT a live Odoo
+// round-trip. A combined `chb sync` refreshes the cache (pull phase) seconds
+// before pushing, so this skips a redundant — and potentially slow — read_group
+// RPC that otherwise made the KBC/journal push appear to hang at "verifying
+// cache freshness". A standalone push against an old cache still verifies live.
+const journalCacheTrustWindow = 10 * time.Minute
 
 func updateOdooJournalLinesCachePartners(journalID int, partnersByLineID map[int]int) error {
 	if len(partnersByLineID) == 0 {

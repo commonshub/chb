@@ -79,6 +79,27 @@ type SyncSummary struct {
 // SyncAll runs all sync commands sequentially.
 // Each sync function fetches all data in one API call (or paginated),
 // then distributes to year/month folders.
+// syncStepTimeout bounds a single network push step. A non-responding remote
+// (Odoo, a Nostr relay) would otherwise block the whole `chb sync` loop.
+const syncStepTimeout = 30 * time.Second
+
+// runWithTimeout runs fn but stops waiting after d, returning a clear timeout
+// error so the caller can move on to the next step. Go can't force-cancel
+// blocking I/O, so the abandoned goroutine keeps running until the underlying
+// client's own timeout fires; the buffered channel keeps it from leaking. Use
+// only for steps whose fn returns just an error and writes no shared state
+// (Odoo push, Nostr push) — otherwise the late write would race.
+func runWithTimeout(label string, d time.Duration, fn func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(d):
+		return fmt.Errorf("%s did not respond within %s — the remote may be down or slow; skipping so the next step can run", label, d)
+	}
+}
+
 func SyncAll(args []string) error {
 	if HasFlag(args, "--help", "-h", "help") {
 		PrintSyncAllHelp()
@@ -301,7 +322,11 @@ func PushAllTargets(args []string) error {
 		// changes — Odoo: <db>" banner above and on the row labels,
 		// so the standalone "Odoo target: …" banner that
 		// printOdooWriteBannerOnce used to add is suppressed here.
-		if err := odooJournalsSyncAll(args); err != nil && firstErr == nil {
+		// Bounded so an unresponsive Odoo can't freeze the whole push;
+		// after syncStepTimeout we surface a clear error and move on to Nostr.
+		if err := runWithTimeout("Odoo push", syncStepTimeout, func() error {
+			return odooJournalsSyncAll(args)
+		}); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -319,11 +344,15 @@ func PushAllTargets(args []string) error {
 	sl := NewStatusLine("Nostr")
 	SetActiveStatusLine(sl)
 	var nostrErr error
+	// Bounded so an unreachable relay can't freeze the loop at the Nostr step.
+	nostrPush := func() error {
+		return runWithTimeout("Nostr push", syncStepTimeout, func() error { return NostrPush(args) })
+	}
 	if verbose {
-		nostrErr = NostrPush(args)
+		nostrErr = nostrPush()
 	} else {
 		restore := silenceStdout()
-		nostrErr = NostrPush(args)
+		nostrErr = nostrPush()
 		restore()
 	}
 	SetActiveStatusLine(nil)
