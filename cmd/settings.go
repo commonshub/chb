@@ -131,6 +131,20 @@ func migrateLegacySettingsSchemas(dir string) {
 	}
 }
 
+// forceOverwriteDefaults are embedded defaults whose content the embedded copy
+// owns: on every bootstrap they overwrite the local file even if the user edited
+// it (so local edits don't survive a `chb` run / upgrade). Use sparingly — only
+// for files meant to be the org-wide source of truth. accounts.json is the
+// canonical account list shared across machines.
+var forceOverwriteDefaults = map[string]bool{
+	"accounts.json": true,
+}
+
+// forceOverwriteDefaultsEnabled gates the force-overwrite behavior. Tests that
+// pin a settings fixture (seedSettingsFixture) flip it off so their fixture
+// survives bootstrap; production always leaves it on.
+var forceOverwriteDefaultsEnabled = true
+
 func reconcileDefaultSettings(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -182,13 +196,19 @@ func reconcileDefaultSettings(dir string) error {
 
 		// local != embed
 		userEdited := hadTracker && trackedHash != localHash
-		if !userEdited {
+		// Force-overwrite files are centrally managed: the embedded default is
+		// the source of truth and always wins, even over local edits.
+		if !userEdited || (forceOverwriteDefaultsEnabled && forceOverwriteDefaults[rel]) {
 			if err := writeDefaultFile(target, embedBytes); err != nil {
 				return err
 			}
 			tracker[rel] = embedHash
 			trackerDirty = true
-			fmt.Printf("  %s↑%s updated %s from new embedded default\n", Fmt.Green, Fmt.Reset, rel)
+			verb := "updated"
+			if userEdited {
+				verb = "force-updated"
+			}
+			fmt.Printf("  %s↑%s %s %s from embedded default\n", Fmt.Green, Fmt.Reset, verb, rel)
 			return nil
 		}
 
@@ -298,10 +318,10 @@ type CalendarSettings struct {
 // dedicated files (accounts.json, tokens.json, calendars.json, …) rather
 // than from settings.json directly — see LoadSettings.
 type Settings struct {
-	Calendars  CalendarSettings   `json:"calendars"`
-	Discord    DiscordSettings    `json:"discord"`
-	Finance    FinanceSettings    `json:"finance"`
-	Membership MembershipSettings `json:"membership"`
+	Calendars  CalendarSettings    `json:"calendars"`
+	Discord    DiscordSettings     `json:"discord"`
+	Finance    FinanceSettings     `json:"finance"`
+	Membership MembershipSettings  `json:"membership"`
 	Accounting *AccountingSettings `json:"accounting,omitempty"`
 
 	// ContributionToken is derived from tokens.json (the entry marked

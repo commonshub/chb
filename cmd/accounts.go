@@ -295,6 +295,81 @@ func saveBalanceCache(cache *balanceCache) {
 // returns (balance, cacheKey, err). cacheKey is the lowercase key under
 // which this balance should be stored in the shared balance cache.
 // Returns ("", 0, nil) if the account has no supported live source.
+// accountBalanceKey is the canonical balances-cache key for an account. For
+// etherscan wallets it is chain-qualified ("<chain>:<address>") because the
+// same EOA address can exist on several chains (e.g. eoa on gnosis and
+// eoa-polygon on polygon both use 0xf5d0…); an address-only key makes them
+// overwrite each other's live balance.
+func accountBalanceKey(acc *AccountConfig) string {
+	if acc == nil {
+		return ""
+	}
+	switch acc.Provider {
+	case "etherscan":
+		if acc.Address != "" {
+			return strings.ToLower(acc.Chain + ":" + acc.Address)
+		}
+	case "stripe":
+		if acc.AccountID != "" {
+			return strings.ToLower(acc.AccountID)
+		}
+		return "stripe"
+	case "kbcbrussels":
+		if acc.IBAN != "" {
+			return strings.ToLower(acc.IBAN)
+		}
+	}
+	return ""
+}
+
+// accountBalanceLookupKeys lists the cache keys to try when reading a live
+// balance, canonical (chain-qualified) first. For etherscan the bare address is
+// deliberately NOT a fallback — it would re-introduce the cross-chain collision
+// (a re-pull writes the canonical key).
+func accountBalanceLookupKeys(acc *AccountConfig) []string {
+	if acc == nil {
+		return nil
+	}
+	if acc.Provider == "etherscan" {
+		var keys []string
+		if k := accountBalanceKey(acc); k != "" {
+			keys = append(keys, k)
+		}
+		// Fall back to the legacy bare-address key only when no other account
+		// uses the same address on a different chain — otherwise the fallback
+		// would re-introduce the cross-chain collision.
+		if acc.Address != "" && !addressSharedAcrossChains(acc.Address) {
+			keys = append(keys, strings.ToLower(acc.Address))
+		}
+		return keys
+	}
+	var keys []string
+	for _, k := range []string{acc.AccountID, acc.IBAN, acc.Slug, acc.Address} {
+		if k != "" {
+			keys = append(keys, strings.ToLower(k))
+		}
+	}
+	return keys
+}
+
+// addressSharedAcrossChains reports whether more than one configured etherscan
+// account uses the given wallet address on different chains (e.g. eoa on gnosis
+// and eoa-polygon on polygon). Such addresses must never fall back to the
+// chain-agnostic balance-cache key.
+func addressSharedAcrossChains(addr string) bool {
+	a := strings.ToLower(strings.TrimSpace(addr))
+	if a == "" {
+		return false
+	}
+	chains := map[string]bool{}
+	for _, c := range LoadAccountConfigs() {
+		if c.Provider == "etherscan" && strings.ToLower(c.Address) == a {
+			chains[strings.ToLower(c.Chain)] = true
+		}
+	}
+	return len(chains) > 1
+}
+
 func refreshAccountBalance(acc *AccountConfig) (float64, string, error) {
 	if acc.Provider == "etherscan" && acc.Address != "" && acc.Token != nil {
 		// Note: PriorTokens are NOT summed here. Monerium's V2 upgrade keeps
@@ -306,7 +381,7 @@ func refreshAccountBalance(acc *AccountConfig) (float64, string, error) {
 		if err != nil {
 			return 0, "", err
 		}
-		return v, strings.ToLower(acc.Address), nil
+		return v, accountBalanceKey(acc), nil
 	}
 	if acc.Provider == "stripe" {
 		v, err := stripesource.FetchBalance(os.Getenv("STRIPE_SECRET_KEY"))
@@ -357,7 +432,7 @@ func fetchLiveBalances(configs []AccountConfig) map[string]float64 {
 			// PriorTokens are intentionally not summed — see refreshAccountBalance.
 			balance, err := fetchTokenBalance(acc.ChainID, acc.Token.Address, acc.Address, acc.Token.Decimals)
 			if err == nil {
-				balances[strings.ToLower(acc.Address)] = balance
+				balances[accountBalanceKey(&acc)] = balance
 			}
 			time.Sleep(200 * time.Millisecond)
 		} else if acc.Provider == "stripe" {
@@ -849,10 +924,7 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	hasLive := false
 	var liveFetchedAt string
 	if cache := loadBalanceCache(); cache != nil {
-		for _, key := range []string{acc.Address, acc.AccountID, acc.IBAN, acc.Slug} {
-			if key == "" {
-				continue
-			}
+		for _, key := range accountBalanceLookupKeys(acc) {
 			if v, ok := cache.Balances[strings.ToLower(key)]; ok {
 				liveBalance = v
 				hasLive = true
@@ -1413,13 +1485,10 @@ func Accounts(args []string) {
 
 		s := summaries[accountKey(fa)]
 
-		// Use live balance: check by address, then accountId, then slug
+		// Use live balance: canonical (chain-qualified for etherscan) key first
 		var balance float64
 		hasBalance := false
-		for _, key := range []string{acc.Address, acc.AccountID, acc.IBAN, acc.Slug} {
-			if key == "" {
-				continue
-			}
+		for _, key := range accountBalanceLookupKeys(&acc) {
 			if liveBalance, ok := liveBalances[strings.ToLower(key)]; ok {
 				balance = liveBalance
 				hasBalance = true
@@ -2028,7 +2097,7 @@ func accountProviderRawCount(acc *AccountConfig) int {
 		}
 		return n
 	case "etherscan", "monerium":
-		return len(loadAccountOnchainTransfers(acc))
+		return len(accountCountableTransfers(acc))
 	case "kbcbrussels":
 		if acc.IBAN == "" {
 			return 0
@@ -3353,7 +3422,10 @@ func verifyAccountLocalAgainstOnchainCache(acc *AccountConfig, liveBalance *floa
 		return nil
 	}
 
-	rawTransfers := loadAccountOnchainTransfers(acc)
+	// Use the countable set (excludes EURe migration mints) so the on-chain
+	// count and the per-tx comparison line up with the generated, double-count
+	// -free local view; the live balanceOf already reflects the migrated state.
+	rawTransfers := accountCountableTransfers(acc)
 	if len(rawTransfers) == 0 {
 		return nil
 	}
@@ -3559,8 +3631,25 @@ func loadAccountOnchainTransfers(acc *AccountConfig) []etherscansource.TokenTran
 	if acc == nil || acc.Token == nil {
 		return nil
 	}
+	// Load the primary token AND every prior contract version (priorTokens),
+	// so an account that migrated contracts (e.g. EURe V1->V2) reflects the
+	// full transfer history across both addresses, not just the current one.
+	// Prior-token files are named with the "<symbol>-<shortContract>" file
+	// token the sync writes (transactions_sync.go) — mirror that here.
+	fileTokens := []string{acc.Token.Symbol}
+	for _, pt := range acc.PriorTokens {
+		fileTokens = append(fileTokens, pt.Symbol+"-"+etherscansource.ShortAddr(pt.Address))
+	}
 	dataDir := DataDir()
 	var transfers []etherscansource.TokenTransfer
+	// Dedup identical transfers seen under more than one contract version. The
+	// EURe V1->V2 upgrade reports some on-chain transfers in BOTH the legacy
+	// and the new contract's transfer list, so loading both versions would
+	// otherwise count such a transfer twice. The key is scoped to this one
+	// account, so an internal transfer between two of our own wallets (same
+	// hash/value, opposite directions in two accounts' files) is never
+	// collapsed — that's handled per-account, and this loader is per-account.
+	seen := map[string]bool{}
 	yearDirs, _ := os.ReadDir(dataDir)
 	for _, yd := range yearDirs {
 		if !yd.IsDir() || len(yd.Name()) != 4 {
@@ -3571,18 +3660,46 @@ func loadAccountOnchainTransfers(acc *AccountConfig) []etherscansource.TokenTran
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			path, found := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, acc.Token.Symbol)
-			if !found {
-				continue
+			for _, ft := range fileTokens {
+				path, found := etherscansource.FindFileForAddr(dataDir, yd.Name(), md.Name(), acc.Chain, acc.Slug, acc.Address, ft)
+				if !found {
+					continue
+				}
+				cache, ok := etherscansource.LoadCache(path)
+				if !ok {
+					continue
+				}
+				for _, tr := range cache.Transactions {
+					k := strings.ToLower(tr.Hash) + "|" + strings.ToLower(tr.From) + "|" + strings.ToLower(tr.To) + "|" + tr.Value
+					if seen[k] {
+						continue
+					}
+					seen[k] = true
+					transfers = append(transfers, tr)
+				}
 			}
-			cache, ok := etherscansource.LoadCache(path)
-			if !ok {
-				continue
-			}
-			transfers = append(transfers, cache.Transactions...)
 		}
 	}
 	return transfers
+}
+
+// accountCountableTransfers returns the account's on-chain transfers with
+// excluded transfers (e.g. EURe V1->V2 migration mints — see
+// settings/excluded-transactions.json) removed, so raw counts and balances
+// line up with the generated, double-count-free accounting view.
+func accountCountableTransfers(acc *AccountConfig) []etherscansource.TokenTransfer {
+	all := loadAccountOnchainTransfers(acc)
+	if acc == nil || len(all) == 0 {
+		return all
+	}
+	out := all[:0]
+	for _, raw := range all {
+		if isExcludedOnchainTx(acc.Chain, raw.Hash, raw.To) {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
 }
 
 func latestAccountSourceCheckpoint(acc *AccountConfig) accountSourceCheckpoint {
@@ -3672,6 +3789,13 @@ func accountSourceTransfersFingerprint(acc *AccountConfig, transfers []etherscan
 func accountBalanceFromRawTransfers(acc *AccountConfig, transfers []etherscansource.TokenTransfer) float64 {
 	var balance float64
 	for _, raw := range transfers {
+		// Skip excluded transfers (e.g. EURe V1->V2 migration mints) — they
+		// re-issue a balance already represented by the legacy-contract
+		// transfers, so counting them would double the migrated amount and
+		// diverge from the live on-chain balanceOf.
+		if acc != nil && isExcludedOnchainTx(acc.Chain, raw.Hash, raw.To) {
+			continue
+		}
 		amount := accountRawTransferAmount(acc, raw)
 		if strings.EqualFold(raw.From, acc.Address) {
 			balance -= amount

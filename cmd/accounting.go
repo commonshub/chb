@@ -120,10 +120,10 @@ func (c *Categorizer) Apply(tx *TransactionEntry) {
 		if !rule.MatchesTransaction(*tx) {
 			continue
 		}
-		if rule.Assign.Category != "" && tx.Category == "" {
+		if rule.Assign.Category != "" && (tx.Category == "" || rule.Assign.Override) {
 			tx.Category = rule.Assign.Category
 		}
-		if rule.Assign.Collective != "" && tx.Collective == "" {
+		if rule.Assign.Collective != "" && (tx.Collective == "" || rule.Assign.Override) {
 			tx.Collective = rule.Assign.Collective
 		}
 		if rule.Assign.Event != "" && tx.Event == "" {

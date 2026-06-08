@@ -170,10 +170,7 @@ func accountCurrency(acc *AccountConfig) string {
 // resolveAccountBalance mirrors the lookup priority used by the pretty-print
 // list and detail views: live cached balance first, then tx-history-derived.
 func resolveAccountBalance(acc *AccountConfig, liveBalances map[string]float64, s *accountSummary) (float64, string, bool) {
-	for _, key := range []string{acc.Address, acc.AccountID, acc.IBAN, acc.Slug} {
-		if key == "" {
-			continue
-		}
+	for _, key := range accountBalanceLookupKeys(acc) {
 		if v, ok := liveBalances[strings.ToLower(key)]; ok {
 			return v, "live", true
 		}

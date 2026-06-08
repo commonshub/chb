@@ -7,12 +7,21 @@
     "chainId": 100,
     "address": "0xb01cCCE2d75d517EE520De31eAE6aFCa735aadc1",
     "walletType": "safe",
+    "odooJournalId": 56,
     "token": {
       "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
       "name": "EURe",
       "symbol": "EURe",
       "decimals": 18
-    }
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
   },
   {
     "name": "🏦 Monerium hacked Savings Account",
@@ -28,7 +37,15 @@
       "name": "EURe",
       "symbol": "EURe",
       "decimals": 18
-    }
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
   },
   {
     "name": "💶 Monerium Checking Account",
@@ -44,7 +61,15 @@
       "name": "EURe",
       "symbol": "EURe",
       "decimals": 18
-    }
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
   },
   {
     "name": "💶 Monerium CHB Safe",
@@ -59,7 +84,15 @@
       "name": "EURe",
       "symbol": "EURe",
       "decimals": 18
-    }
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
   },
   {
     "name": "💳 Stripe Account",
@@ -100,5 +133,105 @@
       "symbol": "EURb",
       "decimals": 6
     }
+  },
+  {
+    "name": "🏦 KBC",
+    "slug": "kbc",
+    "provider": "kbcbrussels",
+    "iban": "BE46734072238636",
+    "currency": "EUR",
+    "odooJournalId": 28
+  },
+  {
+    "name": "🔑 EOA (Brussels Pay)",
+    "slug": "eoa",
+    "provider": "etherscan",
+    "chain": "gnosis",
+    "chainId": 100,
+    "address": "0xf5D0181b80E1C793D98b95BFF0E6CDe1D27a3ef8",
+    "walletType": "EOA",
+    "token": {
+      "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
+      "name": "EURe",
+      "symbol": "EURe",
+      "decimals": 18
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
+  },
+  {
+    "name": "👛 Citizen Wallet",
+    "slug": "citizen-wallet",
+    "provider": "etherscan",
+    "chain": "gnosis",
+    "chainId": 100,
+    "address": "0x20451461D5b609C5a3256d78F64c4Afee860Dc32",
+    "walletType": "EOA",
+    "token": {
+      "address": "0x420CA0f9B9b604cE0fd9C18EF134C705e5Fa3430",
+      "name": "EURe",
+      "symbol": "EURe",
+      "decimals": 18
+    },
+    "priorTokens": [
+      {
+        "address": "0xcB444e90D8198415266c6a2724b7900fb12FC56E",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
+  },
+  {
+    "name": "🔑 EOA (Brussels Pay) — Polygon",
+    "slug": "eoa-polygon",
+    "provider": "etherscan",
+    "chain": "polygon",
+    "chainId": 137,
+    "address": "0xf5D0181b80E1C793D98b95BFF0E6CDe1D27a3ef8",
+    "walletType": "EOA",
+    "token": {
+      "address": "0xE0aEa583266584DafBB3f9C3211d5588c73fEa8d",
+      "name": "EURe",
+      "symbol": "EURe",
+      "decimals": 18
+    },
+    "priorTokens": [
+      {
+        "address": "0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
+  },
+  {
+    "name": "🏦 Monerium Savings — Polygon",
+    "slug": "savings-polygon",
+    "provider": "etherscan",
+    "chain": "polygon",
+    "chainId": 137,
+    "address": "0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf",
+    "walletType": "safe",
+    "token": {
+      "address": "0xE0aEa583266584DafBB3f9C3211d5588c73fEa8d",
+      "name": "EURe",
+      "symbol": "EURe",
+      "decimals": 18
+    },
+    "priorTokens": [
+      {
+        "address": "0x18ec0A6E18E5bc3784fDd3a3634b31245ab704F6",
+        "name": "EURe (legacy)",
+        "symbol": "EURe",
+        "decimals": 18
+      }
+    ]
   }
 ]

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // RuleMatch defines what a rule matches against.
@@ -17,6 +18,7 @@ type RuleMatch struct {
 	Description string   `json:"description,omitempty"` // glob on metadata.description / metadata.memo only — does NOT fall back to counterparty (use the counterparty field for that)
 	IBAN        string   `json:"iban,omitempty"`        // exact match on counterparty IBAN (spaces stripped, case-insensitive)
 	Account     string   `json:"account,omitempty"`     // account slug (fridge, coffee, stripe, savings)
+	Collective  string   `json:"collective,omitempty"`  // glob on the collective resolved so far (e.g. "genesis", "*idg*")
 	Provider    string   `json:"provider,omitempty"`    // stripe, etherscan, monerium
 	Currency    string   `json:"currency,omitempty"`    // EUR, EURe, EURb, CHT
 	Amount      *float64 `json:"amount,omitempty"`      // exact signed GROSS amount, rounded to cents
@@ -36,6 +38,21 @@ type RuleMatch struct {
 	// for catching payouts and other system-driven movements that have no
 	// description / IBAN / counterparty for the other matchers to lock onto.
 	Kind string `json:"kind,omitempty"`
+
+	// Uncategorized, when true, makes the rule match only if the transaction
+	// has no category yet at this point in the rule pass. Because rules are
+	// applied in order against the progressively-mutated transaction, this
+	// turns a rule into a genuine low-priority catch-all: "apply only if no
+	// earlier rule already categorised this row". Pair it with a low position
+	// in rules.json so specific rules win first.
+	Uncategorized bool `json:"uncategorized,omitempty"`
+
+	// Before / After bound the transaction date (in Europe/Brussels).
+	// Format YYYY-MM-DD. Before is exclusive (tx date < Before); After is
+	// inclusive (tx date >= After). Use for time-scoped one-off rules, e.g.
+	// "round Stripe amounts until end of Feb 2025" → before:"2025-03-01".
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
 
 	// Invoice / bill matchers (only meaningful when the rule's Target is
 	// "invoice" or "bill"). Title globs the move's printed number /
@@ -59,6 +76,12 @@ type RuleAssign struct {
 	Type        string   `json:"type,omitempty"`        // override tx.Type (CREDIT/DEBIT/MINT/BURN/INTERNAL/TRANSFER)
 	Description string   `json:"description,omitempty"` // override metadata.description
 	Tags        []string `json:"tags,omitempty"`        // additive labels (e.g. "shifter", "vat:21%")
+	// Override makes Category/Collective authoritative for this rule: they are
+	// applied even when the transaction already carries a value, instead of the
+	// default fallback (set-only-if-empty) behaviour. Use sparingly for rules
+	// that must win regardless of earlier matches (e.g. "all €121 income is
+	// coworking"). Event is still fallback-only.
+	Override bool `json:"override,omitempty"`
 }
 
 // Rule is a categorization rule.
@@ -123,6 +146,41 @@ func SaveRules(rules []Rule) error {
 	return os.WriteFile(rulesPath(), data, 0644)
 }
 
+// counterpartyMatchTargets returns the lower-cased identifiers a
+// sender/recipient/counterparty glob may match against: the counterparty's
+// display name, its IBAN (from PII enrichment), and its 0x wallet address
+// (from CounterpartyID, token contracts excluded). This is what lets a rule
+// key on a bank IBAN or an on-chain address, not just a name — as the
+// RuleMatch field docs promise. An empty slice is normalised to a single ""
+// target so a non-glob pattern fails (and a "*" pattern still matches) exactly
+// as the previous name-only behaviour did.
+func counterpartyMatchTargets(tx TransactionEntry) []string {
+	var targets []string
+	if name := strings.TrimSpace(tx.Counterparty); name != "" {
+		targets = append(targets, strings.ToLower(name))
+	}
+	if iban := normalizeIBAN(stringMetadata(tx.Metadata, "iban")); iban != "" {
+		targets = append(targets, strings.ToLower(iban))
+	}
+	if addr := txCounterpartyAddress(tx); addr != "" {
+		targets = append(targets, strings.ToLower(addr))
+	}
+	if len(targets) == 0 {
+		return []string{""}
+	}
+	return targets
+}
+
+// globMatchAny reports whether pattern matches any of the candidate targets.
+func globMatchAny(pattern string, targets []string) bool {
+	for _, t := range targets {
+		if globMatch(pattern, t) {
+			return true
+		}
+	}
+	return false
+}
+
 // MatchesTransaction checks if a rule matches a transaction.
 func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 	if r.ruleTarget() != "transaction" {
@@ -132,6 +190,25 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 
 	if m.Account != "" {
 		if !strings.EqualFold(m.Account, tx.AccountSlug) {
+			return false
+		}
+	}
+
+	if m.Collective != "" {
+		// Glob against the collective resolved so far: the struct field (set by
+		// provider enrichment or an earlier rule in this pass), falling back to
+		// a "collective" tag or metadata.collective when the field is still
+		// empty — some sources carry the collective only as a tag. Matched
+		// case-insensitively against the pre-canonicalisation slug, so
+		// "collective: genesis" or "collective: *idg*" works.
+		coll := tx.Collective
+		if coll == "" {
+			coll = firstTransactionTagValue(tx, "collective")
+		}
+		if coll == "" {
+			coll = stringMetadata(tx.Metadata, "collective")
+		}
+		if !globMatch(strings.ToLower(m.Collective), strings.ToLower(coll)) {
 			return false
 		}
 	}
@@ -173,6 +250,20 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 			return false
 		}
 		if m.Direction == "out" && !tx.IsOutgoing() {
+			return false
+		}
+	}
+
+	if m.Uncategorized && strings.TrimSpace(tx.Category) != "" {
+		return false
+	}
+
+	if m.Before != "" || m.After != "" {
+		txDate := time.Unix(tx.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02")
+		if m.Before != "" && !(txDate < m.Before) { // exclusive upper bound
+			return false
+		}
+		if m.After != "" && txDate < m.After { // inclusive lower bound
 			return false
 		}
 	}
@@ -225,8 +316,7 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		if !tx.IsIncoming() {
 			return false
 		}
-		target := strings.ToLower(tx.Counterparty)
-		if !globMatch(strings.ToLower(m.Sender), target) {
+		if !globMatchAny(strings.ToLower(m.Sender), counterpartyMatchTargets(tx)) {
 			return false
 		}
 	}
@@ -235,8 +325,7 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		if !tx.IsOutgoing() {
 			return false
 		}
-		target := strings.ToLower(tx.Counterparty)
-		if !globMatch(strings.ToLower(m.Recipient), target) {
+		if !globMatchAny(strings.ToLower(m.Recipient), counterpartyMatchTargets(tx)) {
 			return false
 		}
 	}
@@ -244,8 +333,7 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 	if m.Counterparty != "" {
 		// Direction-agnostic counterparty match. Use sender/recipient when
 		// you need to scope to one direction; counterparty matches both.
-		target := strings.ToLower(tx.Counterparty)
-		if !globMatch(strings.ToLower(m.Counterparty), target) {
+		if !globMatchAny(strings.ToLower(m.Counterparty), counterpartyMatchTargets(tx)) {
 			return false
 		}
 	}

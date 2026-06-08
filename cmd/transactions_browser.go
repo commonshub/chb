@@ -218,6 +218,47 @@ func txCounterpartyAddress(tx TransactionEntry) string {
 	return ""
 }
 
+// chainExplorerBases maps an EVM chain id to its public block-explorer base
+// URL. Used to deep-link a transaction hash; falls back to nothing for chains
+// we don't recognise.
+var chainExplorerBases = map[string]string{
+	"1":     "https://etherscan.io",
+	"10":    "https://optimistic.etherscan.io",
+	"100":   "https://gnosisscan.io",
+	"137":   "https://polygonscan.com",
+	"8453":  "https://basescan.org",
+	"42220": "https://celoscan.io",
+}
+
+// txInfoURL returns a link where an operator can see more about the tx: the
+// block explorer for an on-chain transfer, or the Stripe dashboard for a
+// Stripe charge / payment link. Empty for sources without a stable web view
+// (e.g. bank statement lines).
+func txInfoURL(tx TransactionEntry) string {
+	if strings.HasPrefix(tx.ID, "ethereum:") {
+		parts := strings.Split(tx.ID, ":")
+		// ethereum:<chainId>:tx:<hash>
+		if len(parts) == 4 && parts[2] == "tx" {
+			if base := chainExplorerBases[parts[1]]; base != "" {
+				return base + "/tx/" + parts[3]
+			}
+		}
+		return ""
+	}
+	if tx.Provider == "stripe" {
+		if tx.StripeChargeID != "" {
+			return "https://dashboard.stripe.com/payments/" + tx.StripeChargeID
+		}
+		if pl := stringMetadata(tx.Metadata, "paymentLink"); pl != "" {
+			return "https://dashboard.stripe.com/payment-links/" + pl
+		}
+		if id := strings.TrimPrefix(tx.ID, "stripe:"); id != "" && id != tx.ID {
+			return "https://dashboard.stripe.com/search?query=" + id
+		}
+	}
+	return ""
+}
+
 func txDisplayDescription(tx TransactionEntry) string {
 	if desc, ok := tx.Metadata["description"]; ok {
 		if s, ok := desc.(string); ok && s != "" {
@@ -2748,23 +2789,38 @@ func createRuleFromBrowser(allTxs []TransactionEntry) {
 // ── Command ──
 
 // printTransactionsCSV emits one row per transaction with the columns:
-// date, account-slug, amount, category, collective, counterparty (name),
+// id, date, account-slug, amount, category, collective, counterparty (name),
 // counterparty-address (IBAN or 0x), description, reference (invoice/bill),
-// currency. The reference comes from the matched Odoo bank line when the tx
-// has been reconciled.
+// currency, url. The id is the canonical transaction URI. The reference comes
+// from the matched Odoo bank line when the tx has been reconciled. The url
+// deep-links to the block explorer (on-chain) or the Stripe dashboard.
+//
+// Rows that are economically identical (same id, account, signed amount,
+// currency, type and counterparty) are collapsed to one: an on-chain transfer
+// occasionally lands in the data twice, differing only by logIndex. Genuine
+// multi-transfer transactions (same hash, different amount/counterparty) are
+// preserved.
 func printTransactionsCSV(txs []TransactionEntry) {
-	fmt.Println("date,account-slug,amount,category,collective,counterparty,counterparty-address,description,reference,currency")
+	fmt.Println("id,date,account-slug,amount,category,collective,counterparty,counterparty-address,description,reference,currency,url")
 	tz := BrusselsTZ()
 	lookup := getTxReconciliationLookup()
+	seen := map[string]bool{}
 	for _, tx := range txs {
-		date := time.Unix(tx.Timestamp, 0).In(tz).Format("2006-01-02")
 		amt := txAmount(tx)
 		if tx.IsOutgoing() {
 			amt = -math.Abs(amt)
 		} else {
 			amt = math.Abs(amt)
 		}
-		fmt.Printf("%s,%s,%.2f,%s,%s,%s,%s,%s,%s,%s\n",
+		dedupKey := fmt.Sprintf("%s|%s|%.2f|%s|%s|%s",
+			tx.ID, tx.AccountSlug, amt, tx.Currency, tx.Type, tx.CounterpartyID)
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
+		date := time.Unix(tx.Timestamp, 0).In(tz).Format("2006-01-02")
+		fmt.Printf("%s,%s,%s,%.2f,%s,%s,%s,%s,%s,%s,%s,%s\n",
+			csvCell(tx.ID),
 			csvCell(date),
 			csvCell(txAccountSlug(tx)),
 			amt,
@@ -2775,6 +2831,7 @@ func printTransactionsCSV(txs []TransactionEntry) {
 			csvCell(txDisplayDescription(tx)),
 			csvCell(strings.Join(lookup.InvoiceRefs(tx), " ")),
 			csvCell(tx.Currency),
+			csvCell(txInfoURL(tx)),
 		)
 	}
 }
@@ -2801,25 +2858,32 @@ func printTransactionsTable(filter TxFilter, txs []TransactionEntry) {
 	// what providers deducted on top. "net" in the header = pos + neg -
 	// fees, i.e. the actual balance impact — computed inline below so
 	// "net" stays honest after switching txAmount to return gross.
-	type sums struct{ pos, neg, fees float64 }
+	type sums struct {
+		pos, neg, fees float64
+		n              int
+	}
 	byCur := map[string]*sums{}
 	curOrder := []string{}
-	// Category breakdown bucket: (currency, category) → signed gross sum.
-	// Tracked per-currency so multi-currency views don't conflate amounts;
-	// for the common single-currency case it collapses to one row each.
+	// Category breakdown, grouped by category (not by currency): one row per
+	// category, with the gross tracked per-currency so multi-currency views
+	// don't conflate amounts but the same category isn't repeated.
 	type catSum struct {
 		category string
-		currency string
-		gross    float64
 		n        int
+		byCur    map[string]float64 // currency → signed gross
+		curOrder []string           // first-seen currency order within this category
+		absTotal float64            // |gross| across currencies, for sorting
 	}
-	catBuckets := map[string]*catSum{} // key: currency + "|" + category
+	catBuckets := map[string]*catSum{} // key: category
 	catOrder := []string{}
 
 	for _, tx := range txs {
+		// Stats consolidate the whole euro family (EUR, EURe, EURb, …) under a
+		// single "EUR*" bucket — they're all ~1:1 euro-pegged, so splitting
+		// them just fragments the totals. Non-euro tokens (CHT) stay distinct.
 		c := tx.Currency
-		if c == "" {
-			c = "EUR"
+		if isEURCurrency(c) {
+			c = "EUR*"
 		}
 		s, ok := byCur[c]
 		if !ok {
@@ -2834,20 +2898,24 @@ func printTransactionsTable(filter TxFilter, txs []TransactionEntry) {
 			s.neg += amt
 		}
 		s.fees += txFee(tx)
+		s.n++
 
 		cat := txDisplayCategory(tx)
 		if cat == "" || cat == "—" {
 			cat = "(uncategorised)"
 		}
-		key := c + "|" + cat
-		b, ok := catBuckets[key]
+		b, ok := catBuckets[cat]
 		if !ok {
-			b = &catSum{category: cat, currency: c}
-			catBuckets[key] = b
-			catOrder = append(catOrder, key)
+			b = &catSum{category: cat, byCur: map[string]float64{}}
+			catBuckets[cat] = b
+			catOrder = append(catOrder, cat)
 		}
-		b.gross += amt
+		if _, seen := b.byCur[c]; !seen {
+			b.curOrder = append(b.curOrder, c)
+		}
+		b.byCur[c] += amt
 		b.n++
+		b.absTotal += math.Abs(amt)
 	}
 
 	// ── 1. Header: totals per currency ──
@@ -2865,7 +2933,7 @@ func printTransactionsTable(filter TxFilter, txs []TransactionEntry) {
 		netAfterFees := s.pos + s.neg - s.fees
 		fmt.Printf("  %s%s%s  %s%d txs%s   in %s%s%s   out %s%s%s%s   net %s%s%s\n",
 			Fmt.Bold, label, Fmt.Reset,
-			Fmt.Dim, len(txs), Fmt.Reset,
+			Fmt.Dim, s.n, Fmt.Reset,
 			Fmt.Green, formatBalancePlain(s.pos, c), Fmt.Reset,
 			Fmt.Red, formatBalancePlain(s.neg, c), Fmt.Reset,
 			feesPart,
@@ -2874,22 +2942,12 @@ func printTransactionsTable(filter TxFilter, txs []TransactionEntry) {
 	}
 
 	// ── 2. Per-category gross breakdown ──
-	// Sort categories within each currency by descending |gross| so the
-	// biggest movers float to the top of the list.
+	// One row per category (not per currency), sorted by descending |gross|
+	// summed across currencies so the biggest movers float to the top. When a
+	// category spans multiple currencies, each currency's gross is shown on the
+	// same line so amounts are never conflated.
 	sort.SliceStable(catOrder, func(i, j int) bool {
-		ai, bi := catBuckets[catOrder[i]], catBuckets[catOrder[j]]
-		if ai.currency != bi.currency {
-			// Preserve currency grouping by first-seen order.
-			for _, c := range curOrder {
-				if c == ai.currency {
-					return true
-				}
-				if c == bi.currency {
-					return false
-				}
-			}
-		}
-		return math.Abs(ai.gross) > math.Abs(bi.gross)
+		return catBuckets[catOrder[i]].absTotal > catBuckets[catOrder[j]].absTotal
 	})
 	if len(catOrder) > 0 {
 		fmt.Printf("\n  %sBy category%s\n", Fmt.Dim, Fmt.Reset)
@@ -2904,16 +2962,23 @@ func printTransactionsTable(filter TxFilter, txs []TransactionEntry) {
 		}
 		for _, k := range catOrder {
 			b := catBuckets[k]
-			name := Truncate(b.category, maxNameW)
-			line := fmt.Sprintf("    %s  %4d  %s",
-				padRight(name, maxNameW),
-				b.n,
-				padLeft(formatBalancePlain(b.gross, b.currency), 14),
-			)
-			if len(curOrder) > 1 {
-				line += "  " + Fmt.Dim + b.currency + Fmt.Reset
+			// Render each currency's gross with its real code (EUR/EURe/EURb are
+			// all "EUR family" to formatBalancePlain, which would hide the
+			// distinction now that there's no separate currency column).
+			parts := make([]string, 0, len(b.curOrder))
+			for _, c := range b.curOrder {
+				v := b.byCur[c]
+				sign := ""
+				if v < 0 {
+					sign, v = "-", -v
+				}
+				parts = append(parts, padLeft(sign+fmtNumber(v)+" "+c, 16))
 			}
-			fmt.Println(line)
+			fmt.Printf("    %s  %4d  %s\n",
+				padRight(Truncate(b.category, maxNameW), maxNameW),
+				b.n,
+				strings.Join(parts, "  "),
+			)
 		}
 	}
 	fmt.Println()
@@ -3363,11 +3428,15 @@ func printTransactionsBrowserHelp() {
                        bank.statement.line without heuristics.
   %s--text%s               Accepted for compatibility; the table is the default.
                        Useful for 'chb transactions ... --text | less'.
-  %s--csv%s                Output CSV on stdout. Columns: date, account-slug,
-                       amount, category, collective, counterparty,
-                       counterparty-address (IBAN or 0x), description,
-                       reference (invoice/bill ref from the reconciled
-                       Odoo bank line, when matched), currency.
+  %s--csv%s                Output CSV on stdout. Columns: id, date,
+                       account-slug, amount, category, collective,
+                       counterparty, counterparty-address (IBAN or 0x),
+                       description, reference (invoice/bill ref from the
+                       reconciled Odoo bank line, when matched), currency,
+                       url (block explorer for on-chain txs, Stripe dashboard
+                       for Stripe). Economically identical duplicate rows
+                       (same tx that landed twice, differing only by log
+                       index) are collapsed; genuine multi-transfer rows kept.
   %s--with-pii%s           With --json, merge private enrichment into results
 
 %sINTERACTIVE KEYS%s

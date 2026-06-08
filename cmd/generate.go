@@ -2484,6 +2484,13 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			nostrMeta = MergeNostrMetadata(latestCache, monthCache)
 		}
 
+		// Dedup transfers that appear under more than one contract version for
+		// the SAME account (the EURe V1->V2 upgrade lists some transfers on
+		// both the legacy and the new contract). Keyed by account slug so an
+		// internal transfer between two of our own wallets — same
+		// hash/from/to/value in two different accounts' files — is preserved.
+		seenAccountTransfer := map[string]bool{}
+
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
@@ -2521,6 +2528,20 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			txHashCounter := map[string]int{}
 
 			for _, tx := range txFile.Transactions {
+				// Drop transfers on the exclusion list (e.g. EURe V1->V2
+				// migration mints, which re-issue the legacy-contract balance
+				// already recorded via legacy transfers — counting both
+				// double-counts). See settings/excluded-transactions.json.
+				if isExcludedOnchainTx(chain, tx.Hash, tx.To) {
+					continue
+				}
+				// Drop the second sighting of a transfer that the V1->V2 upgrade
+				// lists under both contracts for this account.
+				dupKey := accountSlug + "|" + strings.ToLower(tx.Hash) + "|" + strings.ToLower(tx.From) + "|" + strings.ToLower(tx.To) + "|" + tx.Value
+				if seenAccountTransfer[dupKey] {
+					continue
+				}
+				seenAccountTransfer[dupKey] = true
 				dec := 18
 				if tx.TokenDecimal != "" {
 					fmt.Sscanf(tx.TokenDecimal, "%d", &dec)
@@ -2811,6 +2832,15 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				if chainID > 0 {
 					uri = BuildBlockchainURI(chainID, tx.TxHash)
 				}
+			}
+
+			// Fall back to the transaction's own NIP-73 id for providers
+			// whose URI isn't rebuilt above (e.g. iban: bank txs). tx.ID is
+			// already the canonical URI used as the Nostr annotation key, so
+			// this lets annotations apply to every provider, not just
+			// Stripe/Etherscan.
+			if uri == "" {
+				uri = tx.ID
 			}
 
 			// 1. Nostr annotations (highest priority)

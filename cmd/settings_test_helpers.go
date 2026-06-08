@@ -13,6 +13,11 @@ import (
 // payload to survive LoadSettings()'s bootstrap step.
 func seedSettingsFixture(t *testing.T, name, payload string) {
 	t.Helper()
+	// A pinned fixture must survive bootstrap even for force-overwrite files
+	// (e.g. accounts.json). Disable force-overwrite for the duration of the test.
+	prev := forceOverwriteDefaultsEnabled
+	forceOverwriteDefaultsEnabled = false
+	t.Cleanup(func() { forceOverwriteDefaultsEnabled = prev })
 	dir := AppSettingsDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
