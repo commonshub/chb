@@ -205,8 +205,11 @@ func fetchTokenBalanceFromRPC(rpcURL, tokenAddress, walletAddress string, decima
 	if result.Error != nil {
 		return 0, fmt.Errorf("RPC error: %s", result.Error.Message)
 	}
+	// Some RPC nodes return "" or "0x" for a zero balanceOf result. That's a
+	// valid zero balance (e.g. a drained or never-funded wallet), not an error —
+	// treating it as an error would silently drop the account from balances.json.
 	if result.Result == "" || result.Result == "0x" {
-		return 0, fmt.Errorf("RPC returned empty balance")
+		return 0, nil
 	}
 	return rawTokenBalanceToFloat(result.Result, decimals)
 }
@@ -249,7 +252,7 @@ func defaultRPCForChainID(chainID int) string {
 	case 100:
 		return defaultGnosisRPC
 	case 137:
-		return "https://polygon-rpc.com"
+		return "https://polygon-bor-rpc.publicnode.com"
 	case 8453:
 		return "https://mainnet.base.org"
 	case 42161:
