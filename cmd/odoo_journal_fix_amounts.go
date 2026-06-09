@@ -1,0 +1,255 @@
+package cmd
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// odooAmountFix is one statement line whose amount in Odoo disagrees with the
+// locally-computed, correctly-signed amount for the same transaction (matched
+// by unique_import_id).
+type odooAmountFix struct {
+	LineID       int
+	MoveID       int
+	Date         string
+	ImportID     string
+	OldAmount    float64
+	NewAmount    float64
+	IsReconciled bool
+}
+
+// detectOdooJournalAmountFixes returns the journal's statement lines whose
+// amount in Odoo differs from the locally-computed signed amount for the same
+// transaction (matched by unique_import_id). Read-only. The canonical case:
+// internal transfers pushed before the internalTransactionDirection sign fix
+// went out as +amount (incoming) when they were outflows, so a drained wallet's
+// journal reads far above its true (~0) balance.
+func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, acc *AccountConfig) ([]odooAmountFix, error) {
+	if acc == nil {
+		return nil, nil
+	}
+	// Correct, signed amount per local transaction, keyed by unique_import_id.
+	want := map[string]float64{}
+	for _, tx := range loadAccountTransactionsForOdoo(acc) {
+		if id := buildUniqueImportID(acc, tx); id != "" {
+			want[id] = roundCents(signedOdooAmountForTransaction(acc, tx))
+		}
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
+		[]string{"id", "date", "amount", "unique_import_id", "move_id", "is_reconciled"},
+		"date asc, id asc")
+	if err != nil {
+		return nil, err
+	}
+	var fixes []odooAmountFix
+	for _, row := range rows {
+		id := odooString(row["unique_import_id"])
+		if id == "" {
+			continue
+		}
+		newAmt, ok := want[id]
+		if !ok {
+			continue
+		}
+		oldAmt := roundCents(odooFloat(row["amount"]))
+		if oldAmt == newAmt {
+			continue
+		}
+		fixes = append(fixes, odooAmountFix{
+			LineID:       odooInt(row["id"]),
+			MoveID:       odooFieldID(row["move_id"]),
+			Date:         odooString(row["date"]),
+			ImportID:     id,
+			OldAmount:    oldAmt,
+			NewAmount:    newAmt,
+			IsReconciled: odooBool(row["is_reconciled"]),
+		})
+	}
+	return fixes, nil
+}
+
+// countReconciledAmountFixes reports how many of the fixes sit on a reconciled
+// line (and so must be unreconciled before the amount can be rewritten).
+func countReconciledAmountFixes(fixes []odooAmountFix) int {
+	n := 0
+	for _, f := range fixes {
+		if f.IsReconciled {
+			n++
+		}
+	}
+	return n
+}
+
+// printOdooJournalAmountFixes previews the wrong lines and the net journal
+// balance change they represent.
+func printOdooJournalAmountFixes(fixes []odooAmountFix) {
+	fmt.Printf("\n  %s%s with the wrong amount:%s\n", Fmt.Yellow, Pluralize(len(fixes), "line", ""), Fmt.Reset)
+	var delta float64
+	for _, f := range fixes {
+		note := ""
+		if f.IsReconciled {
+			note = Fmt.Dim + "  (reconciled → will unreconcile)" + Fmt.Reset
+		}
+		fmt.Printf("    %s%s%s  line #%d  %s → %s%s\n",
+			Fmt.Dim, f.Date, Fmt.Reset, f.LineID,
+			fmtEURSigned(f.OldAmount), fmtEURSigned(f.NewAmount), note)
+		delta += f.NewAmount - f.OldAmount
+	}
+	fmt.Printf("\n  %sNet journal balance change: %s%s\n", Fmt.Dim, fmtEURSigned(delta), Fmt.Reset)
+}
+
+// applyOdooJournalAmountFixes writes the corrected amounts in place. Each line
+// is repaired with the standard draft → write → repost dance (writing amount on
+// a posted move otherwise fails with "vous ne pouvez pas supprimer une écriture
+// comptable validée"); reconciled lines are unreconciled first. On success it
+// refreshes the local journal cache. Returns ok / failed counts.
+func applyOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, fixes []odooAmountFix) (okCount, failed int) {
+	// Move states up front for the draft/post decision.
+	moveStates := map[int]string{}
+	moveIDs := make([]interface{}, 0, len(fixes))
+	seenMove := map[int]bool{}
+	for _, f := range fixes {
+		if f.MoveID > 0 && !seenMove[f.MoveID] {
+			seenMove[f.MoveID] = true
+			moveIDs = append(moveIDs, f.MoveID)
+		}
+	}
+	if len(moveIDs) > 0 {
+		if mrows, merr := odooSearchReadAllMaps(creds, uid, "account.move",
+			[]interface{}{[]interface{}{"id", "in", moveIDs}}, []string{"id", "state"}, ""); merr == nil {
+			for _, r := range mrows {
+				if mid := odooInt(r["id"]); mid > 0 {
+					moveStates[mid] = odooString(r["state"])
+				}
+			}
+		} else {
+			Warnf("    %s⚠ Could not read move states: %v%s", Fmt.Yellow, merr, Fmt.Reset)
+		}
+	}
+
+	for _, f := range fixes {
+		if f.MoveID == 0 {
+			Warnf("    %s⚠ line #%d: missing move_id; skipped%s", Fmt.Yellow, f.LineID, Fmt.Reset)
+			failed++
+			continue
+		}
+		// A reconciled line can't be drafted/rewritten — break the
+		// reconciliation first; the operator re-reconciles afterwards.
+		if f.IsReconciled {
+			if err := unreconcileStatementLineMove(creds, uid, odooStatementLineForReconcile{MoveID: f.MoveID}); err != nil {
+				Warnf("    %s⚠ line #%d unreconcile: %v%s", Fmt.Yellow, f.LineID, err, Fmt.Reset)
+				failed++
+				continue
+			}
+		}
+		posted := moveStates[f.MoveID] == "posted"
+		if posted {
+			if _, e := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "button_draft", []interface{}{[]interface{}{f.MoveID}}, nil); e != nil {
+				Warnf("    %s⚠ line #%d draft: %v%s", Fmt.Yellow, f.LineID, e, Fmt.Reset)
+				failed++
+				continue
+			}
+		}
+		_, werr := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.bank.statement.line", "write",
+			[]interface{}{[]interface{}{f.LineID}, map[string]interface{}{"amount": f.NewAmount}},
+			map[string]interface{}{"context": map[string]interface{}{"check_move_validity": false}})
+		// Re-post even if the write failed, so a partial run never leaves the
+		// move stuck in draft.
+		if posted {
+			if _, e := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "action_post", []interface{}{[]interface{}{f.MoveID}}, nil); e != nil {
+				Warnf("    %s⚠ line #%d repost: %v%s", Fmt.Yellow, f.LineID, e, Fmt.Reset)
+				failed++
+				continue
+			}
+		}
+		if werr != nil {
+			Warnf("    %s⚠ line #%d write: %v%s", Fmt.Yellow, f.LineID, werr, Fmt.Reset)
+			failed++
+			continue
+		}
+		okCount++
+	}
+
+	if okCount > 0 {
+		if _, e := writeOdooJournalLinesCache(creds, uid, journalID); e != nil {
+			Warnf("    %s⚠ journal cache refresh: %v%s", Fmt.Yellow, e, Fmt.Reset)
+		}
+	}
+	return okCount, failed
+}
+
+// repairOdooJournalLineAmounts is the focused entry point: detect → preview →
+// confirm → apply, for the amount-repair step alone. `chb odoo journals <id>
+// fix` runs the same step as part of its broader repair; this shortcut runs
+// only it (no orphan/duplicate/metadata scan) when that's all you need.
+func repairOdooJournalLineAmounts(creds *OdooCredentials, uid, journalID int, assumeYes, dryRun bool) error {
+	if !dryRun {
+		if err := RequireOdooWriteCapability(); err != nil {
+			return err
+		}
+	}
+	acc := linkedAccountForJournal(journalID)
+	if acc == nil {
+		return fmt.Errorf("no account linked to Odoo journal #%d. Run: chb accounts <slug> link", journalID)
+	}
+	printOdooTargetLine(creds)
+	fmt.Printf("\n  %sChecking line amounts for journal #%d (%s)…%s\n", Fmt.Bold, journalID, acc.Slug, Fmt.Reset)
+
+	fixes, err := detectOdooJournalAmountFixes(creds, uid, journalID, acc)
+	if err != nil {
+		return err
+	}
+	if len(fixes) == 0 {
+		fmt.Printf("  %s✓ All matched line amounts already correct — nothing to fix.%s\n\n", Fmt.Green, Fmt.Reset)
+		return nil
+	}
+
+	printOdooJournalAmountFixes(fixes)
+	if dryRun {
+		fmt.Printf("  %s(dry-run — no writes)%s\n\n", Fmt.Dim, Fmt.Reset)
+		return nil
+	}
+	if !assumeYes && isInteractiveTTY() {
+		fmt.Printf("\n  %sFix %s in Odoo journal #%d? [y/N] %s", Fmt.Bold, Pluralize(len(fixes), "line", ""), journalID, Fmt.Reset)
+		reader := bufio.NewReader(os.Stdin)
+		resp, _ := reader.ReadString('\n')
+		resp = strings.TrimSpace(strings.ToLower(resp))
+		if resp != "y" && resp != "yes" {
+			fmt.Printf("  Aborted.\n\n")
+			return nil
+		}
+	}
+
+	reconciledN := countReconciledAmountFixes(fixes)
+	okCount, failed := applyOdooJournalAmountFixes(creds, uid, journalID, fixes)
+	printOdooJournalAmountFixResult(journalID, len(fixes), okCount, failed, reconciledN)
+	return nil
+}
+
+// printOdooJournalAmountFixResult renders the shared ✓/⚠ summary line after an
+// amount-repair pass (used by both `fix` and the focused shortcut).
+func printOdooJournalAmountFixResult(journalID, planned, okCount, failed, reconciledN int) {
+	mark := Fmt.Green + "✓" + Fmt.Reset
+	if failed > 0 {
+		mark = Fmt.Yellow + "⚠" + Fmt.Reset
+	}
+	fmt.Printf("  %s Fixed %d/%d line amount%s", mark, okCount, planned, plural(planned))
+	if failed > 0 {
+		fmt.Printf(" (%s%d failed%s)", Fmt.Red, failed, Fmt.Reset)
+	}
+	fmt.Println()
+	if reconciledN > 0 {
+		fmt.Printf("  %s↳ %s unreconciled to allow the change — run `chb odoo journals %d reconcile` to re-match.%s\n",
+			Fmt.Dim, Pluralize(reconciledN, "line", ""), journalID, Fmt.Reset)
+	}
+	fmt.Println()
+}

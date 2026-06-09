@@ -6160,6 +6160,21 @@ func internalTransactionDirection(acc *AccountConfig, tx TransactionEntry) strin
 	if direction := internalTransactionDirectionFromRaw(acc, tx); direction != "" {
 		return direction
 	}
+	// Last resort: trust the direction the generator already stamped on the
+	// stored amount. A migrated/multi-contract wallet's legacy-contract
+	// transfers live in a priorTokens file the raw lookup above may still
+	// miss; falling through to a blanket "CREDIT" counted every unresolved
+	// internal transfer as incoming, inflating the account balance (a drained
+	// wallet showed 0 on-chain but +121k locally — ~90 outgoing internals
+	// scored as credits). NormalizedAmount/Amount is already direction-signed,
+	// so a negative value is an outflow.
+	amount := tx.NormalizedAmount
+	if amount == 0 {
+		amount = tx.Amount
+	}
+	if amount < 0 {
+		return "DEBIT"
+	}
 	return "CREDIT"
 }
 
@@ -6193,35 +6208,46 @@ func internalTransactionDirectionFromRaw(acc *AccountConfig, tx TransactionEntry
 	if chain == "" || slug == "" || currency == "" {
 		return ""
 	}
-	path, found := etherscansource.FindFileForAddr(DataDir(), t.Format("2006"), t.Format("01"), chain, slug, account, currency)
-	if !found {
-		return ""
+	// Try the primary token's file first, then every prior contract version
+	// (priorTokens) — a migrated wallet's older transfers live in files named
+	// "<symbol>-<shortContract>" (see loadAccountOnchainTransfers), so looking
+	// up only the primary symbol misses legacy-contract internal transfers.
+	fileTokens := []string{currency}
+	if acc != nil {
+		for _, pt := range acc.PriorTokens {
+			fileTokens = append(fileTokens, pt.Symbol+"-"+etherscansource.ShortAddr(pt.Address))
+		}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	var txFile struct {
-		Transactions []struct {
-			Hash string `json:"hash"`
-			From string `json:"from"`
-			To   string `json:"to"`
-		} `json:"transactions"`
-	}
-	if json.Unmarshal(data, &txFile) != nil {
-		return ""
-	}
-	for _, raw := range txFile.Transactions {
-		if !strings.EqualFold(raw.Hash, tx.TxHash) {
+	for _, ft := range fileTokens {
+		path, found := etherscansource.FindFileForAddr(DataDir(), t.Format("2006"), t.Format("01"), chain, slug, account, ft)
+		if !found {
 			continue
 		}
-		if strings.EqualFold(raw.From, account) {
-			return "DEBIT"
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
 		}
-		if strings.EqualFold(raw.To, account) {
-			return "CREDIT"
+		var txFile struct {
+			Transactions []struct {
+				Hash string `json:"hash"`
+				From string `json:"from"`
+				To   string `json:"to"`
+			} `json:"transactions"`
 		}
-		return ""
+		if json.Unmarshal(data, &txFile) != nil {
+			continue
+		}
+		for _, raw := range txFile.Transactions {
+			if !strings.EqualFold(raw.Hash, tx.TxHash) {
+				continue
+			}
+			if strings.EqualFold(raw.From, account) {
+				return "DEBIT"
+			}
+			if strings.EqualFold(raw.To, account) {
+				return "CREDIT"
+			}
+		}
 	}
 	return ""
 }

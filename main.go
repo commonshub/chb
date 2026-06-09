@@ -300,6 +300,13 @@ func main() {
 			if err := cmd.OdooSyncAll(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "push":
+			// Top-level mirror of `chb odoo pull`: push local transactions
+			// into every linked Odoo journal. Same path as
+			// `chb odoo journals push`.
+			if err := cmd.OdooJournals(append([]string{"push"}, args[2:]...)); err != nil {
+				exitWithError(err)
+			}
 		case "categories":
 			// Back-compat: what `chb odoo sync` used to be.
 			catArgs := args[2:]
@@ -385,7 +392,13 @@ func main() {
 				exitWithError(err)
 			}
 		default:
-			cmd.PrintOdooHelp()
+			// Bare `chb odoo` shows only a hint; the command list stays
+			// behind `chb odoo --help` (or any unknown subcommand).
+			if subcmd == "" && !cmd.HasFlag(args, "--help", "-h") {
+				cmd.PrintOdooHint()
+			} else {
+				cmd.PrintOdooHelp()
+			}
 		}
 	case "nostr":
 		if len(args) <= 1 {

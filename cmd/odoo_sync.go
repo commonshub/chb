@@ -144,8 +144,10 @@ func finalizeJournalRow(row journalSyncRow) bool {
 	// `chb push` / `chb sync` driver) instead of printed inline. The
 	// driver renders one clean line per journal on stderr after the
 	// silenced section returns.
-	if journalRowSink != nil {
-		*journalRowSink = row
+	// Snapshot the global into a local so a per-journal timeout that nils the
+	// sink between this nil-check and the deref can't cause a panic.
+	if sink := journalRowSink; sink != nil {
+		*sink = row
 		return true
 	}
 	w := journalRowLayoutActive
@@ -558,41 +560,23 @@ func OdooJournals(args []string) error {
 			}
 			return odooJournalMerge(creds, uid, journalID, targetArg, HasFlag(args, "--dry-run"), HasFlag(args, "--verbose", "-v"), HasFlag(args, "--yes", "-y"))
 		}
-		if len(args) >= 2 && (args[1] == "push" || args[1] == "sync") {
-			if args[1] == "sync" {
-				Warnf("%s'chb odoo journals <id> sync' is deprecated — use 'chb odoo journals <id> push' instead%s", Fmt.Dim, Fmt.Reset)
-			}
-			syncArgs := args[2:]
-			if HasFlag(syncArgs, "--reset") {
-				if odooSyncStageFlagsExplicit(syncArgs) && !HasFlag(syncArgs, "--transactions") {
-					return fmt.Errorf("--reset can only be used with --transactions, or with no stage flags")
-				}
-				if HasFlag(syncArgs, "--dry-run") {
-					// In dry-run, --reset means "simulate an empty journal" without
-					// prompting or deleting anything. AccountOdooPush already treats
-					// --force as reset/rebuild mode.
-					syncArgs = append(filterFlag(syncArgs, "--reset"), "--force")
-				} else {
-					printOdooTargetLine(creds)
-					if err := odooJournalReset(creds, uid, journalID, HasFlag(syncArgs, "--yes", "-y") || HasFlag(syncArgs, "--force")); err != nil {
-						return err
-					}
-					syncArgs = filterFlag(syncArgs, "--reset")
-					if !HasFlag(syncArgs, "--history") {
-						syncArgs = append(syncArgs, "--history")
-					}
-					wasPrinted := odooTargetAlreadyPrinted()
-					setOdooTargetAlreadyPrinted(true)
-					defer setOdooTargetAlreadyPrinted(wasPrinted)
-				}
-			}
-			return odooJournalSync(journalID, syncArgs)
+		// `push` pushes local → Odoo only. `sync` is the full round-trip:
+		// pull source → local, push local → Odoo, then refresh the local
+		// journal cache, so afterwards live/local/journal all agree.
+		if len(args) >= 2 && args[1] == "push" {
+			return odooJournalPushWithReset(creds, uid, journalID, args[2:])
+		}
+		if len(args) >= 2 && args[1] == "sync" {
+			return odooJournalFullSync(creds, uid, journalID, args[2:])
 		}
 		if len(args) >= 2 && args[1] == "check" {
 			return odooJournalCheck(creds, uid, journalID)
 		}
 		if len(args) >= 2 && args[1] == "fix" {
 			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
+		}
+		if len(args) >= 2 && (args[1] == "fix-amounts" || args[1] == "repair-amounts") {
+			return repairOdooJournalLineAmounts(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
 		}
 		if len(args) >= 2 && args[1] == "merge" {
 			acc := linkedAccountForJournal(journalID)
@@ -746,25 +730,7 @@ func OdooJournals(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%sCOMMANDS%s  (id is an Odoo journal id or an account slug)\n\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug>%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sShow details for a specific journal%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> lines [-n N] [--skip N] [--csv]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sList recent statement lines (date, description, partner, account, amount)%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> statements [-n N] [--skip N] [--csv]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sList statements (date, name, # lines, start/end balance), newest first%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> push%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sPush the linked account's local transactions into the journal (alias: sync)%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> check%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> fix%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sRepair orphan import IDs in place, remove unmatched lines, fix balances%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> reconcile [--dry-run] [--yes]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sMatch unreconciled statement lines against open invoices and bills%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <source> --merge-with <target> [--dry-run] [--verbose] [--yes]%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sMove reconciliations to the target journal, then delete the source journal%s\n\n", Fmt.Dim, Fmt.Reset)
-	fmt.Printf("  %s%schb odoo journals <id|slug> --reset%s\n", Fmt.Bold, Fmt.Cyan, Fmt.Reset)
-	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", Fmt.Dim, Fmt.Reset)
+	fmt.Printf("  %sRun 'chb odoo journals --help' for commands.%s\n\n", Fmt.Dim, Fmt.Reset)
 
 	return nil
 }
@@ -950,6 +916,12 @@ account into the Odoo journal. Reads the resolved category /
 collective / accountCode / partnerId from each tx (written by
 %schb generate%s) and applies them to created Odoo lines.
 
+%schb odoo journals <id|slug> sync%s — Full round-trip: pull the linked
+account's source → local (refreshes the live balance + regenerates the
+local view), push local → Odoo, then refresh the journal cache. After it
+the live, local and journal balances agree. Pass --reset once to rebuild
+a journal whose existing lines pre-date a fix.
+
 %sOPTIONS%s
   %s--dry-run%s              Preview only; no writes to Odoo
   %s-n N%s, %s--limit N%s        In dry-run, number of planned lines to show
@@ -968,7 +940,8 @@ collective / accountCode / partnerId from each tx (written by
   %s--payout <id>%s          Stripe-only: limit to one payout
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset,
-			f.Bold, f.Reset,
+			f.Bold, f.Reset, // sync header
+			f.Bold, f.Reset, // OPTIONS
 			f.Yellow, f.Reset, // --dry-run
 			f.Yellow, f.Reset, f.Yellow, f.Reset, // -n, --limit
 			f.Yellow, f.Reset, // --force
@@ -1037,15 +1010,36 @@ balance is invalid (start + sum(lines) ≠ end). Read-only.
 	case "fix":
 		fmt.Printf(`
 %schb odoo journals <id|slug> fix%s — Repair a journal: rewrite orphan
-import-ids, remove unmatched lines, and recompute balances. Also diffs
-the journal against local: offers to push local txs missing from Odoo,
-and reports any balance gap from manual (non-chb) entries.
+import-ids, remove unmatched lines, correct line amounts that disagree with
+local (e.g. mis-signed transfers), and recompute balances. Also diffs the
+journal against local: offers to push local txs missing from Odoo, and reports
+any balance gap from manual (non-chb) entries. Each repair is previewed and
+confirmed separately. See also '%sfix-amounts%s' to run only the amount step.
 
 %sOPTIONS%s
   %s--dry-run%s              Preview only; no writes to Odoo
   %s-y%s, %s--yes%s             Skip the interactive confirmation
 `,
-			f.Bold, f.Reset, f.Bold, f.Reset,
+			f.Bold, f.Reset, f.Cyan, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset, f.Yellow, f.Reset,
+		)
+	case "fix-amounts", "repair-amounts":
+		fmt.Printf(`
+%schb odoo journals <id|slug> fix-amounts%s — Correct, in place, statement lines
+whose amount in Odoo disagrees with the locally-computed (correctly-signed)
+amount for the same transaction — matched by unique_import_id. For each wrong
+line it unreconciles (if needed), drafts the move, writes the corrected amount,
+then re-posts. Use this instead of '%ssync --reset%s' to repair a few mis-signed
+lines without wiping and rebuilding the whole journal. Re-reconcile afterwards
+with '%sreconcile%s'.
+
+%sOPTIONS%s
+  %s--dry-run%s              Preview the wrong lines and the net balance change; no writes
+  %s-y%s, %s--yes%s             Skip the interactive confirmation
+`,
+			f.Bold, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
+			f.Bold, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset, f.Yellow, f.Reset,
 		)
@@ -1738,6 +1732,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	var linePlan []odooOwnedLineSync
 	var loosePlan *looseLinesPlan
 	var issues []StatementBalanceIssue
+	var amountFixes []odooAmountFix
 	detect := func() error {
 		fmt.Printf("  %sChecking orphan/duplicate statement lines...%s\n", Fmt.Dim, Fmt.Reset)
 		var err error
@@ -1756,6 +1751,14 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		if linePlanErr != nil {
 			Warnf("  %s⚠ Could not plan line metadata repair: %v%s", Fmt.Yellow, linePlanErr, Fmt.Reset)
 			linePlan = nil
+		}
+
+		fmt.Printf("  %sChecking line amounts...%s\n", Fmt.Dim, Fmt.Reset)
+		var amountErr error
+		amountFixes, amountErr = detectOdooJournalAmountFixes(creds, uid, journalID, res.Account)
+		if amountErr != nil {
+			Warnf("  %s⚠ Could not check line amounts: %v%s", Fmt.Yellow, amountErr, Fmt.Reset)
+			amountFixes = nil
 		}
 
 		fmt.Printf("  %sChecking loose statement lines...%s\n", Fmt.Dim, Fmt.Reset)
@@ -1795,7 +1798,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	// early "nothing to fix" return.
 	deletableUnowned := diagOK && diag.hasGap && len(res.Unowned) > 0
 
-	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(loosePlan.Assign) == 0 && len(issues) == 0 && !deletableUnowned {
+	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && len(loosePlan.Assign) == 0 && len(issues) == 0 && !deletableUnowned {
 		if diagOK && diag.hasGap {
 			printJournalBalanceDiagnostic(diag, res)
 			fmt.Printf("  %s✓ No chb-owned issues to fix — the %s difference reported by sync is not from chb-owned lines (see above).%s\n\n",
@@ -1927,6 +1930,28 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 			fmt.Println()
 		default:
 			fmt.Printf("  %sLine metadata repair skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
+	}
+
+	if len(amountFixes) > 0 {
+		printOdooJournalAmountFixes(amountFixes)
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			fmt.Printf("  %sCorrect %s? Each line is unreconciled if needed, then drafted, rewritten and re-posted.%s [y/N] ",
+				Fmt.Bold, Pluralize(len(amountFixes), "wrong amount", ""), Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			fmt.Printf("  %s(dry-run) would correct %s%s\n\n", Fmt.Dim, Pluralize(len(amountFixes), "line", ""), Fmt.Reset)
+		case proceed:
+			reconciledN := countReconciledAmountFixes(amountFixes)
+			ok, failed := applyOdooJournalAmountFixes(creds, uid, journalID, amountFixes)
+			printOdooJournalAmountFixResult(journalID, len(amountFixes), ok, failed, reconciledN)
+		default:
+			fmt.Printf("  %sAmount repair skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
 		}
 	}
 
@@ -3289,6 +3314,94 @@ func odooJournalSync(journalID int, args []string) error {
 	return fmt.Errorf("no account linked to Odoo journal #%d. Run: chb accounts <slug> link", journalID)
 }
 
+// odooJournalPushWithReset pushes local → Odoo for one journal, honouring
+// `--reset` (wipe the journal, then re-push full history). Extracted so both
+// `journals <id> push` and the push step of `journals <id> sync` share the
+// exact same reset semantics.
+func odooJournalPushWithReset(creds *OdooCredentials, uid int, journalID int, syncArgs []string) error {
+	if HasFlag(syncArgs, "--reset") {
+		if odooSyncStageFlagsExplicit(syncArgs) && !HasFlag(syncArgs, "--transactions") {
+			return fmt.Errorf("--reset can only be used with --transactions, or with no stage flags")
+		}
+		if HasFlag(syncArgs, "--dry-run") {
+			// In dry-run, --reset means "simulate an empty journal" without
+			// prompting or deleting anything. AccountOdooPush already treats
+			// --force as reset/rebuild mode.
+			syncArgs = append(filterFlag(syncArgs, "--reset"), "--force")
+		} else {
+			printOdooTargetLine(creds)
+			if err := odooJournalReset(creds, uid, journalID, HasFlag(syncArgs, "--yes", "-y") || HasFlag(syncArgs, "--force")); err != nil {
+				return err
+			}
+			syncArgs = filterFlag(syncArgs, "--reset")
+			if !HasFlag(syncArgs, "--history") {
+				syncArgs = append(syncArgs, "--history")
+			}
+			wasPrinted := odooTargetAlreadyPrinted()
+			setOdooTargetAlreadyPrinted(true)
+			defer setOdooTargetAlreadyPrinted(wasPrinted)
+		}
+	}
+	return odooJournalSync(journalID, syncArgs)
+}
+
+// odooJournalFullSync makes all three balances for a journal agree in one
+// command:
+//
+//  1. pull the linked account's source → local (refreshes the live on-chain /
+//     provider balance and re-generates the local transaction view),
+//  2. push local → Odoo and reconcile (so the Odoo journal carries every local
+//     transaction), then
+//  3. refresh the local Odoo journal-lines cache (so the journal balance the
+//     account view prints reflects the just-pushed state).
+//
+// After it, `chb accounts <slug>` shows live == local == journal. Pass
+// `--reset` to wipe and rebuild the journal first (needed once to correct
+// lines pushed before a signing fix).
+func odooJournalFullSync(creds *OdooCredentials, uid int, journalID int, syncArgs []string) error {
+	if err := RequireOdooWriteCapability(); err != nil {
+		return err
+	}
+	acc := linkedAccountForJournal(journalID)
+	if acc == nil {
+		return fmt.Errorf("no account linked to Odoo journal #%d. Run: chb accounts <slug> link", journalID)
+	}
+
+	printOdooTargetLine(creds)
+	wasPrinted := odooTargetAlreadyPrinted()
+	setOdooTargetAlreadyPrinted(true)
+	defer setOdooTargetAlreadyPrinted(wasPrinted)
+
+	// 1. Pull source → local (live balance + regenerated local view). Strip
+	// push-only flags the fetch doesn't understand; keep --verbose/--debug.
+	fmt.Printf("\n  %s① Pulling %s source → local…%s\n", Fmt.Dim, acc.Slug, Fmt.Reset)
+	fetchArgs := []string{}
+	if HasFlag(syncArgs, "--verbose", "-v") {
+		fetchArgs = append(fetchArgs, "--verbose")
+	}
+	if HasFlag(syncArgs, "--history") || HasFlag(syncArgs, "--reset") {
+		fetchArgs = append(fetchArgs, "--history")
+	}
+	if err := AccountFetch(acc.Slug, fetchArgs); err != nil {
+		return fmt.Errorf("pull %s: %v", acc.Slug, err)
+	}
+
+	// 2. Push local → Odoo (+ reconcile), honouring --reset.
+	fmt.Printf("\n  %s② Pushing local → Odoo journal #%d…%s\n", Fmt.Dim, journalID, Fmt.Reset)
+	if err := odooJournalPushWithReset(creds, uid, journalID, syncArgs); err != nil {
+		return err
+	}
+
+	// 3. Refresh the local journal cache so the journal balance is post-push.
+	if !HasFlag(syncArgs, "--dry-run") {
+		fmt.Printf("\n  %s③ Refreshing journal #%d cache…%s\n", Fmt.Dim, journalID, Fmt.Reset)
+		if _, err := writeOdooJournalLinesCache(creds, uid, journalID); err != nil {
+			return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
+		}
+	}
+	return nil
+}
+
 // odooJournalsSyncAll pushes every linked account's local transactions into
 // its Odoo journal. In aggregate (quiet) mode the accounts are processed
 // serially so the per-account one-liners stay in order and can't interleave.
@@ -3357,7 +3470,8 @@ func odooJournalsSyncAll(args []string) error {
 			var row journalSyncRow
 			journalRowSink = &row
 			restore := silenceStdout()
-			err := AccountOdooPush(t.slug, args)
+			err := runWithTimeout(fmt.Sprintf("journal #%d (%s)", t.journalID, t.slug), syncStepTimeout,
+				func() error { return AccountOdooPush(t.slug, args) })
 			restore()
 			journalRowSink = nil
 			SetActiveStatusLine(nil)
@@ -3384,7 +3498,9 @@ func odooJournalsSyncAll(args []string) error {
 		// Serial: preserve one-line-per-item ordering, avoid interleaving.
 		for _, t := range targets {
 			printJournalRowPrefix(t.journalID, t.slug)
-			if err := AccountOdooPush(t.slug, args); err != nil {
+			if err := runWithTimeout(fmt.Sprintf("journal #%d (%s)", t.journalID, t.slug), syncStepTimeout,
+				func() error { return AccountOdooPush(t.slug, args) }); err != nil {
+				fmt.Printf("  %s✗ #%d %s: %v%s\n", Fmt.Red, t.journalID, t.slug, err, Fmt.Reset)
 				failed++
 			}
 		}
@@ -3400,7 +3516,8 @@ func odooJournalsSyncAll(args []string) error {
 			sem <- struct{}{}
 			go func() {
 				defer func() { <-sem }()
-				err := AccountOdooPush(t.slug, args)
+				err := runWithTimeout(fmt.Sprintf("journal #%d (%s)", t.journalID, t.slug), syncStepTimeout,
+					func() error { return AccountOdooPush(t.slug, args) })
 				resultsCh <- result{slug: t.slug, err: err}
 			}()
 		}
@@ -3517,14 +3634,20 @@ func printOdooTargetLine(creds *OdooCredentials) {
 }
 
 // PrintOdooHelp shows the top-level odoo command help.
+// PrintOdooHint is the one-line pointer shown for a bare `chb odoo` with no
+// subcommand; the full command list stays behind `chb odoo --help`.
+func PrintOdooHint() {
+	fmt.Printf("  %sRun 'chb odoo --help' for commands.%s\n", Fmt.Dim, Fmt.Reset)
+}
+
 func PrintOdooHelp() {
 	f := Fmt
 	fmt.Printf("\n%schb odoo%s — Odoo integration (Odoo is a target: pull + push + pending)\n\n", f.Bold, f.Reset)
 	fmt.Printf("%sCOMMANDS%s\n\n", f.Bold, f.Reset)
 	fmt.Printf("  %s%schb odoo pull%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sFetch Odoo data into local provider archives (categories, partners, invoices, bills, journal lines)%s\n\n", f.Dim, f.Reset)
-	fmt.Printf("  %s%schb odoo journals push%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sPush local transactions into every linked Odoo journal%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo push%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sPush local transactions into every linked Odoo journal (mirror of pull; = chb odoo journals push)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo mapping%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sList / add / edit the category → Odoo account+partner mapping (odoo_mapping.json)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals%s\n", f.Bold, f.Cyan, f.Reset)

@@ -289,9 +289,13 @@ func fmtEURSigned(v float64) string {
 
 // fmtNumber formats a float with thousands separators: 12,345.67
 func fmtNumber(v float64) string {
-	// Split integer and decimal parts
+	// Split integer and decimal parts. Use the absolute value of the decimal
+	// part so the "%.2f"[1:] slice always strips a leading "0" (".67"), never a
+	// minus sign: for v=-0.0 the old code produced "%.2f"=-0.00 → [1:]="0.00",
+	// which combined with intPart "0" rendered "00.00". The sign of v lives in
+	// intPart (and in the caller, which negates before calling for negatives).
 	intPart := int64(v)
-	decPart := v - float64(intPart)
+	decPart := math.Abs(v - float64(intPart))
 	dec := fmt.Sprintf("%.2f", decPart)[1:] // ".67"
 
 	// Format integer with commas

@@ -146,7 +146,15 @@ func mergeKBCJournalWithCSV(creds *OdooCredentials, uid int, journalID int, acc 
 		return createdLines, nil
 	}
 
-	if !assumeYes {
+	// Confirm interactively — but ONLY when we can actually read a reply.
+	// Under the aggregate `chb odoo journals push` (or any non-TTY run) stdout
+	// is silenced, so this prompt would be invisible yet still block on stdin —
+	// the hang reported as "stuck at #28 kbc: verifying cache freshness", which
+	// a blind Enter releases. isInteractiveTTY() is false in quiet/aggregate or
+	// non-TTY contexts; there we proceed (the operator explicitly invoked a
+	// write — use --dry-run to preview, or run the journal on its own to be
+	// prompted).
+	if !assumeYes && isInteractiveTTY() {
 		fmt.Println()
 		fmt.Printf("  Apply: create %s%s? Matched lines left untouched. [y/N] ",
 			Pluralize(len(plan.ToAdd), "Odoo line", ""),
@@ -201,16 +209,16 @@ type kbcMergeCSVRow struct {
 }
 
 type kbcMergeOdooLine struct {
-	ID                  int
-	Date                string
-	AmountCents         int64
-	Amount              float64
-	CounterpartyIBAN    string
-	CounterpartyName    string
-	PaymentRef          string
-	Narration           string
-	ImportID            string
-	IsReconciled        bool
+	ID               int
+	Date             string
+	AmountCents      int64
+	Amount           float64
+	CounterpartyIBAN string
+	CounterpartyName string
+	PaymentRef       string
+	Narration        string
+	ImportID         string
+	IsReconciled     bool
 }
 
 type kbcMergePair struct {
