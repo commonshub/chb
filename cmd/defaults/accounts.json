@@ -43,7 +43,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "archivedAt": "2026-05-26"
   },
   {
     "name": "💶 Monerium Checking Account",
@@ -156,7 +157,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "archivedAt": "2025-05-24"
   },
   {
     "name": "👛 Citizen Wallet",
@@ -179,7 +181,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "archivedAt": "2024-05-30"
   },
   {
     "name": "🔑 EOA (Brussels Pay) — Polygon",
@@ -202,7 +205,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "archivedAt": "2024-07-28"
   },
   {
     "name": "🏦 Monerium Savings — Polygon",
@@ -225,6 +229,7 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "archivedAt": "2026-05-26"
   }
 ]

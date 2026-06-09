@@ -230,8 +230,8 @@ type TransactionEntry struct {
 	// (metadata.category / metadata.collective). They're kept on the struct
 	// for internal access by rules, reports and reconciliation; the custom
 	// UnmarshalJSON below restores them from metadata when loading.
-	Category   string                 `json:"-"`
-	Collective string                 `json:"-"`
+	Category   string `json:"-"`
+	Collective string `json:"-"`
 	// AccountCode and PartnerID are the Odoo-side mapping resolutions
 	// computed at generate time by LookupOdooMapping. They live in
 	// metadata.accountCode / metadata.partnerId in the serialized form
@@ -239,12 +239,12 @@ type TransactionEntry struct {
 	// without re-running the lookup chain. Producers MUST keep these
 	// in sync with rules.json / odoo_mapping.json by re-running
 	// `chb generate` after edits.
-	AccountCode string `json:"-"`
-	PartnerID   int    `json:"-"`
-	Event      string                 `json:"event,omitempty"`
-	Tags       [][]string             `json:"tags,omitempty"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
-	Spread     []SpreadEntry          `json:"spread,omitempty"`
+	AccountCode string                 `json:"-"`
+	PartnerID   int                    `json:"-"`
+	Event       string                 `json:"event,omitempty"`
+	Tags        [][]string             `json:"tags,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	Spread      []SpreadEntry          `json:"spread,omitempty"`
 
 	// Internal-only (omitempty + cleared when building publicTxs). Kept on
 	// the struct so categorizer/rules/reconciliation logic and JSON fixtures
@@ -2232,18 +2232,28 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		return 0
 	}
 
-	// Build set of all tracked wallet addresses to detect internal transfers
+	// Build set of all tracked wallet addresses to detect internal transfers,
+	// plus a slug→address index used to reject stale/legacy Etherscan cache
+	// files. When an account slug is repointed to a new wallet (e.g. savings
+	// split from a hacked replacement address), old {slug}.EURe.json files may
+	// remain on disk. Generating them under the new slug double-counts the old
+	// wallet and makes Odoo journal sync drift.
 	trackedAddresses := map[string]string{} // lowercase address -> account slug
+	accountAddressBySlug := map[string]string{}
 	if settings != nil {
 		for _, acc := range settings.Finance.Accounts {
 			if acc.Address != "" {
-				trackedAddresses[strings.ToLower(acc.Address)] = acc.Slug
+				addr := strings.ToLower(acc.Address)
+				trackedAddresses[addr] = acc.Slug
+				accountAddressBySlug[strings.ToLower(acc.Slug)] = addr
 			}
 		}
 	}
 	for _, acc := range LoadAccountConfigs() {
 		if acc.Address != "" {
-			trackedAddresses[strings.ToLower(acc.Address)] = acc.Slug
+			addr := strings.ToLower(acc.Address)
+			trackedAddresses[addr] = acc.Slug
+			accountAddressBySlug[strings.ToLower(acc.Slug)] = addr
 		}
 	}
 
@@ -2513,6 +2523,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			fname := e.Name()
 			if idx := strings.Index(fname, "."); idx > 0 {
 				accountSlug = fname[:idx]
+			}
+			if expectedAddr := accountAddressBySlug[strings.ToLower(accountSlug)]; expectedAddr != "" && accountAddr != "" && !strings.EqualFold(accountAddr, expectedAddr) {
+				// Stale legacy cache from before the slug was repointed; ignore
+				// instead of attributing the old wallet's transfers to this slug.
+				continue
 			}
 
 			if tokenSymbol == "" {

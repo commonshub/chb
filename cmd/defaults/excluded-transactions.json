@@ -1,0 +1,26 @@
+{
+  "description": "On-chain transfers excluded from generated accounting data because they re-issue balances already represented by legacy EURe transfers (Monerium EURe V1→V2 migration mints).",
+  "transactions": [
+    {
+      "chain": "gnosis",
+      "hash": "0x8d0716cc5e45ae88f0e1b33c96cadab8ba69d691c4b342c3898323a3d56388fc",
+      "to": "0x6fdf0aae33e313d9c98d2aa19bcd8ef777912cbf",
+      "amount": 18984.34,
+      "reason": "EURe V1->V2 migration mint for hacked savings wallet; legacy balance already counted."
+    },
+    {
+      "chain": "gnosis",
+      "hash": "0xf56f97e76d1a31de16d413951092c1ddb5195a0ed667757a2171f1b5839aa025",
+      "to": "0x646c32cf6843540cef790f764952a959fb9c49f5",
+      "amount": 47439.75,
+      "reason": "EURe V1->V2 migration mint for CHB Safe; legacy balance already counted."
+    },
+    {
+      "chain": "gnosis",
+      "hash": "0x3d7a6db411ad48a1efef878cdb197a0925c1da864dc3678bf222c28ff0ed0e87",
+      "to": "0xf5d0181b80e1c793d98b95bff0e6cde1d27a3ef8",
+      "amount": 5000,
+      "reason": "EURe V1->V2 migration mint for EOA; legacy balance already counted."
+    }
+  ]
+}

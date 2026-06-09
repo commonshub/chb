@@ -1197,13 +1197,13 @@ func odooJournalStatements(creds *OdooCredentials, uid int, journalID int, args 
 		return fmt.Errorf("failed to fetch statements: %v", err)
 	}
 	var stmts []struct {
-		ID             int     `json:"id"`
-		Name           odooStr `json:"name"`
-		Date           odooStr `json:"date"`
-		Reference      odooStr `json:"reference"`
-		LineIDs        []int   `json:"line_ids"`
-		BalanceStart   float64 `json:"balance_start"`
-		BalanceEndReal float64 `json:"balance_end_real"`
+		ID             int           `json:"id"`
+		Name           odooStr       `json:"name"`
+		Date           odooStr       `json:"date"`
+		Reference      odooStr       `json:"reference"`
+		LineIDs        []int         `json:"line_ids"`
+		BalanceStart   odooJSONFloat `json:"balance_start"`
+		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
 	}
 	if err := json.Unmarshal(stmtResult, &stmts); err != nil {
 		return fmt.Errorf("failed to decode statements: %v", err)
@@ -1217,7 +1217,7 @@ func odooJournalStatements(creds *OdooCredentials, uid int, journalID int, args 
 				csvCell(string(s.Name)),
 				csvCell(string(s.Reference)),
 				len(s.LineIDs),
-				s.BalanceStart, s.BalanceEndReal,
+				s.BalanceStart.Float64(), s.BalanceEndReal.Float64(),
 				csvCell(currency),
 			)
 		}
@@ -1247,8 +1247,8 @@ func odooJournalStatements(creds *OdooCredentials, uid int, journalID int, args 
 			string(s.Date),
 			Truncate(name, 36),
 			fmt.Sprintf("%d", len(s.LineIDs)),
-			formatBalancePlain(s.BalanceStart, currency),
-			formatBalancePlain(s.BalanceEndReal, currency),
+			formatBalancePlain(s.BalanceStart.Float64(), currency),
+			formatBalancePlain(s.BalanceEndReal.Float64(), currency),
 		})
 	}
 	totalRow := []string{"", Pluralize(len(stmts), "statement", ""), "", "", ""}
@@ -2977,12 +2977,12 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 		return nil, fmt.Errorf("fetch statements: %v", err)
 	}
 	var raw []struct {
-		ID             int     `json:"id"`
-		Name           odooStr `json:"name"`
-		Date           odooStr `json:"date"`
-		Reference      odooStr `json:"reference"`
-		BalanceStart   float64 `json:"balance_start"`
-		BalanceEndReal float64 `json:"balance_end_real"`
+		ID             int           `json:"id"`
+		Name           odooStr       `json:"name"`
+		Date           odooStr       `json:"date"`
+		Reference      odooStr       `json:"reference"`
+		BalanceStart   odooJSONFloat `json:"balance_start"`
+		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
 	}
 	if err := json.Unmarshal(result, &raw); err != nil {
 		return nil, fmt.Errorf("parse statements: %v", err)
@@ -2994,8 +2994,8 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 			Name:           string(r.Name),
 			Date:           string(r.Date),
 			Reference:      string(r.Reference),
-			BalanceStart:   r.BalanceStart,
-			BalanceEndReal: r.BalanceEndReal,
+			BalanceStart:   r.BalanceStart.Float64(),
+			BalanceEndReal: r.BalanceEndReal.Float64(),
 		})
 	}
 	return out, nil

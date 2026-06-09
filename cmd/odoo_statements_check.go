@@ -22,6 +22,26 @@ func (s *odooStr) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// odooJSONFloat tolerates Odoo's habit of returning `false` for unset numeric
+// fields. Statement repair must not abort just because an old/incomplete
+// account.bank.statement has nullable balances represented as false.
+type odooJSONFloat float64
+
+func (f *odooJSONFloat) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "false" || string(b) == "null" {
+		*f = 0
+		return nil
+	}
+	var v float64
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*f = odooJSONFloat(v)
+	return nil
+}
+
+func (f odooJSONFloat) Float64() float64 { return float64(f) }
+
 // StatementBalanceIssue describes a single invariant violation on an Odoo
 // bank statement.
 //
@@ -47,13 +67,13 @@ type StatementBalanceIssue struct {
 	LineSum          float64
 	RunningBalance   float64 // BalanceStart + LineSum
 	LineCount        int
-	Kind             string  // "balance_mismatch" | "chain_gap" | "duplicate_open_fee_lines"
-	StatementRef     string  // Odoo statement reference field (Stripe payout ID for Stripe journals)
-	PreviousEndReal  float64 // for chain_gap only
-	PreviousStmtID   int     // for chain_gap only
-	PreviousStmtName string  // for chain_gap only
-	PreviousStmtDate string  // for chain_gap only
-	PreviousStmtRef  string  // for chain_gap only
+	Kind             string             // "balance_mismatch" | "chain_gap" | "duplicate_open_fee_lines"
+	StatementRef     string             // Odoo statement reference field (Stripe payout ID for Stripe journals)
+	PreviousEndReal  float64            // for chain_gap only
+	PreviousStmtID   int                // for chain_gap only
+	PreviousStmtName string             // for chain_gap only
+	PreviousStmtDate string             // for chain_gap only
+	PreviousStmtRef  string             // for chain_gap only
 	DuplicateLines   []DuplicateFeeLine // for duplicate_open_fee_lines only
 }
 
@@ -86,12 +106,12 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 		return nil, fmt.Errorf("fetch statements: %v", err)
 	}
 	var stmts []struct {
-		ID             int     `json:"id"`
-		Name           odooStr `json:"name"`
-		Reference      odooStr `json:"reference"`
-		Date           odooStr `json:"date"`
-		BalanceStart   float64 `json:"balance_start"`
-		BalanceEndReal float64 `json:"balance_end_real"`
+		ID             int           `json:"id"`
+		Name           odooStr       `json:"name"`
+		Reference      odooStr       `json:"reference"`
+		Date           odooStr       `json:"date"`
+		BalanceStart   odooJSONFloat `json:"balance_start"`
+		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
 	}
 	if err := json.Unmarshal(stmtResult, &stmts); err != nil {
 		return nil, fmt.Errorf("parse statements: %v", err)
@@ -112,19 +132,21 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 	var prevName, prevDate, prevRef string
 	var hasPrev bool
 	for _, s := range stmts {
+		balanceStart := s.BalanceStart.Float64()
+		balanceEndReal := s.BalanceEndReal.Float64()
 		lineSum := lineSums[s.ID]
 		lineCount := lineCounts[s.ID]
-		running := s.BalanceStart + lineSum
+		running := balanceStart + lineSum
 
-		if math.Abs(running-s.BalanceEndReal) > 0.005 {
+		if math.Abs(running-balanceEndReal) > 0.005 {
 			issues = append(issues, StatementBalanceIssue{
 				JournalID:      journalID,
 				StatementID:    s.ID,
 				StatementName:  string(s.Name),
 				StatementRef:   string(s.Reference),
 				Date:           string(s.Date),
-				BalanceStart:   s.BalanceStart,
-				BalanceEndReal: s.BalanceEndReal,
+				BalanceStart:   balanceStart,
+				BalanceEndReal: balanceEndReal,
 				LineSum:        lineSum,
 				RunningBalance: running,
 				LineCount:      lineCount,
@@ -132,15 +154,15 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 			})
 		}
 
-		if hasPrev && math.Abs(s.BalanceStart-prevEndReal) > 0.005 {
+		if hasPrev && math.Abs(balanceStart-prevEndReal) > 0.005 {
 			issues = append(issues, StatementBalanceIssue{
 				JournalID:        journalID,
 				StatementID:      s.ID,
 				StatementName:    string(s.Name),
 				StatementRef:     string(s.Reference),
 				Date:             string(s.Date),
-				BalanceStart:     s.BalanceStart,
-				BalanceEndReal:   s.BalanceEndReal,
+				BalanceStart:     balanceStart,
+				BalanceEndReal:   balanceEndReal,
 				LineSum:          lineSum,
 				RunningBalance:   running,
 				LineCount:        lineCount,
@@ -153,7 +175,7 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 			})
 		}
 
-		prevEndReal = s.BalanceEndReal
+		prevEndReal = balanceEndReal
 		prevID = s.ID
 		prevName = string(s.Name)
 		prevDate = string(s.Date)
@@ -173,7 +195,7 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 				Name, Date, Reference string
 				BalanceStart          float64
 				BalanceEndReal        float64
-			}{string(s.Name), string(s.Date), string(s.Reference), s.BalanceStart, s.BalanceEndReal}
+			}{string(s.Name), string(s.Date), string(s.Reference), s.BalanceStart.Float64(), s.BalanceEndReal.Float64()}
 		}
 		for stmtID, lines := range dupes {
 			meta := stmtMeta[stmtID]
@@ -218,7 +240,7 @@ func findDuplicateOpenFeeLines(creds *OdooCredentials, uid int, journalID int) (
 	}
 	var rows []struct {
 		ID             int           `json:"id"`
-		Amount         float64       `json:"amount"`
+		Amount         odooJSONFloat `json:"amount"`
 		Date           odooStr       `json:"date"`
 		UniqueImportID odooStr       `json:"unique_import_id"`
 		Statement      []interface{} `json:"statement_id"` // [id, name] or false
@@ -238,7 +260,7 @@ func findDuplicateOpenFeeLines(creds *OdooCredentials, uid int, journalID int) (
 		stmtID := int(idF)
 		byStmt[stmtID] = append(byStmt[stmtID], DuplicateFeeLine{
 			ID:       r.ID,
-			Amount:   r.Amount,
+			Amount:   r.Amount.Float64(),
 			Date:     string(r.Date),
 			ImportID: string(r.UniqueImportID),
 		})
@@ -270,7 +292,7 @@ func odooLineSumsByStatement(creds *OdooCredentials, uid int, journalID int) (ma
 	}
 	var groups []struct {
 		Statement      []interface{} `json:"statement_id"` // [id, name]
-		AmountSum      float64       `json:"amount"`
+		AmountSum      odooJSONFloat `json:"amount"`
 		StatementCount int           `json:"__count"`
 	}
 	if err := json.Unmarshal(result, &groups); err != nil {
@@ -287,7 +309,7 @@ func odooLineSumsByStatement(creds *OdooCredentials, uid int, journalID int) (ma
 			continue
 		}
 		id := int(idF)
-		sums[id] = g.AmountSum
+		sums[id] = g.AmountSum.Float64()
 		counts[id] = g.StatementCount
 	}
 	return sums, counts, nil

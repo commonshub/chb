@@ -27,6 +27,7 @@ type AccountConfig struct {
 	Currency      string `json:"currency,omitempty"`      // EUR, EURe, etc.
 	WalletType    string `json:"walletType,omitempty"`    // "eoa" or "safe"
 	OdooJournalID int    `json:"odooJournalId,omitempty"` // linked Odoo bank journal ID
+	ArchivedAt    string `json:"archivedAt,omitempty"`    // date after which the account is no longer active (YYYY-MM-DD)
 	Token         *struct {
 		Address  string `json:"address"`
 		Name     string `json:"name"`
@@ -79,9 +80,9 @@ func LoadAccountConfigs() []AccountConfig {
 		return nil
 	}
 	migrateLegacyOdooJournalNames(data)
-	// The account↔Odoo-journal mapping is instance-specific and lives in
-	// odoo-journals.json (not the force-overwritten accounts.json); overlay it
-	// so downstream readers keep using acc.OdooJournalID.
+	// The account↔Odoo-journal mapping lives in odoo-journals.json (not the
+	// force-overwritten accounts.json); overlay it so downstream readers keep
+	// using acc.OdooJournalID.
 	applyOdooJournalLinks(accounts)
 	return accounts
 }
@@ -139,14 +140,15 @@ func ToFinanceAccounts(configs []AccountConfig) []FinanceAccount {
 	var accounts []FinanceAccount
 	for _, c := range configs {
 		fa := FinanceAccount{
-			Name:      c.Name,
-			Slug:      c.Slug,
-			Provider:  c.Provider,
-			Chain:     c.Chain,
-			ChainID:   c.ChainID,
-			Address:   c.Address,
-			AccountID: c.AccountID,
-			Currency:  c.Currency,
+			Name:       c.Name,
+			Slug:       c.Slug,
+			Provider:   c.Provider,
+			Chain:      c.Chain,
+			ChainID:    c.ChainID,
+			Address:    c.Address,
+			AccountID:  c.AccountID,
+			Currency:   c.Currency,
+			ArchivedAt: c.ArchivedAt,
 		}
 		if c.Token != nil {
 			fa.Token = &struct {

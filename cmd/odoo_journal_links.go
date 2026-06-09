@@ -4,25 +4,27 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
-// OdooJournalLinks maps an Odoo instance to the per-account journal mapping for
-// that instance: instance → accountIdentityKey → Odoo bank journal ID.
+// OdooJournalLinks maps stable account identity keys to Odoo bank journal IDs.
 //
 // Why this lives outside accounts.json:
 //
-//   - The account↔journal mapping is INSTANCE-SPECIFIC. Journal IDs differ
-//     between Odoo databases (test vs prod), so a single shared accounts.json
-//     can't carry a value that is correct for everyone.
 //   - It is mutated LOCALLY by `chb accounts <slug> link`. accounts.json is
 //     force-overwritten from the org-wide embedded default on every bootstrap
 //     (see forceOverwriteDefaults), which would silently revert any link.
+//   - The account↔journal mapping belongs to the account identity itself, not
+//     to the currently configured Odoo instance. CHB's Odoo journals are copied
+//     across environments with stable IDs, so using the Odoo DB name as a scope
+//     makes links disappear when switching between test/prod/mirrors.
 //
-// The inner key is a STABLE account identity (IBAN/address), not the slug: a
-// slug like "savings" can be reassigned to a different real account over time,
-// but its IBAN/address is durable, so the link follows the actual account.
-type OdooJournalLinks map[string]map[string]int
+// The key is a STABLE account identity (IBAN/address), not the slug: a slug like
+// "savings" can be reassigned to a different real account over time, but its
+// IBAN/address is durable, so the link follows the actual account.
+type OdooJournalLinks map[string]int
 
 const odooJournalLinksFileName = "odoo-journals.json"
 
@@ -31,13 +33,47 @@ func odooJournalLinksPath() string { return settingsFilePath(odooJournalLinksFil
 // loadOdooJournalLinks reads odoo-journals.json. Returns an empty (non-nil) map
 // when the file is missing or unreadable so callers can index it safely.
 func loadOdooJournalLinks() OdooJournalLinks {
-	out := OdooJournalLinks{}
 	data, err := os.ReadFile(odooJournalLinksPath())
 	if err != nil {
-		return out
-	}
-	if json.Unmarshal(data, &out) != nil || out == nil {
 		return OdooJournalLinks{}
+	}
+	return parseOdooJournalLinks(data)
+}
+
+func parseOdooJournalLinks(data []byte) OdooJournalLinks {
+	var flat OdooJournalLinks
+	if json.Unmarshal(data, &flat) == nil && flat != nil {
+		return flat
+	}
+
+	// Backward compatibility for the short-lived instance-scoped schema:
+	// {"db-name": {"identity": 47}}. If the current Odoo instance is present,
+	// prefer its entries, then fill any remaining keys from other instances.
+	var scoped map[string]map[string]int
+	if json.Unmarshal(data, &scoped) != nil || scoped == nil {
+		return OdooJournalLinks{}
+	}
+	out := OdooJournalLinks{}
+	if instance := currentOdooInstanceKey(); instance != "" {
+		for key, id := range scoped[instance] {
+			if id > 0 {
+				out[key] = id
+			}
+		}
+	}
+	instances := make([]string, 0, len(scoped))
+	for instance := range scoped {
+		instances = append(instances, instance)
+	}
+	sort.Strings(instances)
+	for _, instance := range instances {
+		for key, id := range scoped[instance] {
+			if id > 0 {
+				if _, exists := out[key]; !exists {
+					out[key] = id
+				}
+			}
+		}
 	}
 	return out
 }
@@ -54,28 +90,35 @@ func saveOdooJournalLinks(links OdooJournalLinks) error {
 }
 
 // setOdooJournalLink records (or replaces) the journal ID for one account
-// identity under one Odoo instance and persists the file.
-func setOdooJournalLink(instance, identityKey string, journalID int) error {
-	if instance == "" || identityKey == "" {
+// identity and persists the file. The instance parameter is retained for call
+// site compatibility but deliberately ignored: account↔journal links are global.
+func setOdooJournalLink(_ string, identityKey string, journalID int) error {
+	if identityKey == "" {
 		return nil
 	}
 	links := loadOdooJournalLinks()
-	if links[instance] == nil {
-		links[instance] = map[string]int{}
-	}
-	links[instance][identityKey] = journalID
+	links[identityKey] = journalID
 	return saveOdooJournalLinks(links)
 }
 
 // accountIdentityKey returns a key that survives slug reuse by preferring the
-// account's durable identity: IBAN, then on-chain address, then Stripe account
-// ID, falling back to the slug only when nothing more stable exists.
+// account's durable identity: IBAN, then chain-scoped on-chain address, then
+// Stripe account ID, falling back to the slug only when nothing more stable
+// exists. Chain-scoping avoids linking the same EVM address on two different
+// networks to the same Odoo journal.
 func accountIdentityKey(acc AccountConfig) string {
 	if iban := normalizeIBAN(acc.IBAN); iban != "" {
 		return "iban:" + iban
 	}
 	if acc.Address != "" {
-		return "address:" + strings.ToLower(strings.TrimSpace(acc.Address))
+		addr := strings.ToLower(strings.TrimSpace(acc.Address))
+		if acc.ChainID > 0 {
+			return "ethereum:" + strconv.Itoa(acc.ChainID) + ":address:" + addr
+		}
+		if chain := strings.ToLower(strings.TrimSpace(acc.Chain)); chain != "" {
+			return chain + ":address:" + addr
+		}
+		return legacyAddressIdentityKey(acc)
 	}
 	if acc.AccountID != "" {
 		return "stripe:" + strings.TrimSpace(acc.AccountID)
@@ -83,10 +126,15 @@ func accountIdentityKey(acc AccountConfig) string {
 	return "slug:" + strings.ToLower(strings.TrimSpace(acc.Slug))
 }
 
-// currentOdooInstanceKey identifies the configured Odoo database. It works both
-// at runtime (after LoadEnvFromConfig populates the environment) and during
-// settings bootstrap (before env load) by falling back to reading config.env
-// directly. Returns "" when no Odoo instance is configured.
+func legacyAddressIdentityKey(acc AccountConfig) string {
+	if acc.Address == "" {
+		return ""
+	}
+	return "address:" + strings.ToLower(strings.TrimSpace(acc.Address))
+}
+
+// currentOdooInstanceKey identifies the configured Odoo database. It is used
+// only to migrate old instance-scoped odoo-journals.json files.
 func currentOdooInstanceKey() string {
 	db := os.Getenv("ODOO_DATABASE")
 	url := os.Getenv("ODOO_URL")
@@ -108,39 +156,43 @@ func currentOdooInstanceKey() string {
 	return ""
 }
 
-// applyOdooJournalLinks overlays the journal ID for the currently-configured
-// Odoo instance onto each account, so the rest of the code keeps reading
-// acc.OdooJournalID unchanged. A no-op when Odoo isn't configured or the
-// instance has no recorded links.
+// applyOdooJournalLinks overlays the global account↔journal links onto each
+// account, so the rest of the code keeps reading acc.OdooJournalID unchanged.
 func applyOdooJournalLinks(accounts []AccountConfig) {
-	instance := currentOdooInstanceKey()
-	if instance == "" {
-		return
-	}
-	m := loadOdooJournalLinks()[instance]
+	m := loadOdooJournalLinks()
 	if len(m) == 0 {
 		return
+	}
+	legacyCounts := map[string]int{}
+	for _, acc := range accounts {
+		if key := legacyAddressIdentityKey(acc); key != "" {
+			legacyCounts[key]++
+		}
 	}
 	for i := range accounts {
 		if id, ok := m[accountIdentityKey(accounts[i])]; ok && id > 0 {
 			accounts[i].OdooJournalID = id
+			continue
+		}
+		// Backward compatibility for links saved before chain-scoped on-chain
+		// identities existed. Only apply the legacy address key when it identifies
+		// exactly one configured account; otherwise the link is ambiguous.
+		if key := legacyAddressIdentityKey(accounts[i]); key != "" && legacyCounts[key] == 1 {
+			if id, ok := m[key]; ok && id > 0 {
+				accounts[i].OdooJournalID = id
+			}
 		}
 	}
 }
 
 // migrateOdooJournalLinks is a one-shot move of per-account journal IDs out of
-// accounts.json and into odoo-journals.json under the current instance. It runs
-// during bootstrap BEFORE the reconciler force-overwrites accounts.json (which
-// would otherwise discard the legacy IDs). No-op once the file exists, when no
-// Odoo instance is configured, or when accounts.json carries no IDs.
+// accounts.json and into odoo-journals.json. It runs during bootstrap BEFORE the
+// reconciler force-overwrites accounts.json (which would otherwise discard the
+// legacy IDs). No-op once the file exists or when accounts.json carries no IDs.
 func migrateOdooJournalLinks(dir string) {
 	linksPath := filepath.Join(dir, odooJournalLinksFileName)
 	if _, err := os.Stat(linksPath); err == nil {
 		return // already migrated
-	}
-	instance := currentOdooInstanceKey()
-	if instance == "" {
-		return // can't attribute IDs to an instance — leave them for a later run
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "accounts.json"))
 	if err != nil {
@@ -150,7 +202,7 @@ func migrateOdooJournalLinks(dir string) {
 	if json.Unmarshal(data, &accounts) != nil {
 		return
 	}
-	m := map[string]int{}
+	m := OdooJournalLinks{}
 	for _, acc := range accounts {
 		if acc.OdooJournalID > 0 {
 			m[accountIdentityKey(acc)] = acc.OdooJournalID
@@ -159,5 +211,5 @@ func migrateOdooJournalLinks(dir string) {
 	if len(m) == 0 {
 		return
 	}
-	_ = saveOdooJournalLinks(OdooJournalLinks{instance: m})
+	_ = saveOdooJournalLinks(m)
 }

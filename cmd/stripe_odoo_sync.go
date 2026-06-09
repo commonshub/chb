@@ -2772,7 +2772,7 @@ func statementLineSum(creds *OdooCredentials, uid int, stmtID int) (float64, err
 		return 0, err
 	}
 	var groups []struct {
-		Amount float64 `json:"amount"`
+		Amount odooJSONFloat `json:"amount"`
 	}
 	if err := json.Unmarshal(result, &groups); err != nil {
 		return 0, err
@@ -2780,7 +2780,7 @@ func statementLineSum(creds *OdooCredentials, uid int, stmtID int) (float64, err
 	if len(groups) == 0 {
 		return 0, nil
 	}
-	return groups[0].Amount, nil
+	return groups[0].Amount.Float64(), nil
 }
 
 func createOpenStatement(creds *OdooCredentials, uid int, journalID int, balanceStart float64) (int, error) {

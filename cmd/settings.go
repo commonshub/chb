@@ -140,7 +140,9 @@ func migrateLegacySettingsSchemas(dir string) {
 // for files meant to be the org-wide source of truth. accounts.json is the
 // canonical account list shared across machines.
 var forceOverwriteDefaults = map[string]bool{
-	"accounts.json": true,
+	"accounts.json":              true,
+	"excluded-transactions.json": true,
+	"odoo-journals.json":         true,
 }
 
 // forceOverwriteDefaultsEnabled gates the force-overwrite behavior. Tests that
@@ -373,15 +375,16 @@ type FinanceSettings struct {
 
 // FinanceAccount represents a single finance account
 type FinanceAccount struct {
-	Name      string `json:"name"`
-	Slug      string `json:"slug"`
-	Provider  string `json:"provider"`
-	Chain     string `json:"chain,omitempty"`
-	ChainID   int    `json:"chainId,omitempty"`
-	Address   string `json:"address,omitempty"`
-	AccountID string `json:"accountId,omitempty"`
-	Currency  string `json:"currency,omitempty"`
-	Token     *struct {
+	Name       string `json:"name"`
+	Slug       string `json:"slug"`
+	Provider   string `json:"provider"`
+	Chain      string `json:"chain,omitempty"`
+	ChainID    int    `json:"chainId,omitempty"`
+	Address    string `json:"address,omitempty"`
+	AccountID  string `json:"accountId,omitempty"`
+	Currency   string `json:"currency,omitempty"`
+	ArchivedAt string `json:"archivedAt,omitempty"`
+	Token      *struct {
 		Address  string `json:"address"`
 		Name     string `json:"name"`
 		Symbol   string `json:"symbol"`

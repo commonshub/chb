@@ -1877,13 +1877,14 @@ func AccountOdooLink(slug string, args []string) error {
 
 	CacheOdooJournalName(selected.ID, selected.Name)
 
-	// The link is instance-specific and keyed by the account's stable identity,
-	// so it lives in odoo-journals.json (not the force-overwritten accounts.json).
+	// The link is keyed by the account's stable identity, so it lives in
+	// odoo-journals.json (not the force-overwritten accounts.json) and applies
+	// regardless of the currently configured Odoo instance.
 	if err := setOdooJournalLink(creds.DB, accountIdentityKey(configs[idx]), selected.ID); err != nil {
 		return fmt.Errorf("failed to save link: %v", err)
 	}
 
-	fmt.Printf("\n  %s✓ Linked '%s' → Odoo journal '%s' (#%d) on instance '%s'%s\n\n", Fmt.Green, configs[idx].Name, selected.Name, selected.ID, creds.DB, Fmt.Reset)
+	fmt.Printf("\n  %s✓ Linked '%s' → Odoo journal '%s' (#%d)%s\n\n", Fmt.Green, configs[idx].Name, selected.Name, selected.ID, Fmt.Reset)
 	return nil
 }
 
