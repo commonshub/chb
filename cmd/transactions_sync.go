@@ -193,6 +193,21 @@ func TransactionsSync(args []string) (int, error) {
 				for _, job := range etherscanJobs {
 					acc := job.acc
 					fileToken := job.fileToken
+					// A scope (account + token contract) that has never been fully
+					// backfilled gets its complete on-chain history saved on this
+					// run; once marked, later non-ranged syncs stay incremental.
+					// Explicit ranges (--month / positional / --force) are honoured
+					// as-is and never trigger a backfill.
+					scope := acc.Slug + "." + fileToken
+					allowBackfill := !force && !posFound && monthFilter == "" &&
+						!isScopeBackfilled(DataDir(), acc.Chain, scope)
+					effStartMonth, effEndMonth := startMonth, endMonth
+					if allowBackfill {
+						// No lower bound → save every month with transfers, down to
+						// the earliest; extend the upper bound to the current month.
+						effStartMonth = "0000-00"
+						effEndMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
+					}
 					if !accountSyncMode {
 						fmt.Printf("  %s%s%s (%s/%s)\n", Fmt.Bold, acc.Name, Fmt.Reset, acc.Chain, acc.Token.Symbol)
 						fmt.Printf("    %sAddress:%s %s\n", Fmt.Dim, Fmt.Reset, acc.Address)
@@ -201,8 +216,10 @@ func TransactionsSync(args []string) (int, error) {
 						}
 					}
 
-					// Check if we can skip the full fetch by peeking at the latest tx
-					if !force {
+					// Check if we can skip the full fetch by peeking at the latest tx.
+					// Never skip while a backfill is pending — historical months may
+					// be missing even when the latest tx is unchanged.
+					if !force && !allowBackfill {
 						peekHash, peekErr := etherscansource.PeekLatest(etherscanAccount(acc), apiKey)
 						if peekErr == nil {
 							cachedLatest := etherscansource.LatestCachedTxHashGlobal(DataDir(), acc.Chain, acc.Slug, acc.Address, fileToken)
@@ -242,7 +259,7 @@ func TransactionsSync(args []string) (int, error) {
 						fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
 					}
 					newTransfers := countNewTokenTransfers(existingKeys, transfers)
-					if newTransfers == 0 && defaultIncremental {
+					if newTransfers == 0 && defaultIncremental && !allowBackfill {
 						printBlockchainNewTxStatus(0, accountSyncMode, "")
 						time.Sleep(400 * time.Millisecond)
 						continue
@@ -258,7 +275,7 @@ func TransactionsSync(args []string) (int, error) {
 
 					saved := 0
 					for ym, monthTxs := range byMonth {
-						if ym < startMonth || ym > endMonth {
+						if ym < effStartMonth || ym > effEndMonth {
 							continue
 						}
 
@@ -300,6 +317,13 @@ func TransactionsSync(args []string) (int, error) {
 
 					if saved > 0 && !accountSyncMode {
 						fmt.Printf("    %s✓ Saved %d months%s\n", Fmt.Green, saved, Fmt.Reset)
+					}
+
+					// The full transfer list was fetched and every month within it
+					// saved (or already cached), so this scope is now fully
+					// backfilled — future syncs can stay incremental.
+					if allowBackfill {
+						markScopeBackfilled(DataDir(), acc.Chain, scope)
 					}
 
 					if !noNostr && acc.ChainID != 0 && len(transfers) > 0 && shouldRunBlockchainEnrichment(acc.Slug, enrichmentRefresh, blockchainChangedSlugs) {
@@ -1179,6 +1203,23 @@ func readLastPeekHash(dataDir, chain, slug string) string {
 // writeLastPeekHash stores the latest tx hash so we can compare on next sync.
 func writeLastPeekHash(dataDir, chain, slug, hash string) {
 	_ = writeDataFile(peekHashPath(dataDir, chain, slug), []byte(hash+"\n"))
+}
+
+// backfilledMarkerPath is the marker recording that a (chain, scope) pull-job —
+// where scope is "slug.fileToken" — has had its full on-chain history fetched
+// and saved at least once. Until the marker exists the next non-ranged sync
+// backfills every month down to the earliest transfer; afterwards syncs stay
+// incremental (peek + recent window).
+func backfilledMarkerPath(dataDir, chain, scope string) string {
+	return filepath.Join(dataDir, "latest", ".cache", "etherscan", strings.ToLower(chain), "backfilled-"+scope)
+}
+
+func isScopeBackfilled(dataDir, chain, scope string) bool {
+	return fileExists(backfilledMarkerPath(dataDir, chain, scope))
+}
+
+func markScopeBackfilled(dataDir, chain, scope string) {
+	_ = writeDataFile(backfilledMarkerPath(dataDir, chain, scope), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"))
 }
 
 func printTransactionsSyncHelp() {
