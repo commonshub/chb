@@ -3427,7 +3427,7 @@ func odooJournalsSyncAll(args []string) error {
 	}
 	var targets []target
 	for _, acc := range configs {
-		if acc.OdooJournalID > 0 {
+		if acc.OdooJournalID > 0 && !acc.IsOdooSourceOfTruth() {
 			targets = append(targets, target{slug: acc.Slug, journalID: acc.OdooJournalID})
 		}
 	}

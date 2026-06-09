@@ -2641,6 +2641,9 @@ func AccountOdooPush(slug string, args []string) error {
 	if acc.OdooJournalID == 0 {
 		return fmt.Errorf("account '%s' has no linked Odoo journal. Run: chb accounts %s link", slug, slug)
 	}
+	if acc.IsOdooSourceOfTruth() {
+		return fmt.Errorf("account '%s' is marked odooSourceOfTruth; Odoo is authoritative, so CHB will not push local transactions into journal #%d (use pull/cache commands instead)", slug, acc.OdooJournalID)
+	}
 
 	creds, err := ResolveOdooCredentials()
 	if err != nil {

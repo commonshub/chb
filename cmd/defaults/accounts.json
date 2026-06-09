@@ -134,7 +134,8 @@
     "slug": "kbc",
     "provider": "kbcbrussels",
     "iban": "BE46734072238636",
-    "currency": "EUR"
+    "currency": "EUR",
+    "odooSourceOfTruth": true
   },
   {
     "name": "🔑 EOA (Brussels Pay)",

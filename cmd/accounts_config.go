@@ -16,19 +16,20 @@ import (
 // Display callers should use OdooJournalName(id) which reads from a local
 // cache populated by sync runs.
 type AccountConfig struct {
-	Name          string `json:"name"`
-	Slug          string `json:"slug"`
-	Provider      string `json:"provider"`        // stripe, etherscan, monerium, kbcbrussels
-	Chain         string `json:"chain,omitempty"` // gnosis, celo, ethereum
-	ChainID       int    `json:"chainId,omitempty"`
-	Address       string `json:"address,omitempty"`       // wallet address
-	AccountID     string `json:"accountId,omitempty"`     // stripe account ID
-	IBAN          string `json:"iban,omitempty"`          // bank account IBAN (kbcbrussels, …)
-	Currency      string `json:"currency,omitempty"`      // EUR, EURe, etc.
-	WalletType    string `json:"walletType,omitempty"`    // "eoa" or "safe"
-	OdooJournalID int    `json:"odooJournalId,omitempty"` // linked Odoo bank journal ID
-	ArchivedAt    string `json:"archivedAt,omitempty"`    // date after which the account is no longer active (YYYY-MM-DD)
-	Token         *struct {
+	Name              string `json:"name"`
+	Slug              string `json:"slug"`
+	Provider          string `json:"provider"`        // stripe, etherscan, monerium, kbcbrussels
+	Chain             string `json:"chain,omitempty"` // gnosis, celo, ethereum
+	ChainID           int    `json:"chainId,omitempty"`
+	Address           string `json:"address,omitempty"`           // wallet address
+	AccountID         string `json:"accountId,omitempty"`         // stripe account ID
+	IBAN              string `json:"iban,omitempty"`              // bank account IBAN (kbcbrussels, …)
+	Currency          string `json:"currency,omitempty"`          // EUR, EURe, etc.
+	WalletType        string `json:"walletType,omitempty"`        // "eoa" or "safe"
+	OdooJournalID     int    `json:"odooJournalId,omitempty"`     // linked Odoo bank journal ID
+	OdooSourceOfTruth bool   `json:"odooSourceOfTruth,omitempty"` // true when Odoo journal lines are authoritative and CHB must not push local txs into it
+	ArchivedAt        string `json:"archivedAt,omitempty"`        // date after which the account is no longer active (YYYY-MM-DD)
+	Token             *struct {
 		Address  string `json:"address"`
 		Name     string `json:"name"`
 		Symbol   string `json:"symbol"`
@@ -58,6 +59,13 @@ func (a *AccountConfig) IsSafe() bool {
 		return false
 	}
 	return strings.EqualFold(a.WalletType, "safe")
+}
+
+// IsOdooSourceOfTruth returns true when the linked Odoo journal is authoritative
+// for this account. Such accounts are still pulled/cached from Odoo, but CHB
+// must not push locally generated transactions into their journal.
+func (a *AccountConfig) IsOdooSourceOfTruth() bool {
+	return a != nil && a.OdooSourceOfTruth
 }
 
 func accountsConfigPath() string {
