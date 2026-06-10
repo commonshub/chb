@@ -273,11 +273,25 @@ func syncStripeChronological(
 		})
 	}
 
+	// Fees seen on already-pushed (duplicate) transactions are tracked
+	// separately: they're already represented in Odoo (their payout's fee
+	// line, or the rolling open-statement fee line), so they must never feed
+	// the additive open-statement update below. They're only consulted when
+	// rebuilding a payout fee line that is missing entirely.
+	dupFeeCents := int64(0)
+	dupFeeBTs := 0
+	dupFeeStartDate := ""
+	dupFeeEndDate := ""
+
 	resetFeeAccumulator := func() {
 		feeCents = 0
 		feeBTs = 0
 		feeStartDate = ""
 		feeEndDate = ""
+		dupFeeCents = 0
+		dupFeeBTs = 0
+		dupFeeStartDate = ""
+		dupFeeEndDate = ""
 	}
 	appendAggregateFeeLine := func(paymentRef, importID, date string) {
 		if feeCents == 0 {
@@ -439,6 +453,71 @@ func syncStripeChronological(
 				}
 			} else if dryRun {
 				addDryRunPlan("skip", date, paymentRef, bt.CustomerName, accountCode, amount, importID)
+			}
+			// Keep the payout fee aggregation running across duplicates so a
+			// missing aggregate ":fees" line can be rebuilt. A payout's fee
+			// line may be absent even though all its transactions were pushed
+			// (e.g. its creation was blocked by a since-resolved cross-journal
+			// import-id conflict) — and it can only be reconstructed while
+			// walking the full transaction stream. Only on --history runs:
+			// that's when existingIDs holds the journal's complete id set.
+			if useHistory {
+				if cents, ok := stripeImplicitChargeFeeCents(bt); ok {
+					dupFeeCents += cents
+					dupFeeBTs++
+					if dupFeeStartDate == "" {
+						dupFeeStartDate = date
+					}
+					dupFeeEndDate = date
+				}
+				if stripePayoutClosesStatement(bt) {
+					feeKey := bt.PayoutID
+					if feeKey == "" {
+						feeKey = bt.ID
+					}
+					feeImportID := fmt.Sprintf("stripe:%s:%s:fees", strings.ToLower(acc.AccountID), strings.ToLower(feeKey))
+					// The whole period's fees: new transactions accumulate in
+					// feeCents (normal path), already-pushed ones in dupFeeCents.
+					totalCents := feeCents + dupFeeCents
+					if !existingIDs[feeImportID] && totalCents != 0 {
+						// Create the missing fee line without a statement_id —
+						// it belongs to a long-closed period, not the open
+						// statement; `chb odoo journals <id> fix` attaches
+						// loose lines to the right statement by date.
+						start, end := feeStartDate, feeEndDate
+						if start == "" || (dupFeeStartDate != "" && dupFeeStartDate < start) {
+							start = dupFeeStartDate
+						}
+						if end == "" || (dupFeeEndDate != "" && dupFeeEndDate > end) {
+							end = dupFeeEndDate
+						}
+						amount := stripeAggregateFeeLineAmount(totalCents)
+						narration := buildStripeAggregateFeeNarration(acc, feeImportID, totalCents, feeBTs+dupFeeBTs, start, end)
+						ref := fmt.Sprintf("Stripe fees for payout %s", feeKey)
+						if start != "" && end != "" && start != end {
+							ref = fmt.Sprintf("%s (%s to %s)", ref, start, end)
+						}
+						accountCode := ""
+						if inlineAccounts {
+							accountCode = stripeFeeOdooAccountCode(odooMappings)
+						}
+						if dryRun {
+							addDryRunPlan("create", date, ref, "", accountCode, amount, feeImportID)
+							stats.LinesCreated++
+						} else {
+							batch = append(batch, map[string]interface{}{
+								"journal_id":       acc.OdooJournalID,
+								"date":             date,
+								"payment_ref":      ref,
+								"amount":           amount,
+								"unique_import_id": feeImportID,
+								"narration":        narration,
+							})
+							batchAccountCodes = append(batchAccountCodes, accountCode)
+						}
+					}
+					resetFeeAccumulator()
+				}
 			}
 			stats.LinesSkipped++
 			skippedBTs++

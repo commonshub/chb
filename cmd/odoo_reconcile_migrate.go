@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -678,6 +679,12 @@ func prepareTargetStatementMoveLineForExactReconcile(creds *OdooCredentials, uid
 	return targetLineID, nil
 }
 
+// errNoReconciledMoveLines means the move behind a statement line carries no
+// reconciled move lines — there is nothing to unreconcile. Odoo can still
+// flag such a line is_reconciled (e.g. matched straight against suspense), so
+// callers that only need the line to be writable should treat this as benign.
+var errNoReconciledMoveLines = errors.New("source has no reconciled move lines")
+
 func unreconcileStatementLineMove(creds *OdooCredentials, uid int, line odooStatementLineForReconcile) error {
 	if line.MoveID == 0 {
 		return fmt.Errorf("source statement line has no move")
@@ -701,7 +708,7 @@ func unreconcileStatementLineMove(creds *OdooCredentials, uid int, line odooStat
 		}
 	}
 	if len(ids) == 0 {
-		return fmt.Errorf("source has no reconciled move lines")
+		return errNoReconciledMoveLines
 	}
 	_, err = odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.move.line", "remove_move_reconcile",

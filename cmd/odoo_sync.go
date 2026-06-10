@@ -3386,6 +3386,15 @@ func odooJournalFullSync(creds *OdooCredentials, uid int, journalID int, syncArg
 		return fmt.Errorf("pull %s: %v", acc.Slug, err)
 	}
 
+	// 1b. Refresh the local mirror of the journal's Odoo lines so the push
+	// plans against Odoo's current state. Without this, any change made in
+	// Odoo since the last pull trips the push's freshness guard and the sync
+	// aborts with "run `chb odoo pull` first" — defeating the point of a
+	// one-command sync. The refresh is watermark-incremental, so it's cheap.
+	if err := refreshOdooJournalCacheIfStale(creds, uid, journalID); err != nil {
+		return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
+	}
+
 	// 2. Push local → Odoo (+ reconcile), honouring --reset.
 	fmt.Printf("\n  %s② Pushing local → Odoo journal #%d…%s\n", Fmt.Dim, journalID, Fmt.Reset)
 	if err := odooJournalPushWithReset(creds, uid, journalID, syncArgs); err != nil {

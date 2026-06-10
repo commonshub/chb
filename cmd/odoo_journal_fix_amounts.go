@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -20,6 +22,30 @@ type odooAmountFix struct {
 	IsReconciled bool
 }
 
+// expectedOdooMainLineAmount mirrors what the push writes on the MAIN
+// statement line for a transaction. Stripe charge-like transactions
+// (charge/payment/refund — see stripeStatementLineAmount) are pushed with
+// the signed GROSS amount; their fees are carried by the per-payout
+// aggregate ":fees" line, so expecting the net here would double-count
+// every fee once "fixed". Everything else carries the signed net amount.
+func expectedOdooMainLineAmount(acc *AccountConfig, tx TransactionEntry) float64 {
+	if acc != nil && acc.Provider == "stripe" {
+		kind, _ := tx.Metadata["kind"].(string)
+		switch strings.ToLower(kind) {
+		case "charge", "payment", "refund", "payment_refund":
+			amt := tx.GrossAmount
+			if amt == 0 {
+				amt = tx.Amount
+			}
+			if tx.IsOutgoing() {
+				return -math.Abs(amt)
+			}
+			return math.Abs(amt)
+		}
+	}
+	return signedOdooAmountForTransaction(acc, tx)
+}
+
 // detectOdooJournalAmountFixes returns the journal's statement lines whose
 // amount in Odoo differs from the locally-computed signed amount for the same
 // transaction (matched by unique_import_id). Read-only. The canonical case:
@@ -34,7 +60,7 @@ func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, ac
 	want := map[string]float64{}
 	for _, tx := range loadAccountTransactionsForOdoo(acc) {
 		if id := buildUniqueImportID(acc, tx); id != "" {
-			want[id] = roundCents(signedOdooAmountForTransaction(acc, tx))
+			want[id] = roundCents(expectedOdooMainLineAmount(acc, tx))
 		}
 	}
 	if len(want) == 0 {
@@ -141,8 +167,11 @@ func applyOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, fix
 		}
 		// A reconciled line can't be drafted/rewritten — break the
 		// reconciliation first; the operator re-reconciles afterwards.
+		// "No reconciled move lines" is benign: Odoo can flag a line
+		// is_reconciled without any reconcile entries on its move (e.g.
+		// matched straight against suspense) — the line is writable as-is.
 		if f.IsReconciled {
-			if err := unreconcileStatementLineMove(creds, uid, odooStatementLineForReconcile{MoveID: f.MoveID}); err != nil {
+			if err := unreconcileStatementLineMove(creds, uid, odooStatementLineForReconcile{MoveID: f.MoveID}); err != nil && !errors.Is(err, errNoReconciledMoveLines) {
 				Warnf("    %s⚠ line #%d unreconcile: %v%s", Fmt.Yellow, f.LineID, err, Fmt.Reset)
 				failed++
 				continue

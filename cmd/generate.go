@@ -2312,8 +2312,13 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					txType = "DEBIT"
 					amount = -amount
 				}
-				// Stripe billing fees (usage fees, taxes) are real debits from the balance
-				if tx.ReportingCategory == "fee" {
+				// Stripe billing fees (usage fees, taxes) are real debits from the
+				// balance — but only when the money actually flows out. Stripe also
+				// files credit grants (e.g. promo "free credit" adjustments) under
+				// reporting_category "fee" with a positive amount; those increase
+				// the balance and must stay CREDIT, or the type would contradict
+				// the signed net amount and flip signs downstream (Odoo push/fix).
+				if tx.ReportingCategory == "fee" && tx.Amount < 0 {
 					txType = "DEBIT"
 				}
 

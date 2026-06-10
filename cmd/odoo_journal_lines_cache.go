@@ -274,6 +274,22 @@ func verifyOdooJournalCacheFresh(creds *OdooCredentials, uid int, journalID int)
 	return nil
 }
 
+// refreshOdooJournalCacheIfStale brings the local journal-lines cache up to
+// date with Odoo unless it was fetched within the trust window. Sync paths
+// call this before pushing so the push plans against Odoo's current state
+// instead of aborting on the freshness guard. The underlying refresh is
+// watermark-incremental, so a quiet journal costs one small RPC.
+func refreshOdooJournalCacheIfStale(creds *OdooCredentials, uid int, journalID int) error {
+	if file, ok := loadLatestOdooJournalLinesFile(journalID); ok {
+		if t, err := time.Parse(time.RFC3339, file.FetchedAt); err == nil && time.Since(t) < journalCacheTrustWindow {
+			return nil
+		}
+	}
+	Progress(fmt.Sprintf("refreshing journal #%d lines cache", journalID))
+	_, err := writeOdooJournalLinesCache(creds, uid, journalID)
+	return err
+}
+
 func writeOdooJournalLinesCacheFile(journalID int, lines []OdooCacheLine) (int, error) {
 	sort.SliceStable(lines, func(i, j int) bool {
 		if lines[i].Date == lines[j].Date {
