@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,7 +44,14 @@ const odooAnalyticPlansSchemaVersion = 1
 // referenced by the categorize step exists in Odoo. Idempotent: re-runs
 // only create what's missing. Returns the resulting cache for callers
 // that want to act on it immediately (categorize).
-func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int) (*OdooAnalyticPlansFile, error) {
+//
+// Creating accounts is gated: missing accounts are previewed (with a
+// near-duplicate hint when an existing account has almost the same name)
+// and only created after explicit approval — assumeYes (--yes), or an
+// interactive y/N prompt. Unattended runs (cron `chb sync`) skip creation
+// and surface a warning instead, so a slug/name mismatch in rules.json can
+// never silently mint twins like "Block 26" / "Block26" in Odoo.
+func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, dryRun bool) (*OdooAnalyticPlansFile, error) {
 	plans, err := ensureOdooAnalyticPlans(creds, uid)
 	if err != nil {
 		return nil, fmt.Errorf("plans: %v", err)
@@ -51,7 +59,7 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int) (*OdooAnaly
 
 	// Existing accounts indexed by (plan_id, lowercased name) so we can
 	// reuse instead of creating duplicates.
-	existing, err := fetchOdooAnalyticAccountsByPlan(creds, uid, []int{plans.Collective, plans.Costs, plans.Income})
+	existing, existingAccounts, err := fetchOdooAnalyticAccountsByPlan(creds, uid, []int{plans.Collective, plans.Costs, plans.Income})
 	if err != nil {
 		return nil, fmt.Errorf("accounts: %v", err)
 	}
@@ -63,10 +71,6 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int) (*OdooAnaly
 	if err != nil {
 		return nil, fmt.Errorf("category specs: %v", err)
 	}
-	catAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCategories, existing)
-	if err != nil {
-		return nil, fmt.Errorf("category accounts: %v", err)
-	}
 
 	// Collectives: every unique collective slug referenced in rules.json
 	// becomes an analytic account on plan 3.
@@ -74,7 +78,23 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int) (*OdooAnaly
 	if err != nil {
 		return nil, fmt.Errorf("collective specs: %v", err)
 	}
-	collAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCollectives, existing)
+
+	var missing []analyticAccountSpec
+	for _, spec := range append(append([]analyticAccountSpec{}, wantCategories...), wantCollectives...) {
+		if existing[analyticAccountKey(spec.PlanID, spec.Name)] == 0 {
+			missing = append(missing, spec)
+		}
+	}
+	createMissing := true
+	if len(missing) > 0 {
+		createMissing = approveAnalyticAccountCreation(missing, existingAccounts, plans, assumeYes, dryRun)
+	}
+
+	catAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCategories, existing, createMissing)
+	if err != nil {
+		return nil, fmt.Errorf("category accounts: %v", err)
+	}
+	collAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCollectives, existing, createMissing)
 	if err != nil {
 		return nil, fmt.Errorf("collective accounts: %v", err)
 	}
@@ -111,7 +131,8 @@ func OdooAnalyticPlansSync(args []string) (int, error) {
 		return 0, fmt.Errorf("Odoo authentication failed")
 	}
 	odooLog("\n%s📊 Syncing Odoo analytic plans%s\n", Fmt.Bold, Fmt.Reset)
-	file, err := syncOdooAnalyticInfrastructure(creds, uid)
+	file, err := syncOdooAnalyticInfrastructure(creds, uid,
+		HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
 	if err != nil {
 		return 0, err
 	}
@@ -286,11 +307,22 @@ func prettyCollectiveName(slug string) string {
 	return prettyCategoryName(slug)
 }
 
+// analyticExistingAccount is one already-existing analytic account on a
+// managed plan, kept with its original casing so the creation preview can
+// point at near-duplicate names.
+type analyticExistingAccount struct {
+	ID     int
+	PlanID int
+	Name   string
+}
+
 // fetchOdooAnalyticAccountsByPlan returns a map keyed by
-// (planID, lowercased name) → accountID for accounts on the given plans.
+// (planID, lowercased name) → accountID for accounts on the given plans,
+// plus the flat account list for near-duplicate detection.
 // Used by ensureOdooAnalyticAccounts to avoid duplicate creates.
-func fetchOdooAnalyticAccountsByPlan(creds *OdooCredentials, uid int, planIDs []int) (map[string]int, error) {
+func fetchOdooAnalyticAccountsByPlan(creds *OdooCredentials, uid int, planIDs []int) (map[string]int, []analyticExistingAccount, error) {
 	out := map[string]int{}
+	var accounts []analyticExistingAccount
 	planArg := make([]interface{}, 0, len(planIDs))
 	for _, p := range planIDs {
 		if p > 0 {
@@ -298,7 +330,7 @@ func fetchOdooAnalyticAccountsByPlan(creds *OdooCredentials, uid int, planIDs []
 		}
 	}
 	if len(planArg) == 0 {
-		return out, nil
+		return out, accounts, nil
 	}
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.analytic.account",
 		[]interface{}{
@@ -309,16 +341,21 @@ func fetchOdooAnalyticAccountsByPlan(creds *OdooCredentials, uid int, planIDs []
 		"id asc",
 	)
 	if err != nil {
-		return out, err
+		return out, accounts, err
 	}
 	for _, row := range rows {
 		planID := odooFieldID(row["plan_id"])
-		name := strings.ToLower(strings.TrimSpace(odooString(row["name"])))
+		name := strings.TrimSpace(odooString(row["name"]))
 		if planID > 0 && name != "" {
 			out[analyticAccountKey(planID, name)] = odooInt(row["id"])
+			accounts = append(accounts, analyticExistingAccount{
+				ID:     odooInt(row["id"]),
+				PlanID: planID,
+				Name:   name,
+			})
 		}
 	}
-	return out, nil
+	return out, accounts, nil
 }
 
 func analyticAccountKey(planID int, name string) string {
@@ -327,8 +364,12 @@ func analyticAccountKey(planID int, name string) string {
 
 // ensureOdooAnalyticAccounts creates any missing accounts and returns
 // the resulting cache entries. existing is mutated in-place so a single
-// fetch can be reused across category + collective passes.
-func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyticAccountSpec, existing map[string]int) ([]OdooAnalyticAccountID, error) {
+// fetch can be reused across category + collective passes. When
+// createMissing is false (creation declined or unattended run), specs
+// without an existing account are skipped — they simply don't appear in
+// the cache, so categorize leaves those lines untouched until the
+// operator creates or renames the account.
+func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyticAccountSpec, existing map[string]int, createMissing bool) ([]OdooAnalyticAccountID, error) {
 	out := make([]OdooAnalyticAccountID, 0, len(specs))
 	for _, spec := range specs {
 		key := analyticAccountKey(spec.PlanID, spec.Name)
@@ -339,6 +380,9 @@ func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyti
 				PlanID:    spec.PlanID,
 				AccountID: id,
 			})
+			continue
+		}
+		if !createMissing {
 			continue
 		}
 		id, err := createOdooAnalyticAccount(creds, uid, spec.Name, spec.PlanID)
@@ -354,6 +398,79 @@ func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyti
 		})
 	}
 	return out, nil
+}
+
+// approveAnalyticAccountCreation previews the analytic accounts that would
+// be created and decides whether creation may proceed. Each candidate is
+// checked against the existing accounts on the same plan for a
+// near-duplicate name (case/spacing/plural differences, e.g. "Block 26" vs
+// "Block26") — those are usually a rules.json slug that drifted from the
+// Odoo name, better fixed by renaming one side than by creating a twin.
+//
+// Resolution order: --dry-run never creates; --yes always creates; an
+// interactive terminal gets a y/N prompt; unattended runs (cron) skip
+// creation and emit a warning with the command to run after review.
+func approveAnalyticAccountCreation(missing []analyticAccountSpec, existing []analyticExistingAccount, plans OdooAnalyticPlanIDs, assumeYes, dryRun bool) bool {
+	planLabel := map[int]string{
+		plans.Collective: "collective",
+		plans.Costs:      "costs",
+		plans.Income:     "income",
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d analytic account%s referenced by local rules but missing in Odoo:\n",
+		len(missing), plural(len(missing)))
+	for _, spec := range missing {
+		fmt.Fprintf(&b, "    + %q on the %s plan (from slug %q)\n",
+			spec.Name, planLabel[spec.PlanID], spec.Slug)
+		if sim, ok := similarAnalyticAccount(spec, existing); ok {
+			fmt.Fprintf(&b, "      ⚠ near-duplicate of existing %q (#%d) — rename it in Odoo (or fix the local slug) instead of creating a twin\n",
+				sim.Name, sim.ID)
+		}
+	}
+
+	switch {
+	case dryRun:
+		fmt.Fprintf(os.Stderr, "\n  %s%s  (dry-run: not creating)%s\n", Fmt.Yellow, b.String(), Fmt.Reset)
+		return false
+	case assumeYes:
+		fmt.Fprintf(os.Stderr, "\n  %s%s  Creating them (--yes).%s\n", Fmt.Dim, b.String(), Fmt.Reset)
+		return true
+	case isInteractiveTTY():
+		fmt.Fprintf(os.Stderr, "\n  %s%s%s", Fmt.Yellow, b.String(), Fmt.Reset)
+		fmt.Fprintf(os.Stderr, "  Create %s in Odoo? [y/N] ", Pluralize(len(missing), "analytic account", ""))
+		resp, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		resp = strings.ToLower(strings.TrimSpace(resp))
+		return resp == "y" || resp == "yes"
+	default:
+		Warnf("%s⚠ %s  Not creating them in an unattended run — review the list (fix slug/name mismatches), then run: chb odoo sync --yes%s",
+			Fmt.Yellow, b.String(), Fmt.Reset)
+		return false
+	}
+}
+
+// similarAnalyticAccount returns an existing account on the same plan whose
+// name differs from the spec only by case, spacing/punctuation, or a
+// trailing plural "s" — i.e. an almost-certain duplicate-in-the-making.
+func similarAnalyticAccount(spec analyticAccountSpec, existing []analyticExistingAccount) (analyticExistingAccount, bool) {
+	want := normalizeAnalyticName(spec.Name)
+	for _, acc := range existing {
+		if acc.PlanID == spec.PlanID && normalizeAnalyticName(acc.Name) == want {
+			return acc, true
+		}
+	}
+	return analyticExistingAccount{}, false
+}
+
+// normalizeAnalyticName reduces a display name to a comparison key:
+// lowercase, alphanumerics only, trailing plural "s" dropped.
+func normalizeAnalyticName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSuffix(b.String(), "s")
 }
 
 func createOdooAnalyticAccount(creds *OdooCredentials, uid int, name string, planID int) (int, error) {
