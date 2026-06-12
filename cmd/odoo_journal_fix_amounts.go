@@ -7,6 +7,8 @@ import (
 	"math"
 	"os"
 	"strings"
+
+	stripesource "github.com/CommonsHub/chb/providers/stripe"
 )
 
 // odooAmountFix is one statement line whose amount in Odoo disagrees with the
@@ -58,9 +60,27 @@ func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, ac
 	}
 	// Correct, signed amount per local transaction, keyed by unique_import_id.
 	want := map[string]float64{}
-	for _, tx := range loadAccountTransactionsForOdoo(acc) {
-		if id := buildUniqueImportID(acc, tx); id != "" {
-			want[id] = roundCents(expectedOdooMainLineAmount(acc, tx))
+	if acc.Provider == "stripe" {
+		// Mirror the writer exactly: the push computes line amounts from the
+		// raw balance transactions via stripeStatementLineAmount, so the
+		// checker must too. The generated transaction view force-signs
+		// fee-kind entries negative (e.g. positive "free credit"
+		// adjustments become DEBITs), which would flag correct lines as
+		// wrong and "repair" the journal away from the true balance.
+		bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
+		if err != nil {
+			return nil, fmt.Errorf("load Stripe provider transactions: %v", err)
+		}
+		for _, bt := range bts {
+			if id := stripeBTImportID(acc, bt); id != "" {
+				want[id] = roundCents(stripeStatementLineAmount(bt))
+			}
+		}
+	} else {
+		for _, tx := range loadAccountTransactionsForOdoo(acc) {
+			if id := buildUniqueImportID(acc, tx); id != "" {
+				want[id] = roundCents(expectedOdooMainLineAmount(acc, tx))
+			}
 		}
 	}
 	if len(want) == 0 {

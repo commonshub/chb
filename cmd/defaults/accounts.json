@@ -44,6 +44,7 @@
         "decimals": 18
       }
     ],
+    "odooSyncSince": "2025-01-01",
     "archivedAt": "2026-05-26"
   },
   {
@@ -97,7 +98,8 @@
     "slug": "stripe",
     "provider": "stripe",
     "accountId": "acct_1Nn0FaFAhaWeDyow",
-    "currency": "EUR"
+    "currency": "EUR",
+    "odooSyncSince": "2025-01-01"
   },
   {
     "name": "🍻 Fridge",

@@ -105,6 +105,19 @@ func syncStripeChronological(
 	if err != nil {
 		return "", fmt.Errorf("load Stripe provider transactions: %v", err)
 	}
+	// odooSyncSince journals hold a manual opening entry at the cutoff;
+	// window the BT universe up front (before the cursor snapshot and the
+	// dedup passes) so pre-cutoff lines are never (re-)created and the
+	// saved cursor counts stay consistent with what push considers.
+	if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+		var windowed []stripesource.Transaction
+		for _, bt := range bts {
+			if bt.Created >= cutoff.Unix() {
+				windowed = append(windowed, bt)
+			}
+		}
+		bts = windowed
+	}
 	archivedBTs := len(bts)
 	bts = filterStripeBTsByDateWindow(bts, sinceDate, untilDate)
 	sort.SliceStable(bts, func(i, j int) bool {
@@ -153,6 +166,16 @@ func syncStripeChronological(
 			odooLog("  %sCursor matches local but Odoo journal #%d drifted — running full push%s\n",
 				Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
 		}
+		// The cursor can't vouch for the journal (first run, new local BTs,
+		// destination drift, or the last push had create failures and was
+		// deliberately not stamped). The watermark filter below would hide
+		// any gap BEFORE the latest Odoo line — exactly where failed
+		// creates land — so escalate to the full duplicate check. The
+		// cursor is re-stamped only by a fully clean push, which restores
+		// the cheap short-circuit.
+		odooLog("  %sCursor can't confirm journal #%d is complete — using full duplicate check%s\n",
+			Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
+		useHistory = true
 	}
 
 	if !useHistory && sinceDate.IsZero() && untilDate.IsZero() && !(dryRun && force) {
@@ -380,6 +403,36 @@ func syncStripeChronological(
 			return err
 		}
 		return nil
+	}
+
+	// Reset rebuilds of a cutoff journal (odooSyncSince) re-create the
+	// opening entry the wipe removed: one manual-style line (no
+	// unique_import_id) dated at the cutoff, carrying the locally-computed
+	// pre-cutoff balance. It joins the first batch so it lands in the
+	// first statement and anchors the running-balance chain.
+	if force {
+		if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+			if opening := accountLocalBalanceBefore(acc, cutoff); opening != 0 {
+				date := cutoff.Format("2006-01-02")
+				ref := fmt.Sprintf("Solde de départ %s", date)
+				runningBalance += opening
+				if dryRun {
+					addDryRunPlan("create", date, ref, "", "", opening, "(opening balance)")
+					stats.LinesCreated++
+				} else {
+					batch = append(batch, map[string]interface{}{
+						"statement_id": openStmtID,
+						"journal_id":   acc.OdooJournalID,
+						"date":         date,
+						"payment_ref":  ref,
+						"amount":       opening,
+						"narration": fmt.Sprintf(
+							"Opening balance computed by CHB from the full local Stripe history: sum of every balance transaction before %s.", date),
+					})
+					batchAccountCodes = append(batchAccountCodes, "")
+				}
+			}
+		}
 	}
 
 	for i, bt := range bts {
@@ -764,7 +817,13 @@ func syncStripeChronological(
 	// Also records Odoo's post-push aggregate so the next short-
 	// circuit can detect destination-side drift (lines deleted /
 	// edited in Odoo between syncs).
-	if !dryRun && stats.LinesFailed == 0 && totalLocalBTs > 0 && sinceDate.IsZero() && untilDate.IsZero() {
+	// Only a run that actually vouched for the FULL local set may stamp:
+	// a full-dedup pass (useHistory) or a reset rebuild (force). A
+	// watermark-filtered run only verified the window past the latest Odoo
+	// line — stamping from it would baseline any pre-watermark gap (e.g.
+	// lines whose create failed in an earlier push) as "expected state",
+	// and the short-circuit would hide it forever.
+	if !dryRun && stats.LinesFailed == 0 && (useHistory || force) && totalLocalBTs > 0 && sinceDate.IsZero() && untilDate.IsZero() {
 		destCount, destBalance, derr := odooJournalAggregate(creds, uid, acc.OdooJournalID)
 		cursor := SyncCursor{
 			Key:           SyncCursorKeyForStripeAccount(acc.AccountID),
@@ -912,6 +971,14 @@ func stripeFeeImportIDMatchesCursor(acc *AccountConfig, bt stripesource.Transact
 }
 
 func stripeOdooLocalSnapshot(acc *AccountConfig) (accountOdooSyncSnapshot, bool) {
+	return stripeOdooLocalSnapshotSince(acc, time.Time{})
+}
+
+// stripeOdooLocalSnapshotSince windows the snapshot to BTs at/after the
+// cutoff: the line set a cutoff journal (odooSyncSince) is expected to hold
+// on top of its manual opening entry. The fee accumulator only sees windowed
+// BTs — pre-cutoff fees are part of the opening balance, not a fee line.
+func stripeOdooLocalSnapshotSince(acc *AccountConfig, cutoff time.Time) (accountOdooSyncSnapshot, bool) {
 	snap := accountOdooSyncSnapshot{
 		Label:    "Local Stripe files",
 		Currency: accCurrency(acc),
@@ -922,6 +989,15 @@ func stripeOdooLocalSnapshot(acc *AccountConfig) (accountOdooSyncSnapshot, bool)
 	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
 	if err != nil {
 		return snap, false
+	}
+	if !cutoff.IsZero() {
+		var kept []stripesource.Transaction
+		for _, bt := range bts {
+			if bt.Created >= cutoff.Unix() {
+				kept = append(kept, bt)
+			}
+		}
+		bts = kept
 	}
 	if len(bts) == 0 {
 		return snap, true

@@ -2732,6 +2732,33 @@ func AccountOdooPush(slug string, args []string) error {
 		sinceDate = t
 	}
 
+	// --startingBalance <date>: converge the journal onto the cutoff model
+	// — a manual opening entry at the date plus CHB lines from the date on.
+	// The pre-push stage (below) deletes pre-cutoff CHB lines and
+	// creates/corrects the opening entry from a cache-computed plan; the
+	// push itself then runs windowed exactly as if odooSyncSince were
+	// configured. An accompanying --since must name the same date.
+	var startingBalanceDate time.Time
+	if sbStr := GetOption(args, "--startingBalance", "--starting-balance"); sbStr != "" {
+		t, ok := ParseSinceDate(sbStr)
+		if !ok {
+			return fmt.Errorf("invalid --startingBalance format: %s (use %s)", sbStr, DateFormatHelp)
+		}
+		if force {
+			return fmt.Errorf("--startingBalance and --force are mutually exclusive: --force wipes and rebuilds the journal (re-creating the opening entry); --startingBalance converges it in place")
+		}
+		if sinceStr != "" && !sinceDate.Equal(t) {
+			return fmt.Errorf("--since (%s) and --startingBalance (%s) must name the same date", sinceStr, sbStr)
+		}
+		startingBalanceDate = t
+		// Adopt the cutoff for this run (overrides any configured value) and
+		// drop the explicit --since: the window now comes from the cutoff,
+		// which keeps the cursor stampable and the dedup pass complete.
+		acc.OdooSyncSince = t.Format("2006-01-02")
+		sinceStr = ""
+		sinceDate = time.Time{}
+	}
+
 	useHistory := HasFlag(args, "--history") || force
 	effectiveSinceDate := sinceDate
 	sinceLabelOverride := ""
@@ -2777,11 +2804,37 @@ func AccountOdooPush(slug string, args []string) error {
 		}
 	}
 
+	// --startingBalance pre-stage: plan the minimal convergence from the
+	// (just fresh-verified) local journal cache — delete pre-cutoff CHB
+	// lines, create or correct the manual opening entry — preview it, and
+	// apply only after confirmation. The windowed push below then handles
+	// everything from the cutoff on; no journal reset involved.
+	if !startingBalanceDate.IsZero() {
+		cache, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID)
+		if !ok {
+			if _, err := writeOdooJournalLinesCacheFullRefetch(creds, uid, acc.OdooJournalID, nil); err != nil {
+				return fmt.Errorf("populate journal #%d cache: %v", acc.OdooJournalID, err)
+			}
+			cache, _ = loadLatestOdooJournalLinesCache(acc.OdooJournalID)
+		}
+		plan := planStartingBalanceConvergence(acc, startingBalanceDate, cache)
+		if _, err := applyStartingBalanceConvergence(creds, uid, acc, plan, assumeYes, dryRun); err != nil {
+			return err
+		}
+	}
+
 	// --force: empty the entire journal first. Stripe handles this inside
 	// the sync itself, so we only run the global wipe for non-Stripe paths.
 	if force && !dryRun && acc.Provider != "stripe" {
 		if err := emptyOdooJournal(creds, uid, acc.OdooJournalID, true); err != nil {
 			return err
+		}
+		// Cutoff journals re-create the manual opening entry the wipe just
+		// removed; the windowed push below only rebuilds post-cutoff lines.
+		if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+			if err := createOpeningBalanceLine(creds, uid, acc, cutoff); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -3011,6 +3064,11 @@ func AccountOdooPush(slug string, args []string) error {
 			localAfter = accountLocalOdooSyncSnapshot(acc)
 		}
 		printOdooSyncSummary(syncedCount, reviewedCount, updatedCount, dryRun, localAfter, odooAfter, odooAfterErr)
+		if !dryRun && odooAfterErr == nil {
+			if hint := localJournalBalanceMismatchHint(acc, localAfter, odooAfter); hint != "" {
+				fmt.Print(hint)
+			}
+		}
 		printOdooSyncNextHints(acc, stages)
 	}
 	return nil
@@ -3142,12 +3200,42 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 		formatBalance(live, currency), liveLabel,
 		formatBalance(diff, currency),
 		Fmt.Reset)
-	detail += fmt.Sprintf("    %sHint: chb accounts %s sync  |  chb odoo journals %d fix%s\n",
-		Fmt.Dim, acc.Slug, acc.OdooJournalID, Fmt.Reset)
+	detail += fmt.Sprintf("    %sHint: chb accounts %s pull && chb accounts %s push --force  |  chb odoo journals %d fix%s\n",
+		Fmt.Dim, acc.Slug, acc.Slug, acc.OdooJournalID, Fmt.Reset)
 	if !quietOdooContext() {
 		Warnf("%s", strings.TrimRight(detail, "\n"))
 	}
 	return live, detail
+}
+
+// localJournalBalanceMismatchHint returns a warning block when, after a
+// push, the Odoo journal balance still disagrees with the local balance.
+// At that point the push has already created every missing line it owns,
+// so the residue is either lines chb doesn't own (manual opening balances,
+// accountant adjustments — `journals fix` lists and removes them) or
+// history the journal predates the local archive on (a `push --force`
+// rebuild resolves it). Empty when the balances agree.
+func localJournalBalanceMismatchHint(acc *AccountConfig, local, journal accountOdooSyncSnapshot) string {
+	if acc == nil || acc.OdooJournalID == 0 {
+		return ""
+	}
+	diff := roundCents(journal.Balance - local.Balance)
+	if math.Abs(diff) < 0.01 {
+		return ""
+	}
+	currency := local.Currency
+	if currency == "" {
+		currency = journal.Currency
+	}
+	hint := fmt.Sprintf("  %s⚠ Odoo journal balance %s ≠ local %s — off by %s%s\n",
+		Fmt.Yellow,
+		formatBalance(journal.Balance, currency),
+		formatBalance(local.Balance, currency),
+		formatBalance(diff, currency),
+		Fmt.Reset)
+	hint += fmt.Sprintf("  %sRun `chb odoo journals %d fix` to review abnormal lines (manual entries, orphans) — or `chb accounts %s push --force` to rebuild the journal from the full local archive.%s\n\n",
+		Fmt.Dim, acc.OdooJournalID, acc.Slug, Fmt.Reset)
+	return hint
 }
 
 func accountLocalOdooSnapshot(acc *AccountConfig, txs []TransactionEntry) accountOdooSyncSnapshot {
@@ -3179,6 +3267,88 @@ func accountLocalOdooSyncSnapshot(acc *AccountConfig) accountOdooSyncSnapshot {
 		}
 	}
 	return accountLocalOdooSnapshot(acc, loadAccountTransactionsForOdoo(acc))
+}
+
+// accountLocalOdooSyncSnapshotSince is accountLocalOdooSyncSnapshot windowed
+// to txs at/after the cutoff — the CHB-owned side of a journal that starts
+// with a manual opening entry (odooSyncSince). A zero cutoff means no window.
+func accountLocalOdooSyncSnapshotSince(acc *AccountConfig, cutoff time.Time) accountOdooSyncSnapshot {
+	if cutoff.IsZero() {
+		return accountLocalOdooSyncSnapshot(acc)
+	}
+	if acc != nil && acc.Provider == "stripe" {
+		if snap, ok := stripeOdooLocalSnapshotSince(acc, cutoff); ok {
+			return snap
+		}
+	}
+	var windowed []TransactionEntry
+	for _, tx := range loadAccountTransactionsForOdoo(acc) {
+		if tx.Timestamp >= cutoff.Unix() {
+			windowed = append(windowed, tx)
+		}
+	}
+	return accountLocalOdooSnapshot(acc, windowed)
+}
+
+// createOpeningBalanceLine writes the manual-style opening entry for a
+// cutoff journal (odooSyncSince): one statement line WITHOUT a
+// unique_import_id, dated at the cutoff, whose amount is the locally
+// computed balance of everything before the cutoff. Used by --force
+// rebuilds of non-Stripe journals (Stripe folds the same line into its
+// first statement batch). A zero opening creates nothing.
+func createOpeningBalanceLine(creds *OdooCredentials, uid int, acc *AccountConfig, cutoff time.Time) error {
+	opening := accountLocalBalanceBefore(acc, cutoff)
+	if opening == 0 {
+		return nil
+	}
+	date := cutoff.Format("2006-01-02")
+	vals := map[string]interface{}{
+		"journal_id":  acc.OdooJournalID,
+		"date":        date,
+		"payment_ref": fmt.Sprintf("Solde de départ %s", date),
+		"amount":      opening,
+		"narration": fmt.Sprintf(
+			"Opening balance computed by CHB from the full local history of %s: signed sum of every transaction before %s.", acc.Slug, date),
+	}
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "create", []interface{}{vals}, nil); err != nil {
+		return fmt.Errorf("create opening balance line: %v", err)
+	}
+	odooLog("  %s✓ Created opening entry %s: %s%s\n",
+		Fmt.Green, date, formatBalance(opening, accCurrency(acc)), Fmt.Reset)
+	return nil
+}
+
+// accountLocalBalanceBefore returns the account balance at the cutoff,
+// computed from the FULL local history — the value a manual opening entry
+// dated at the cutoff must carry. For Stripe every balance transaction
+// contributes its net (gross + fee at the BT's own date), which is exactly
+// Stripe's ledger balance at that instant; for blockchain accounts it's the
+// signed sum of all transfers before the cutoff.
+func accountLocalBalanceBefore(acc *AccountConfig, cutoff time.Time) float64 {
+	if acc == nil || cutoff.IsZero() {
+		return 0
+	}
+	if acc.Provider == "stripe" {
+		bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
+		if err != nil {
+			return 0
+		}
+		var cents int64
+		for _, bt := range bts {
+			if bt.Created < cutoff.Unix() {
+				cents += bt.Net
+			}
+		}
+		return roundCents(centsToEuros(cents))
+	}
+	var sum float64
+	for _, tx := range loadAccountTransactionsForOdoo(acc) {
+		if tx.Timestamp < cutoff.Unix() {
+			sum += signedOdooAmountForTransaction(acc, tx)
+		}
+	}
+	return roundCents(sum)
 }
 
 // fetchOdooJournalSnapshotLocal builds the same snapshot from the
@@ -3990,6 +4160,19 @@ func odooJournalLineSum(creds *OdooCredentials, uid int, journalID int) (float64
 // syncBlockchainToOdoo syncs blockchain/monerium transactions to Odoo (no statements, just lines).
 func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, monthsLimit int, dryRun bool, skipReconciliation bool, sinceDate, untilDate time.Time, useHistory bool, previewLimit int, reapplyPartners bool) (blockchainOdooSyncResult, error) {
 	localTxs := loadAccountTransactionsForOdoo(acc)
+	// odooSyncSince journals hold a manual opening entry at the cutoff;
+	// everything before it is represented by that entry, so the push
+	// universe is windowed up front — before the cursor snapshot and the
+	// dedup passes — and pre-cutoff lines are never (re-)created.
+	if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+		var windowed []TransactionEntry
+		for _, tx := range localTxs {
+			if tx.Timestamp >= cutoff.Unix() {
+				windowed = append(windowed, tx)
+			}
+		}
+		localTxs = windowed
+	}
 	sort.SliceStable(localTxs, func(i, j int) bool {
 		if localTxs[i].Timestamp == localTxs[j].Timestamp {
 			return buildUniqueImportID(acc, localTxs[i]) < buildUniqueImportID(acc, localTxs[j])

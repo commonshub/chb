@@ -930,6 +930,11 @@ a journal whose existing lines pre-date a fix.
   %s-y%s, %s--yes%s              With --reset, skip the confirmation prompt
   %s--history%s              Re-fetch the full Odoo import-id set (slow)
   %s--since YYYYMMDD%s       Only push transactions at/after this date
+  %s--startingBalance YYYYMMDD%s  Converge onto the opening-entry model: delete
+                         CHB lines before the date (confirmed), create or
+                         correct the manual opening entry to the locally
+                         computed balance, then sync from the date on. Plans
+                         from the local cache; no journal reset.
   %s--months N%s             Limit to the last N months
   %s--until YYYYMMDD%s       Only push transactions up to (inclusive) this date
   %s--skip-reconciliation%s  Don't reconcile created lines (use 'reconcile' later)
@@ -949,6 +954,7 @@ a journal whose existing lines pre-date a fix.
 			f.Yellow, f.Reset, f.Yellow, f.Reset, // -y, --yes
 			f.Yellow, f.Reset, // --history
 			f.Yellow, f.Reset, // --since
+			f.Yellow, f.Reset, // --startingBalance
 			f.Yellow, f.Reset, // --months
 			f.Yellow, f.Reset, // --until
 			f.Yellow, f.Reset, // --skip-reconciliation
@@ -1795,13 +1801,27 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 
 	// A balance gap backed by deletable manual lines is itself an
 	// actionable finding (the delete step below), so it must not trip the
-	// early "nothing to fix" return.
-	deletableUnowned := diagOK && diag.hasGap && len(res.Unowned) > 0
+	// early "nothing to fix" return. Cutoff journals (odooSyncSince) never
+	// delete unowned lines — they're the expected opening entry; a wrong
+	// opening value is reported by the diagnostic instead.
+	deletableUnowned := diagOK && diag.hasGap && len(res.Unowned) > 0 && !diag.hasCutoff
+	// A wrong/missing opening entry on a cutoff journal is likewise an
+	// actionable finding, surfaced via the diagnostic hints.
+	openingMismatch := diagOK && diag.hasCutoff && math.Abs(diag.openingDelta) > 0.005
 
-	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && len(loosePlan.Assign) == 0 && len(issues) == 0 && !deletableUnowned {
+	// Statement-shape defects (line-less statements, a chain anchored on a
+	// non-zero opening balance) are invisible to the per-statement checks
+	// above; probe them now so a journal whose lines are already clean
+	// still gets its statement chain repaired instead of returning early.
+	_, preEmpty, preAnchor, preErr := detectStatementShapeRepairs(creds, uid, journalID, res.Account)
+	if preErr != nil {
+		Warnf("  %s⚠ Could not check statement shape: %v%s", Fmt.Yellow, preErr, Fmt.Reset)
+	}
+
+	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && len(loosePlan.Assign) == 0 && len(issues) == 0 && !deletableUnowned && !openingMismatch && len(preEmpty) == 0 && !preAnchor {
 		if diagOK && diag.hasGap {
 			printJournalBalanceDiagnostic(diag, res)
-			fmt.Printf("  %s✓ No chb-owned issues to fix — the %s difference reported by sync is not from chb-owned lines (see above).%s\n\n",
+			fmt.Printf("  %s✓ No structural issues to fix — see the balance diagnostic above for how to close the %s gap.%s\n\n",
 				Fmt.Green, fmtEURSigned(diag.balanceDelta), Fmt.Reset)
 		} else {
 			fmt.Printf("\n  %s✓ Nothing to fix%s\n\n", Fmt.Green, Fmt.Reset)
@@ -1989,7 +2009,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	// are typically opening balances or accountant adjustments, so the
 	// prompt is deliberately cautious.
 	deletedUnowned := 0
-	if diagOK && diag.hasGap && len(res.Unowned) > 0 {
+	if diagOK && diag.hasGap && len(res.Unowned) > 0 && !diag.hasCutoff {
 		printUnownedLines(res.Unowned, res.Account, diag)
 		proceed := assumeYes
 		if !assumeYes && !dryRun {
@@ -2058,13 +2078,52 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 	}
 
-	if len(issues) == 0 {
+	// Re-probe the statement shape after the mutations above — loose-line
+	// attachment can fill a previously-empty statement, and the unowned/
+	// orphan deletes may have just closed the line-level gap that gates
+	// the anchor repair.
+	return repairJournalStatementChain(creds, uid, journalID, res.Account, issues, assumeYes, dryRun)
+}
+
+// repairJournalStatementChain runs the non-destructive statement repairs:
+// line-less statement deletion, duplicate open-fee-line merging, and the
+// balance_start/balance_end_real chain walk (re-anchored at 0.00 when the
+// journal's lines fully agree with the local archive). Every value written
+// is derived from the line sums, so this is safe to auto-run after a push
+// — it is the tail of `journals <id> fix` and step ④ of `journals <id>
+// sync`. A no-op when every invariant already holds.
+func repairJournalStatementChain(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig, issues []StatementBalanceIssue, assumeYes, dryRun bool) error {
+	stmts, emptyStmts, anchorRepair, err := detectStatementShapeRepairs(creds, uid, journalID, acc)
+	if err != nil {
+		return err
+	}
+
+	if len(issues) == 0 && len(emptyStmts) == 0 && !anchorRepair {
 		return nil
 	}
-	PrintStatementIssues(issues)
+	if len(issues) > 0 {
+		PrintStatementIssues(issues)
+	}
+	if len(emptyStmts) > 0 {
+		fmt.Printf("\n  %s%s with no lines (chain noise):%s\n",
+			Fmt.Bold, Pluralize(len(emptyStmts), "statement", ""), Fmt.Reset)
+		for _, s := range emptyStmts {
+			date := s.Date
+			if date == "" {
+				date = "(no date) "
+			}
+			fmt.Printf("    %s#%d%s  %s  %s  start %s  end %s\n",
+				Fmt.Dim, s.ID, Fmt.Reset, date, s.Name, fmtEURSigned(s.BalanceStart), fmtEURSigned(s.BalanceEndReal))
+		}
+		fmt.Println()
+	}
+	if anchorRepair {
+		fmt.Printf("  %s⚠ Journal lines match local exactly, but the statement chain doesn't open at 0.00 — every statement balance is shifted by the same offset. The walk below re-anchors the first statement at 0.00.%s\n\n",
+			Fmt.Yellow, Fmt.Reset)
+	}
 
 	if !assumeYes && !dryRun {
-		fmt.Printf("  %sRepair journal? This rewrites balance_start and balance_end_real on affected statements, and collapses duplicate \"Stripe fees for open statement\" lines.%s [y/N] ",
+		fmt.Printf("  %sRepair journal? This deletes line-less statements, rewrites balance_start and balance_end_real on affected statements, and collapses duplicate \"Stripe fees for open statement\" lines.%s [y/N] ",
 			Fmt.Bold, Fmt.Reset)
 		var resp string
 		fmt.Scanln(&resp)
@@ -2076,6 +2135,33 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 
 	edits := 0
 	errs := 0
+
+	// Step 0: drop line-less statements so the chain walk below never
+	// threads their stale balances into a real statement's balance_start.
+	droppedStmts := map[int]bool{}
+	if len(emptyStmts) > 0 {
+		if dryRun {
+			fmt.Printf("  %s(dry-run) would delete %s with no lines%s\n",
+				Fmt.Dim, Pluralize(len(emptyStmts), "statement", ""), Fmt.Reset)
+		} else {
+			ids := make([]interface{}, len(emptyStmts))
+			for i, s := range emptyStmts {
+				ids[i] = s.ID
+			}
+			if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.bank.statement", "unlink", []interface{}{ids}, nil); err != nil {
+				fmt.Printf("  %s✗ delete empty statements: %v%s\n", Fmt.Red, err, Fmt.Reset)
+				errs++
+			} else {
+				fmt.Printf("  %s✓ Deleted %s with no lines%s\n",
+					Fmt.Green, Pluralize(len(emptyStmts), "statement", ""), Fmt.Reset)
+				for _, s := range emptyStmts {
+					droppedStmts[s.ID] = true
+				}
+				edits += len(emptyStmts)
+			}
+		}
+	}
 
 	// Step 1: collapse duplicate "Stripe fees for open statement" lines.
 	// Sums are preserved (we keep one line whose amount = Σ duplicates),
@@ -2094,14 +2180,17 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		edits += applied
 	}
 
-	stmts, err := fetchJournalStatementsOrdered(creds, uid, journalID)
-	if err != nil {
-		return err
-	}
-
 	var prevEnd float64
 	hasPrev := false
+	if anchorRepair {
+		// Seed the chain at zero: the walk rewrites the first statement's
+		// balance_start to 0.00 and re-derives everything after it.
+		hasPrev = true
+	}
 	for _, s := range stmts {
+		if droppedStmts[s.ID] || (dryRun && s.LineCount == 0 && s.Reference != "open") {
+			continue
+		}
 		// The open (trailing) statement mirrors live Stripe state. Leave
 		// both its balance_start and balance_end_real alone — they are
 		// managed by the sync, not the repair tool.
@@ -2250,6 +2339,20 @@ func findOdooOrphanStatementLines(creds *OdooCredentials, uid int, journalID int
 	}
 
 	localTxs := loadAccountTransactionsForOdoo(acc)
+	// Cutoff journals (odooSyncSince) only own lines from the cutoff on —
+	// everything earlier is represented by the manual opening entry. With
+	// the local universe windowed here, pre-cutoff CHB-owned lines still in
+	// the journal naturally classify as orphans (deletable double-counts of
+	// the opening), and pre-cutoff local txs never count as Missing.
+	if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+		var windowed []TransactionEntry
+		for _, tx := range localTxs {
+			if tx.Timestamp >= cutoff.Unix() {
+				windowed = append(windowed, tx)
+			}
+		}
+		localTxs = windowed
+	}
 	localIDs := map[string]bool{}
 	// Legacy index: some imports stored `<chain>:<addr>:<chain>:<14-hex
 	// prefix>:<n>` (pre-NIP-73 tx.ID was `<chain>:<short_hash>`). Map the
@@ -2849,8 +2952,18 @@ type journalBalanceDiagnostic struct {
 	journalBalance float64
 	manualCount    int     // journal lines with no unique_import_id
 	manualSum      float64 // their contribution to the journal balance
-	balanceDelta   float64 // journalBalance - localBalance
+	balanceDelta   float64 // journalBalance - expected (local + expected opening)
+	residual       float64 // CHB-owned divergence: gap not attributable to manual lines
 	hasGap         bool
+
+	// Cutoff journals (odooSyncSince): local figures are windowed to the
+	// cutoff, expectedOpening is the locally-computed balance before it,
+	// and the manual lines are validated against it instead of being
+	// treated as deletable noise.
+	hasCutoff       bool
+	cutoff          string  // YYYY-MM-DD
+	expectedOpening float64 // locally-computed balance before the cutoff
+	openingDelta    float64 // manualSum - expectedOpening
 }
 
 // computeJournalBalanceDiagnostic derives the local↔journal gap from the
@@ -2861,20 +2974,70 @@ func computeJournalBalanceDiagnostic(res *odooOrphanFindResult) (journalBalanceD
 	if res == nil || res.Account == nil {
 		return journalBalanceDiagnostic{}, false
 	}
-	local := accountLocalOdooSyncSnapshot(res.Account)
+	cutoff, hasCutoff := res.Account.OdooSyncSinceTime()
+	local := accountLocalOdooSyncSnapshotSince(res.Account, cutoff)
+	expectedOpening := 0.0
+	if hasCutoff {
+		expectedOpening = accountLocalBalanceBefore(res.Account, cutoff)
+	}
 	journalCount := res.OdooImportedCount + len(res.Unowned)
 	journalBalance := roundCents(res.OdooImportedSum + res.UnownedSum)
 	d := journalBalanceDiagnostic{
-		localCount:     local.TxCount,
-		localBalance:   local.Balance,
-		journalCount:   journalCount,
-		journalBalance: journalBalance,
-		manualCount:    len(res.Unowned),
-		manualSum:      res.UnownedSum,
-		balanceDelta:   roundCents(journalBalance - local.Balance),
+		localCount:      local.TxCount,
+		localBalance:    local.Balance,
+		journalCount:    journalCount,
+		journalBalance:  journalBalance,
+		manualCount:     len(res.Unowned),
+		manualSum:       res.UnownedSum,
+		balanceDelta:    roundCents(journalBalance - local.Balance - expectedOpening),
+		hasCutoff:       hasCutoff,
+		expectedOpening: expectedOpening,
+	}
+	if hasCutoff {
+		d.cutoff = cutoff.Format("2006-01-02")
 	}
 	d.hasGap = math.Abs(d.balanceDelta) > 0.005
+	// The owned-line divergence is whatever part of the gap the manual
+	// lines don't account for. Without a cutoff the expected manual sum is
+	// zero; with one, it's the computed opening.
+	d.openingDelta = roundCents(d.manualSum - d.expectedOpening)
+	d.residual = roundCents(d.balanceDelta - d.openingDelta)
 	return d, true
+}
+
+// journalBalanceDiagnosticHints renders the explanation lines under the
+// balance diagnostic. Manual (non-chb) lines are deletable by the fix step
+// below; whatever part of the gap they do NOT explain (the residual) means
+// the journal disagrees with local on chb-owned lines — missing history,
+// drifted amounts — which only a full `push --force` rebuild resolves.
+func journalBalanceDiagnosticHints(d journalBalanceDiagnostic, acc *AccountConfig) []string {
+	var hints []string
+	switch {
+	case d.hasCutoff && d.manualCount > 0 && math.Abs(d.openingDelta) <= 0.005:
+		hints = append(hints, fmt.Sprintf("↳ %s (manual opening, %s) matches the locally-computed balance at %s ✓ — protected; fix never deletes it.",
+			Pluralize(d.manualCount, "opening entry", ""), fmtEURSigned(d.manualSum), d.cutoff))
+	case d.hasCutoff && d.manualCount > 0:
+		hints = append(hints, fmt.Sprintf("↳ manual opening entries sum %s but the locally-computed balance at %s is %s — adjust the opening entry by %s (protected; fix never deletes it).",
+			fmtEURSigned(d.manualSum), d.cutoff, fmtEURSigned(d.expectedOpening), fmtEURSigned(-d.openingDelta)))
+	case d.hasCutoff && d.expectedOpening != 0:
+		hints = append(hints, fmt.Sprintf("↳ no manual opening entry found — expected %s dated %s. Run: chb accounts %s push --force to rebuild the journal with a computed opening entry.",
+			fmtEURSigned(d.expectedOpening), d.cutoff, accSlugOrEmpty(acc)))
+	case d.manualCount > 0:
+		hints = append(hints, fmt.Sprintf("↳ %s with no unique_import_id (manual entries, %s) — not chb-owned; the delete step below can remove them.",
+			Pluralize(d.manualCount, "journal line", ""), fmtEURSigned(d.manualSum)))
+	}
+	if d.hasGap && math.Abs(d.residual) > 0.005 && acc != nil {
+		hints = append(hints, fmt.Sprintf("↳ %s of the gap is NOT explained by manual lines — the journal is missing or diverging on chb-owned lines. Run: chb accounts %s push --force (full rebuild from the local archive).",
+			fmtEURSigned(d.residual), acc.Slug))
+	}
+	return hints
+}
+
+func accSlugOrEmpty(acc *AccountConfig) string {
+	if acc == nil {
+		return "<slug>"
+	}
+	return acc.Slug
 }
 
 func printJournalBalanceDiagnostic(d journalBalanceDiagnostic, res *odooOrphanFindResult) {
@@ -2883,14 +3046,21 @@ func printJournalBalanceDiagnostic(d journalBalanceDiagnostic, res *odooOrphanFi
 		cur = accCurrency(res.Account)
 	}
 	fmt.Printf("\n  %sBalance diagnostic%s\n", Fmt.Bold, Fmt.Reset)
-	fmt.Printf("    %sLocal:%s    %s, %s\n",
-		Fmt.Dim, Fmt.Reset, Pluralize(d.localCount, "tx", ""), formatAccountDataBalance(d.localBalance, cur))
+	localLabel := ""
+	if d.hasCutoff {
+		localLabel = fmt.Sprintf("  %s(since %s; computed opening %s)%s", Fmt.Dim, d.cutoff, fmtEURSigned(d.expectedOpening), Fmt.Reset)
+	}
+	fmt.Printf("    %sLocal:%s    %s, %s%s\n",
+		Fmt.Dim, Fmt.Reset, Pluralize(d.localCount, "tx", ""), formatAccountDataBalance(d.localBalance, cur), localLabel)
 	fmt.Printf("    %sJournal:%s  %s, %s  %s(gap %s)%s\n",
 		Fmt.Dim, Fmt.Reset, Pluralize(d.journalCount, "line", ""), formatAccountDataBalance(d.journalBalance, cur),
 		Fmt.Dim, fmtEURSigned(d.balanceDelta), Fmt.Reset)
-	if d.manualCount > 0 {
-		fmt.Printf("    %s↳ %s with no unique_import_id (manual entries, %s) — not chb-owned; fix leaves them alone.%s\n",
-			Fmt.Dim, Pluralize(d.manualCount, "journal line", ""), fmtEURSigned(d.manualSum), Fmt.Reset)
+	var acc *AccountConfig
+	if res != nil {
+		acc = res.Account
+	}
+	for _, hint := range journalBalanceDiagnosticHints(d, acc) {
+		fmt.Printf("    %s%s%s\n", Fmt.Dim, hint, Fmt.Reset)
 	}
 	fmt.Println()
 }
@@ -2961,6 +3131,60 @@ func printMissingLines(missing []TransactionEntry, acc *AccountConfig) {
 	fmt.Println()
 }
 
+// detectStatementShapeRepairs surfaces the two statement-set defects the
+// per-statement invariant check can't see:
+//
+//   - Line-less statements: they carry no accounting data but distort the
+//     chain (their stale balances become the expected balance_start of
+//     whatever statement follows them). Stripe's trailing open statement
+//     is legitimately empty right after creation and is exempt.
+//   - A wrong opening anchor: the chain can be internally consistent yet
+//     uniformly shifted, because the repair walk trusts the first
+//     statement's balance_start. A blockchain wallet starts from zero, so
+//     once the journal's lines fully agree with the local archive the
+//     chronologically-first statement must open at 0.00. Stripe and KBC
+//     journals are excluded: their statement balances are managed by their
+//     own sync paths and a bank account may legitimately predate the data.
+func detectStatementShapeRepairs(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig) (stmts []journalStatement, emptyStmts []journalStatement, anchorRepair bool, err error) {
+	stmts, err = fetchJournalStatementsOrdered(creds, uid, journalID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	for _, s := range stmts {
+		if s.LineCount == 0 && s.Reference != "open" {
+			emptyStmts = append(emptyStmts, s)
+		}
+	}
+	if acc != nil && acc.Provider != "stripe" && acc.Provider != "kbcbrussels" {
+		if count, balance, aggErr := odooJournalAggregate(creds, uid, journalID); aggErr == nil {
+			cutoff, hasCutoff := acc.OdooSyncSinceTime()
+			local := accountLocalOdooSyncSnapshotSince(acc, cutoff)
+			// Cutoff journals carry the manual opening entry on top of the
+			// windowed lines: expect its value in the balance and skip the
+			// strict count check (the opening lines aren't local txs). The
+			// zero anchor stays correct either way — the opening entry is
+			// itself a statement line, so the chain still starts from 0.
+			converged := false
+			if hasCutoff {
+				opening := accountLocalBalanceBefore(acc, cutoff)
+				converged = math.Abs(balance-(local.Balance+opening)) < 0.005
+			} else {
+				converged = count == local.TxCount && math.Abs(balance-local.Balance) < 0.005
+			}
+			if converged {
+				for _, s := range stmts {
+					if s.LineCount == 0 {
+						continue
+					}
+					anchorRepair = math.Abs(s.BalanceStart) > 0.005
+					break
+				}
+			}
+		}
+	}
+	return stmts, emptyStmts, anchorRepair, nil
+}
+
 // fetchJournalStatementsOrdered returns all statements for the journal
 // ordered chronologically (date asc, id asc as tiebreaker).
 func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID int) ([]journalStatement, error) {
@@ -2970,7 +3194,7 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 			[]interface{}{"journal_id", "=", journalID},
 		}},
 		map[string]interface{}{
-			"fields": []string{"id", "name", "date", "balance_start", "balance_end_real", "reference"},
+			"fields": []string{"id", "name", "date", "line_ids", "balance_start", "balance_end_real", "reference"},
 			"order":  "date asc, id asc",
 		})
 	if err != nil {
@@ -2981,6 +3205,7 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 		Name           odooStr       `json:"name"`
 		Date           odooStr       `json:"date"`
 		Reference      odooStr       `json:"reference"`
+		LineIDs        []int         `json:"line_ids"`
 		BalanceStart   odooJSONFloat `json:"balance_start"`
 		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
 	}
@@ -2994,6 +3219,7 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 			Name:           string(r.Name),
 			Date:           string(r.Date),
 			Reference:      string(r.Reference),
+			LineCount:      len(r.LineIDs),
 			BalanceStart:   r.BalanceStart.Float64(),
 			BalanceEndReal: r.BalanceEndReal.Float64(),
 		})
@@ -3006,6 +3232,7 @@ type journalStatement struct {
 	Name           string
 	Date           string
 	Reference      string
+	LineCount      int
 	BalanceStart   float64
 	BalanceEndReal float64
 }
@@ -3408,6 +3635,25 @@ func odooJournalFullSync(creds *OdooCredentials, uid int, journalID int, syncArg
 			return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
 		}
 	}
+
+	// 4. Statement invariants: verify the statement chain and repair it
+	// when needed (line-less statements, balance_start/balance_end_real
+	// drift, non-zero anchor). Every repaired value derives from the line
+	// sums the push just settled, so this is safe to run on every sync;
+	// destructive line-level surgery stays in `journals <id> fix`.
+	if !HasFlag(syncArgs, "--dry-run") {
+		fmt.Printf("\n  %s④ Checking statement chain…%s\n", Fmt.Dim, Fmt.Reset)
+		issues, err := CheckOdooJournalStatements(creds, uid, journalID)
+		if err != nil {
+			Warnf("  %s⚠ Could not check statements: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			return nil
+		}
+		if err := repairJournalStatementChain(creds, uid, journalID, acc, issues,
+			HasFlag(syncArgs, "--yes", "-y"), false); err != nil {
+			return err
+		}
+		fmt.Printf("  %s✓ Statement chain checked%s\n", Fmt.Dim, Fmt.Reset)
+	}
 	return nil
 }
 
@@ -3465,7 +3711,65 @@ func odooJournalsSyncAll(args []string) error {
 	pushAttentionHints = nil
 	defer func() { pushAttentionHints = nil }()
 
+	// Pre-flight: verify every linked journal still exists in the target Odoo
+	// DB before pushing anything. A dangling link (journal deleted in Odoo, or
+	// odoo-journals.json carried over from another instance) would otherwise
+	// fail mid-push with an opaque RPC error. Missing journals are skipped —
+	// with the repair command — and counted as failures so cron exits non-zero.
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return err
+	}
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
+	if err != nil || uid == 0 {
+		return wrapOdooAuthError(err)
+	}
+	journalIDs := make([]int, 0, len(targets))
+	for _, t := range targets {
+		journalIDs = append(journalIDs, t.journalID)
+	}
+	missing, lookupErr := missingOdooJournals(creds, uid, journalIDs)
+	if lookupErr != nil {
+		// Soft-fail: if the instance is genuinely unreachable, each
+		// per-journal push surfaces its own error below.
+		Warnf("%s⚠ Could not verify linked Odoo journals exist: %v%s", Fmt.Yellow, lookupErr, Fmt.Reset)
+		missing = nil
+	}
+
 	failed := 0
+	var missingSlugs []string
+	if len(missing) > 0 {
+		kept := targets[:0]
+		for _, t := range targets {
+			if !missing[t.journalID] {
+				kept = append(kept, t)
+				continue
+			}
+			failed++
+			missingSlugs = append(missingSlugs, t.slug)
+			linkCmd := fmt.Sprintf("chb accounts %s link", t.slug)
+			skipErr := fmt.Errorf("journal #%d does not exist in Odoo (%s) — create the journal and update the link: %s",
+				t.journalID, creds.DB, linkCmd)
+			pushAttentionHints = append(pushAttentionHints, pushAttentionHint{
+				JournalID: t.journalID,
+				Slug:      t.slug,
+				Message:   fmt.Sprintf("linked journal does not exist in Odoo (%s) — create it and update the link", creds.DB),
+				Suggested: linkCmd,
+			})
+			if !verbose {
+				label := fmt.Sprintf("#%-*d %s", wJID-1, t.journalID, t.slug)
+				diag := BeginStepDiagnostics(label)
+				diag.Errors = append(diag.Errors, skipErr.Error())
+				EndStepDiagnostics()
+				sl := NewStatusLine(label)
+				sl.Final(StepMark(skipErr, diag), Fmt.Red+"skipped — "+truncErr(skipErr)+Fmt.Reset)
+			} else {
+				fmt.Printf("  %s✗ #%d %s: skipped — %v%s\n", Fmt.Red, t.journalID, t.slug, skipErr, Fmt.Reset)
+			}
+		}
+		targets = kept
+	}
+
 	if !verbose {
 		// Compact mode: serial loop with per-journal status line +
 		// silenced stdout. Sub-step chatter goes to /dev/null; the
@@ -3562,9 +3866,54 @@ func odooJournalsSyncAll(args []string) error {
 	}
 
 	if failed > 0 {
+		if len(missingSlugs) > 0 {
+			return fmt.Errorf("%s failed (%s missing in Odoo for %s — create the journal and update the link: chb accounts <slug> link)",
+				Pluralize(failed, "journal", ""),
+				Pluralize(len(missingSlugs), "linked journal", ""),
+				strings.Join(missingSlugs, ", "))
+		}
 		return fmt.Errorf("%s failed", Pluralize(failed, "journal", ""))
 	}
 	return nil
+}
+
+// missingOdooJournals returns the subset of journalIDs that do NOT exist in
+// the configured Odoo database. Names of the journals that do exist are
+// cached as a side effect so later rows can label them. The check is a single
+// batched search_read, so it costs one RPC regardless of how many accounts
+// are linked.
+func missingOdooJournals(creds *OdooCredentials, uid int, journalIDs []int) (map[int]bool, error) {
+	if len(journalIDs) == 0 {
+		return nil, nil
+	}
+	result, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.journal", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"id", "in", journalIDs},
+		}},
+		map[string]interface{}{"fields": []string{"id", "name"}})
+	if err != nil {
+		return nil, err
+	}
+	var journals []struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(result, &journals); err != nil {
+		return nil, err
+	}
+	exists := make(map[int]bool, len(journals))
+	for _, j := range journals {
+		exists[j.ID] = true
+		CacheOdooJournalName(j.ID, j.Name)
+	}
+	missing := map[int]bool{}
+	for _, id := range journalIDs {
+		if !exists[id] {
+			missing[id] = true
+		}
+	}
+	return missing, nil
 }
 
 // formatCompactJournalRow turns a captured journalSyncRow into a

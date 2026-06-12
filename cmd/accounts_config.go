@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // AccountConfig represents a finance account in accounts.json.
@@ -28,6 +29,7 @@ type AccountConfig struct {
 	WalletType        string `json:"walletType,omitempty"`        // "eoa" or "safe"
 	OdooJournalID     int    `json:"odooJournalId,omitempty"`     // linked Odoo bank journal ID
 	OdooSourceOfTruth bool   `json:"odooSourceOfTruth,omitempty"` // true when Odoo journal lines are authoritative and CHB must not push local txs into it
+	OdooSyncSince     string `json:"odooSyncSince,omitempty"`     // journal starts at this date (YYYY-MM-DD) with a manual opening-balance entry; CHB owns only lines from this date on
 	ArchivedAt        string `json:"archivedAt,omitempty"`        // date after which the account is no longer active (YYYY-MM-DD)
 	Token             *struct {
 		Address  string `json:"address"`
@@ -66,6 +68,22 @@ func (a *AccountConfig) IsSafe() bool {
 // must not push locally generated transactions into their journal.
 func (a *AccountConfig) IsOdooSourceOfTruth() bool {
 	return a != nil && a.OdooSourceOfTruth
+}
+
+// OdooSyncSinceTime parses the odooSyncSince cutoff. When set, the Odoo
+// journal is expected to hold a manual opening-balance entry at the cutoff
+// plus CHB-owned lines from the cutoff on; all push and repair tooling
+// windows the local transaction universe to >= this date (Brussels time).
+// Returns ok=false when unset or malformed.
+func (a *AccountConfig) OdooSyncSinceTime() (time.Time, bool) {
+	if a == nil || a.OdooSyncSince == "" {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006-01-02", a.OdooSyncSince, BrusselsTZ())
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 func accountsConfigPath() string {
