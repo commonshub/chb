@@ -2191,14 +2191,17 @@ func repairJournalStatementChain(creds *OdooCredentials, uid int, journalID int,
 		if droppedStmts[s.ID] || (dryRun && s.LineCount == 0 && s.Reference != "open") {
 			continue
 		}
-		// The open (trailing) statement mirrors live Stripe state. Leave
-		// both its balance_start and balance_end_real alone — they are
-		// managed by the sync, not the repair tool.
-		if s.Reference == "open" {
-			fmt.Printf("  %s↷ Skipping open statement #%d %s (live-synced, not repaired)%s\n",
-				Fmt.Dim, s.ID, s.Name, Fmt.Reset)
-			continue
-		}
+		// The open (trailing) statement is repaired like any other: its
+		// balance_start must chain from the previous statement's end, and
+		// balance_end_real must equal balance_start + Σ(lines). That is the
+		// SAME derived value the Stripe sync writes when it closes/updates
+		// the statement, so re-deriving it here never fights the sync — it
+		// only corrects drift the sync hasn't reconciled yet (e.g. lines
+		// added between syncs). Previously this statement was skipped, which
+		// left an invalid open statement that `fix` reported but could never
+		// clear. Note: this repairs the statement INVARIANT only; if the
+		// journal total still disagrees with live, that is line-level drift
+		// surfaced by the balance diagnostic and resolved by `sync`.
 		sum, err := statementLineSum(creds, uid, s.ID)
 		if err != nil {
 			fmt.Printf("  %s✗ #%d %s: line sum: %v%s\n", Fmt.Red, s.ID, s.Name, err, Fmt.Reset)
@@ -4029,6 +4032,8 @@ func PrintOdooHelp() {
 	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <src> --merge-with <target>%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sMerge one journal into another (move reconciliations + entries, then delete the source)%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("  %s%schb odoo fix%s\n", f.Bold, f.Cyan, f.Reset)
+	fmt.Printf("    %sRemove duplicate analytic accounts and bind slugs so sync stops recreating twins%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo get <ref>%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sInspect an Odoo statement line by unique_import_id%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo backup%s\n", f.Bold, f.Cyan, f.Reset)
