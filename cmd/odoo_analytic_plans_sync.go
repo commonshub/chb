@@ -64,6 +64,18 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, 
 		return nil, fmt.Errorf("accounts: %v", err)
 	}
 
+	// Persistent slug→id bindings (written by `chb odoo fix`) let us reuse an
+	// account by id regardless of its display name, so an acronym/human-named
+	// account never spawns a twin. Only honour a binding whose id is still a
+	// live account on a managed plan — a stale binding (account deleted or
+	// archived) falls through to name-match/create and self-heals on the next
+	// `chb odoo fix`.
+	byID := map[int]analyticExistingAccount{}
+	for _, a := range existingAccounts {
+		byID[a.ID] = a
+	}
+	resolved := resolveAnalyticBindings(loadOdooAnalyticLinks(), byID)
+
 	// Categories: each odoo_rule with a non-empty category becomes an
 	// analytic account on the costs or income plan, depending on the
 	// rule's direction.
@@ -81,6 +93,9 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, 
 
 	var missing []analyticAccountSpec
 	for _, spec := range append(append([]analyticAccountSpec{}, wantCategories...), wantCollectives...) {
+		if resolved[analyticLinkKey(spec.Kind, spec.Slug)].ID > 0 {
+			continue // a live binding already points this slug at an account
+		}
 		if existing[analyticAccountKey(spec.PlanID, spec.Name)] == 0 {
 			missing = append(missing, spec)
 		}
@@ -90,11 +105,11 @@ func syncOdooAnalyticInfrastructure(creds *OdooCredentials, uid int, assumeYes, 
 		createMissing = approveAnalyticAccountCreation(missing, existingAccounts, plans, assumeYes, dryRun)
 	}
 
-	catAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCategories, existing, createMissing)
+	catAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCategories, existing, resolved, createMissing)
 	if err != nil {
 		return nil, fmt.Errorf("category accounts: %v", err)
 	}
-	collAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCollectives, existing, createMissing)
+	collAccounts, err := ensureOdooAnalyticAccounts(creds, uid, wantCollectives, existing, resolved, createMissing)
 	if err != nil {
 		return nil, fmt.Errorf("collective accounts: %v", err)
 	}
@@ -220,6 +235,7 @@ type analyticAccountSpec struct {
 	Slug   string
 	Name   string
 	PlanID int
+	Kind   string // "category" | "collective" — identity scope for the binding store
 }
 
 // categoryAccountSpecs walks the OdooMapping chain. Each mapping with a
@@ -257,6 +273,7 @@ func categoryAccountSpecs(plans OdooAnalyticPlanIDs) ([]analyticAccountSpec, err
 			Slug:   key,
 			Name:   prettyCategoryName(cat),
 			PlanID: planID,
+			Kind:   "category",
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
@@ -286,6 +303,7 @@ func collectiveAccountSpecs(plans OdooAnalyticPlanIDs) ([]analyticAccountSpec, e
 			Slug:   key,
 			Name:   prettyCollectiveName(coll),
 			PlanID: plans.Collective,
+			Kind:   "collective",
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
@@ -362,16 +380,44 @@ func analyticAccountKey(planID int, name string) string {
 	return fmt.Sprintf("%d:%s", planID, strings.ToLower(name))
 }
 
+// resolveAnalyticBindings filters the persisted slug→id bindings down to the
+// ones whose account is still live (present in byID), keyed by the same
+// "<kind>:<slug>" identity. A binding to a deleted/archived account is dropped
+// from the result so callers fall back to name-match/create.
+func resolveAnalyticBindings(links OdooAnalyticLinks, byID map[int]analyticExistingAccount) map[string]analyticExistingAccount {
+	out := make(map[string]analyticExistingAccount, len(links))
+	for key, id := range links {
+		if acc, ok := byID[id]; ok {
+			out[key] = acc
+		}
+	}
+	return out
+}
+
 // ensureOdooAnalyticAccounts creates any missing accounts and returns
 // the resulting cache entries. existing is mutated in-place so a single
-// fetch can be reused across category + collective passes. When
-// createMissing is false (creation declined or unattended run), specs
-// without an existing account are skipped — they simply don't appear in
-// the cache, so categorize leaves those lines untouched until the
-// operator creates or renames the account.
-func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyticAccountSpec, existing map[string]int, createMissing bool) ([]OdooAnalyticAccountID, error) {
+// fetch can be reused across category + collective passes.
+//
+// Resolution order per spec: (1) a live binding in resolved reuses that
+// account by id regardless of its display name — this is what stops a slug
+// whose pretty-name differs from the Odoo name (acronyms, human names) from
+// spawning a twin; (2) a name-match in existing reuses by name; (3) otherwise
+// create, unless createMissing is false (creation declined or unattended run),
+// in which case the spec is skipped — it simply doesn't appear in the cache,
+// so categorize leaves those lines untouched until the operator creates the
+// account or runs `chb odoo fix`.
+func ensureOdooAnalyticAccounts(creds *OdooCredentials, uid int, specs []analyticAccountSpec, existing map[string]int, resolved map[string]analyticExistingAccount, createMissing bool) ([]OdooAnalyticAccountID, error) {
 	out := make([]OdooAnalyticAccountID, 0, len(specs))
 	for _, spec := range specs {
+		if acc, ok := resolved[analyticLinkKey(spec.Kind, spec.Slug)]; ok && acc.ID > 0 {
+			out = append(out, OdooAnalyticAccountID{
+				Slug:      spec.Slug,
+				Name:      acc.Name, // the real Odoo name, not the slug-derived one
+				PlanID:    spec.PlanID,
+				AccountID: acc.ID,
+			})
+			continue
+		}
 		key := analyticAccountKey(spec.PlanID, spec.Name)
 		if id, ok := existing[key]; ok && id > 0 {
 			out = append(out, OdooAnalyticAccountID{

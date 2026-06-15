@@ -61,11 +61,37 @@ func TestEnsureOdooAnalyticAccountsSkipsCreatesWhenDeclined(t *testing.T) {
 		{Slug: "block26", Name: "Block26", PlanID: 3},
 		{Slug: "newcollective", Name: "Newcollective", PlanID: 3},
 	}
-	out, err := ensureOdooAnalyticAccounts(nil, 0, specs, existing, false)
+	out, err := ensureOdooAnalyticAccounts(nil, 0, specs, existing, nil, false)
 	if err != nil {
 		t.Fatalf("ensureOdooAnalyticAccounts: %v", err)
 	}
 	if len(out) != 1 || out[0].AccountID != 78 || out[0].Slug != "block26" {
 		t.Fatalf("expected only the existing account to be returned, got %+v", out)
+	}
+}
+
+// A live binding must reuse the bound account by id — before any name-match
+// and without creating — and surface the account's REAL Odoo name (not the
+// slug-derived one), even when the slug's pretty-name differs.
+func TestEnsureOdooAnalyticAccountsReusesByBinding(t *testing.T) {
+	// No name-match entry: "Open Letter" would not match slug-derived "Openletter".
+	existing := map[string]int{}
+	resolved := map[string]analyticExistingAccount{
+		analyticLinkKey("collective", "openletter"): {ID: 17, PlanID: 3, Name: "Open Letter"},
+	}
+	specs := []analyticAccountSpec{
+		{Slug: "openletter", Name: "Openletter", PlanID: 3, Kind: "collective"},
+	}
+	// createMissing=false would normally skip an un-found spec; the binding
+	// must still resolve it. nil creds are safe because no create runs.
+	out, err := ensureOdooAnalyticAccounts(nil, 0, specs, existing, resolved, false)
+	if err != nil {
+		t.Fatalf("ensureOdooAnalyticAccounts: %v", err)
+	}
+	if len(out) != 1 || out[0].AccountID != 17 {
+		t.Fatalf("expected binding to reuse #17, got %+v", out)
+	}
+	if out[0].Name != "Open Letter" {
+		t.Fatalf("cache should carry the real Odoo name, got %q", out[0].Name)
 	}
 }

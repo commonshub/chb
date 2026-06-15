@@ -366,6 +366,12 @@ func main() {
 			if err := cmd.OdooJournals(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "fix":
+			// Dedup analytic accounts + bind slugs so sync stops recreating
+			// twins. Distinct from `chb odoo journals <id> fix` (line repair).
+			if err := cmd.OdooFix(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "reconcile":
 			if err := cmd.OdooReconcileCommand(args[2:]); err != nil {
 				exitWithError(err)
