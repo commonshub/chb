@@ -238,24 +238,45 @@ func syncStripeChronological(
 		runningBalance = 0
 	}
 
-	// De-dup against anything already in Odoo (belt & suspenders for
-	// partial previous runs).
+	// De-dup against anything already in Odoo. Prefer the local journal-lines
+	// cache: the push entry just freshness-verified it (verifyOdooJournalCacheFresh)
+	// and a --startingBalance convergence refreshes it, and it already holds
+	// every line's unique_import_id + id + payment_ref + narration. Reading it
+	// replaces a full-journal search_read over the wire (the dominant cost
+	// before the first "preparing balance transaction" line on a large journal)
+	// with one cheap aggregate check + a local file read. We fall back to the
+	// live fetch when no cache exists or it no longer matches Odoo's
+	// count+balance. --force skips the cache (the journal is being wiped).
 	existingIDs := map[string]bool{}
-	if !(dryRun && force) {
+	var existingRows map[string]map[string]interface{}
+	usedCache := false
+	if !force {
+		if progressVisible {
+			progressStatus.Update("Stripe transactions: reading local journal cache...")
+		}
+		if ids, rows, ok := stripeExistingFromJournalCache(creds, uid, acc.OdooJournalID); ok {
+			existingIDs = ids
+			existingRows = rows
+			usedCache = true
+		}
+	}
+	if !usedCache && !(dryRun && force) {
 		if useHistory {
 			existingIDs, _ = fetchOdooImportIDs(creds.URL, creds.DB, uid, creds.Password, acc.OdooJournalID)
 		} else {
 			existingIDs, _ = fetchOdooImportIDsForStripeBTs(creds, uid, acc.OdooJournalID, acc, bts)
 		}
 	}
-	var existingImportIDs []string
-	for _, bt := range bts {
-		importID := stripeBTImportID(acc, bt)
-		if existingIDs[importID] {
-			existingImportIDs = append(existingImportIDs, importID)
+	if existingRows == nil {
+		var existingImportIDs []string
+		for _, bt := range bts {
+			importID := stripeBTImportID(acc, bt)
+			if existingIDs[importID] {
+				existingImportIDs = append(existingImportIDs, importID)
+			}
 		}
+		existingRows, _ = fetchOdooStatementLinesByImportID(creds, uid, existingImportIDs)
 	}
-	existingRows, _ := fetchOdooStatementLinesByImportID(creds, uid, existingImportIDs)
 
 	stats := &syncStats{}
 	partnerCache := map[string]int{}
@@ -950,6 +971,49 @@ func fetchOdooImportIDsForStripeBTs(creds *OdooCredentials, uid int, journalID i
 		}
 	}
 	return result, nil
+}
+
+// stripeExistingFromJournalCache builds the dedup set (unique_import_id →
+// present) and the existing-row lookup (import_id → {id, payment_ref,
+// narration}) from the local journal-lines cache, so the Stripe push can
+// skip the full-journal scan over the wire. The cache is the local mirror
+// of the journal's Odoo lines; it carries exactly the three fields the
+// dedup/update path reads. Returns ok=false when there's no usable cache
+// or it no longer matches Odoo's count+balance (one cheap aggregate RPC via
+// journalCacheMatchesOdoo), so the caller falls back to a live fetch.
+func stripeExistingFromJournalCache(creds *OdooCredentials, uid, journalID int) (map[string]bool, map[string]map[string]interface{}, bool) {
+	lines, ok := loadLatestOdooJournalLinesCache(journalID)
+	if !ok || len(lines) == 0 {
+		return nil, nil, false
+	}
+	if !journalCacheMatchesOdoo(creds, uid, journalID, lines) {
+		return nil, nil, false
+	}
+	ids, rows := buildStripeExistingFromCacheLines(lines)
+	return ids, rows, true
+}
+
+// buildStripeExistingFromCacheLines is the pure mapping from cached journal
+// lines to the (dedup set, existing-row lookup) the Stripe push consumes.
+// Lines without a unique_import_id (e.g. the manual opening entry) are
+// skipped — they never collide with a Stripe BT. The row map mirrors the
+// three Odoo fields the update path reads (id, payment_ref, narration), with
+// the same Go types odooInt/odooString expect.
+func buildStripeExistingFromCacheLines(lines []OdooCacheLine) (map[string]bool, map[string]map[string]interface{}) {
+	ids := make(map[string]bool, len(lines))
+	rows := make(map[string]map[string]interface{}, len(lines))
+	for _, l := range lines {
+		if l.UniqueImportID == "" {
+			continue
+		}
+		ids[l.UniqueImportID] = true
+		rows[l.UniqueImportID] = map[string]interface{}{
+			"id":          l.ID,
+			"payment_ref": l.PaymentRef,
+			"narration":   l.Narration,
+		}
+	}
+	return ids, rows
 }
 
 func stripeBTImportID(acc *AccountConfig, bt stripesource.Transaction) string {

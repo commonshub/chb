@@ -667,3 +667,33 @@ func TestBuildUniqueImportIDStripeHasNoSyntheticIndex(t *testing.T) {
 		t.Fatalf("buildUniqueImportID() = %q, want %q", got, want)
 	}
 }
+
+func TestBuildStripeExistingFromCacheLines(t *testing.T) {
+	lines := []OdooCacheLine{
+		{ID: 10, UniqueImportID: "stripe:acct_x:txn_1", PaymentRef: "Coffee", Narration: "n1"},
+		{ID: 11, UniqueImportID: "stripe:acct_x:txn_2", PaymentRef: "Tea"},
+		{ID: 12, UniqueImportID: "", PaymentRef: "Solde de départ"}, // opening entry: no import id
+	}
+	ids, rows := buildStripeExistingFromCacheLines(lines)
+
+	if !ids["stripe:acct_x:txn_1"] || !ids["stripe:acct_x:txn_2"] {
+		t.Fatalf("dedup set missing import ids: %v", ids)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("import-id-less line must be skipped, got %d ids", len(ids))
+	}
+	row := rows["stripe:acct_x:txn_1"]
+	if row == nil {
+		t.Fatal("missing row for txn_1")
+	}
+	// Types must match what odooInt/odooString expect downstream.
+	if odooInt(row["id"]) != 10 {
+		t.Fatalf("row id = %v, want 10", row["id"])
+	}
+	if odooString(row["payment_ref"]) != "Coffee" {
+		t.Fatalf("row payment_ref = %v, want Coffee", row["payment_ref"])
+	}
+	if odooString(row["narration"]) != "n1" {
+		t.Fatalf("row narration = %v, want n1", row["narration"])
+	}
+}
