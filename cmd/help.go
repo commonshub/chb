@@ -205,22 +205,64 @@ func PrintToolsHelp() {
   %schb tools%s <command> [options]
 
 %sCOMMANDS%s
-  %sgetUrlMetadata%s <url>   Fetch title, description, and og:image from a page
+  %sgetUrlMetadata%s <url>                  Fetch title, description, and og:image from a page
+  %sbalance%s <chain:token:address> [date]  Fetch ERC20 balance via Etherscan V2
 
 %sEXAMPLES%s
   %schb tools getUrlMetadata%s https://example.com/event
-  %schb tools getUrlMetadata%s https://example.com/event --verbose
-  %schb tools getUrlMetadata%s https://example.com/event --debug
+  %schb tool balance%s gnosis:EURe:0xabc... 2026-05-23
+  %schb tool balance%s USDC:0xabc...
 	`,
 		f.Bold, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
 		f.Bold, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
 		f.Cyan, f.Reset,
+	)
+}
+
+func PrintBalanceToolHelp() {
+	f := Fmt
+	fmt.Printf(`
+%schb tool balance%s — Fetch an ERC20 token balance via Etherscan V2
+
+%sUSAGE%s
+  %schb tool balance%s <chain:token:address> [date]
+  %schb tool balance%s <token:address> [date]  # defaults chain to ethereum
+
+%sARGUMENTS%s
+  %schain%s     Chain slug: ethereum (default), gnosis, celo/cell, polygon, base, arbitrum, optimism
+  %stoken%s     ERC20 contract address, or a configured/well-known symbol like EURe or USDC
+  %saddress%s   Wallet address
+  %sdate%s      Optional date (%s), or RFC3339 timestamp. Date-only values mean end of day in Europe/Brussels.
+
+%sEXAMPLES%s
+  %schb tool balance%s gnosis:EURe:0x1234567890123456789012345678901234567890
+  %schb tool balance%s gnosis:EURe:0x1234567890123456789012345678901234567890 2026-05-23
+  %schb tool balance%s USDC:0x1234567890123456789012345678901234567890
+
+%sENV%s
+  Requires ETHERSCAN_API_KEY (GNOSISSCAN_API_KEY is accepted as a fallback).
+	`,
+		f.Bold, f.Reset,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
+		f.Dim, f.Reset,
+		f.Dim, f.Reset,
+		f.Dim, f.Reset,
+		f.Dim, f.Reset, DateFormatHelp,
+		f.Bold, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Cyan, f.Reset,
+		f.Bold, f.Reset,
 	)
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 func Tools(args []string) error {
-	if len(args) == 0 || HasFlag(args, "--help", "-h", "help") {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || strings.EqualFold(args[0], "help") {
 		PrintToolsHelp()
 		return nil
 	}
@@ -16,6 +16,8 @@ func Tools(args []string) error {
 	switch {
 	case strings.EqualFold(args[0], "getUrlMetadata"), strings.EqualFold(args[0], "get-url-metadata"):
 		return GetURLMetadata(args[1:])
+	case strings.EqualFold(args[0], "balance"):
+		return BalanceTool(args[1:])
 	default:
 		return fmt.Errorf("unknown tools command: %s", args[0])
 	}

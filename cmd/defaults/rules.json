@@ -162,6 +162,18 @@
   },
   {
     "match": {
+      "provider": "etherscan",
+      "currency": "EURe",
+      "amount": -6176,
+      "direction": "out"
+    },
+    "assign": {
+      "category": "rent",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
       "iban": "NL41CITI2032304805",
       "currency": "EURe",
       "direction": "in"

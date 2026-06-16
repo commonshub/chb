@@ -75,6 +75,10 @@ func main() {
 		}
 	case "settings":
 		cmd.PrintSettings()
+	case "tool":
+		if err := cmd.Tools(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "tokens":
 		cmd.Tokens(args[1:])
 	case "update":

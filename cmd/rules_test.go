@@ -28,6 +28,35 @@ func TestRuleMatchesAmountRoundedToCents(t *testing.T) {
 	}
 }
 
+func TestRuleMatchesSignedOutgoingBlockchainAmount(t *testing.T) {
+	amount := -6176.0
+	rule := Rule{
+		Match: RuleMatch{
+			Provider:  "etherscan",
+			Currency:  "EURe",
+			Amount:    &amount,
+			Direction: "out",
+		},
+		Assign: RuleAssign{Category: "rent", Collective: "commonshub"},
+	}
+	tx := TransactionEntry{
+		Provider:    "etherscan",
+		AccountSlug: "gnosis",
+		Currency:    "EURe",
+		Type:        "DEBIT",
+		Amount:      6176,
+		GrossAmount: 6176,
+	}
+	if !rule.MatchesTransaction(tx) {
+		t.Fatalf("outgoing blockchain amount should match signed gross rule")
+	}
+
+	tx.Currency = "EUR"
+	if rule.MatchesTransaction(tx) {
+		t.Fatalf("rule should not match a different currency")
+	}
+}
+
 func TestRuleMatchesPaymentLink(t *testing.T) {
 	rule := Rule{
 		Match: RuleMatch{
@@ -230,8 +259,8 @@ func TestInvoiceRuleDescriptionMatchesLineItems(t *testing.T) {
 	}
 
 	cases := []struct {
-		title    string
-		wantCat  string
+		title   string
+		wantCat string
 	}{
 		{"Satoshi meeting room booking", "rental"},
 		{"Ostrom Event Space", ""}, // contains neither "room" nor "cowork"
@@ -325,8 +354,8 @@ func TestInvoiceRuleSubstringGlobCatchesReversal(t *testing.T) {
 		{Target: "invoice", Match: RuleMatch{Title: "*CHB/*"}, Assign: RuleAssign{Category: "rental"}},
 	}
 	cases := []struct {
-		title    string
-		wantCat  string
+		title   string
+		wantCat string
 	}{
 		{"CHB/2026/00299", "rental"},
 		{"Reversal of: CHB/2025/00076, Membership cancelled", "rental"},
