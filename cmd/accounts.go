@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -1439,109 +1440,185 @@ func Accounts(args []string) {
 
 	faAccounts := ToFinanceAccounts(configs)
 	summaries := computeAccountSummaries()
-	refresh := HasFlag(args, "--refresh", "-r")
+	details := HasFlag(args, "--details")
+	// --live (alias --refresh/-r) fetches balances from the network and caches
+	// them. By default `chb accounts` stays offline: it reads the cached
+	// balances if present, otherwise falls back to the tx-history figure.
+	live := HasFlag(args, "--live", "--refresh", "-r")
 
-	// Load cached balances or fetch live
 	var liveBalances map[string]float64
 	var cacheTime string
-
-	cache := loadBalanceCache()
-	if cache != nil && !refresh {
-		liveBalances = cache.Balances
-		cacheTime = cache.FetchedAt
-	} else {
-		fmt.Printf("  Fetching on-chain balances...\n")
+	if live {
+		fmt.Printf("  Fetching live balances...\n")
 		liveBalances = fetchLiveBalances(configs)
 		cacheTime = time.Now().UTC().Format(time.RFC3339)
+	} else if cache := loadBalanceCache(); cache != nil {
+		liveBalances = cache.Balances
+		cacheTime = cache.FetchedAt
 	}
-
-	// Odoo sync status for accounts with linked journals. Local-cache only by
-	// default so `chb accounts` stays instant; --refresh queries Odoo live.
-	var odooStatuses map[int]*odooSyncStatus
-	if refresh {
-		odooStatuses = fetchOdooSyncStatuses(configs, summaries)
-	} else {
-		odooStatuses = localOdooSyncStatuses(configs, summaries)
-	}
-
-	fmt.Printf("\n%s💰 Configured Accounts%s (%d)", Fmt.Bold, Fmt.Reset, len(configs))
-	if cacheTime != "" {
-		if t, err := time.Parse(time.RFC3339, cacheTime); err == nil {
-			fmt.Printf("  %s(balances: %s)%s", Fmt.Dim, formatTimeAgo(t), Fmt.Reset)
-		}
-	}
-	fmt.Println()
-	fmt.Println()
 
 	// Track totals per currency
 	totals := map[string]float64{}
 
-	for i, acc := range configs {
-		fa := faAccounts[i]
-		currency := acc.Currency
-		if currency == "" && acc.Token != nil {
-			currency = acc.Token.Symbol
-		}
-		if currency == "" {
-			currency = "EUR"
-		}
-
-		s := summaries[accountKey(fa)]
-
-		// Use live balance: canonical (chain-qualified for etherscan) key first
-		var balance float64
-		hasBalance := false
-		for _, key := range accountBalanceLookupKeys(&acc) {
-			if liveBalance, ok := liveBalances[strings.ToLower(key)]; ok {
-				balance = liveBalance
-				hasBalance = true
-				break
+	if details {
+		fmt.Printf("\n%s💰 Configured Accounts%s (%d)", Fmt.Bold, Fmt.Reset, len(configs))
+		if cacheTime != "" {
+			if t, err := time.Parse(time.RFC3339, cacheTime); err == nil {
+				fmt.Printf("  %s(balances: %s)%s", Fmt.Dim, formatTimeAgo(t), Fmt.Reset)
 			}
 		}
-		if !hasBalance && s != nil && s.TxCount > 0 {
-			balance = s.Balance
-			hasBalance = true
-		}
-
-		if hasBalance {
-			totals[currency] += balance
-		}
-
-		// Account header: slug as title, balance to the right.
-		if hasBalance {
-			fmt.Printf("  %s%s%s  %s\n", Fmt.Bold, acc.Slug, Fmt.Reset, formatBalance(balance, currency))
-		} else {
-			fmt.Printf("  %s%s%s\n", Fmt.Bold, acc.Slug, Fmt.Reset)
-		}
-
-		printAccountField("    ", "Name", acc.Name)
-		printAccountOnlineLink(&acc, "    ")
-
-		if s != nil && !s.LastTxAt.IsZero() {
-			printAccountField("    ", "Last tx", formatTimeAgoWithAbsolute(s.LastTxAt))
-		}
-
-		lastSync := LastSyncTime("account:" + strings.ToLower(acc.Slug))
-		lastFull := LastFullSyncTime("account:" + strings.ToLower(acc.Slug))
-		fullSyncRequired := lastFull.IsZero()
-		if !lastSync.IsZero() {
-			val := formatTimeAgoWithAbsolute(lastSync)
-			if fullSyncRequired {
-				val += fmt.Sprintf("  %s⚠ full sync required (run with --history)%s", Fmt.Yellow, Fmt.Reset)
-			}
-			printAccountField("    ", "Last sync", val)
-		} else if fullSyncRequired {
-			printAccountField("    ", "Last sync", fmt.Sprintf("%s⚠ never — run with --history%s", Fmt.Yellow, Fmt.Reset))
-		}
-
-		if acc.OdooJournalID > 0 {
-			printAccountField("    ", "Odoo", formatAccountOdooStatus(acc.OdooJournalID, odooStatuses[acc.OdooJournalID]))
-		}
-
 		fmt.Println()
+		fmt.Println()
+
+		// Odoo sync status for accounts with linked journals. Local-cache only
+		// by default so the view stays instant; --live queries Odoo live.
+		var odooStatuses map[int]*odooSyncStatus
+		if live {
+			odooStatuses = fetchOdooSyncStatuses(configs, summaries)
+		} else {
+			odooStatuses = localOdooSyncStatuses(configs, summaries)
+		}
+
+		for i, acc := range configs {
+			fa := faAccounts[i]
+			currency := accountCurrency(&acc)
+			s := summaries[accountKey(fa)]
+			balance, _, hasBalance := resolveAccountBalance(&acc, liveBalances, s)
+			if hasBalance {
+				totals[currency] += balance
+			}
+
+			// Account header: slug as title, balance to the right.
+			if hasBalance {
+				fmt.Printf("  %s%s%s  %s\n", Fmt.Bold, acc.Slug, Fmt.Reset, formatBalance(balance, currency))
+			} else {
+				fmt.Printf("  %s%s%s\n", Fmt.Bold, acc.Slug, Fmt.Reset)
+			}
+
+			printAccountField("    ", "Name", acc.Name)
+			printAccountOnlineLink(&acc, "    ")
+
+			if s != nil && !s.LastTxAt.IsZero() {
+				printAccountField("    ", "Last tx", formatTimeAgoWithAbsolute(s.LastTxAt))
+			}
+
+			lastSync := LastSyncTime("account:" + strings.ToLower(acc.Slug))
+			lastFull := LastFullSyncTime("account:" + strings.ToLower(acc.Slug))
+			fullSyncRequired := lastFull.IsZero()
+			if !lastSync.IsZero() {
+				val := formatTimeAgoWithAbsolute(lastSync)
+				if fullSyncRequired {
+					val += fmt.Sprintf("  %s⚠ full sync required (run with --history)%s", Fmt.Yellow, Fmt.Reset)
+				}
+				printAccountField("    ", "Last sync", val)
+			} else if fullSyncRequired {
+				printAccountField("    ", "Last sync", fmt.Sprintf("%s⚠ never — run with --history%s", Fmt.Yellow, Fmt.Reset))
+			}
+
+			if acc.OdooJournalID > 0 {
+				printAccountField("    ", "Odoo", formatAccountOdooStatus(acc.OdooJournalID, odooStatuses[acc.OdooJournalID]))
+			}
+
+			fmt.Println()
+		}
+	} else {
+		// Default: one compact line per account — slug on the left, balance
+		// right-aligned, ordered by balance DESC. Run with --details for the
+		// full per-account view.
+		fmt.Println()
+		type acctRow struct {
+			slug     string
+			currency string
+			balance  float64
+			has      bool
+		}
+		rows := make([]acctRow, 0, len(configs))
+		for i, acc := range configs {
+			fa := faAccounts[i]
+			currency := accountCurrency(&acc)
+			s := summaries[accountKey(fa)]
+			balance, _, has := resolveAccountBalance(&acc, liveBalances, s)
+			rows = append(rows, acctRow{acc.Slug, currency, balance, has})
+			if has {
+				totals[currency] += balance
+			}
+		}
+		// Highest balance first; accounts with no known balance sink to the bottom.
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].has != rows[j].has {
+				return rows[i].has
+			}
+			return rows[i].balance > rows[j].balance
+		})
+
+		// Pre-compute the EUR-family total so its width factors into the column.
+		eurTotal := 0.0
+		for cur, bal := range totals {
+			if isEURCurrency(cur) {
+				eurTotal += bal
+			}
+		}
+
+		// Column widths: label = widest slug/total label, amount = widest plain
+		// (un-coloured) amount, so the colour codes don't throw off alignment.
+		labelWidth, amountWidth := 0, 1 // amount starts at 1 for the "—" placeholder
+		measure := func(label, plain string) {
+			if len(label) > labelWidth {
+				labelWidth = len(label)
+			}
+			if w := len([]rune(plain)); w > amountWidth {
+				amountWidth = w
+			}
+		}
+		for _, r := range rows {
+			plain := "—"
+			if r.has {
+				plain = formatBalancePlain(r.balance, r.currency)
+			}
+			measure(r.slug, plain)
+		}
+		if eurTotal != 0 {
+			measure("Total EUR", formatBalancePlain(eurTotal, "EUR"))
+		}
+		for cur, bal := range totals {
+			if !isEURCurrency(cur) {
+				measure("Total "+cur, formatBalancePlain(bal, cur))
+			}
+		}
+
+		for _, r := range rows {
+			plain, colored := "—", Fmt.Dim+"—"+Fmt.Reset
+			if r.has {
+				plain = formatBalancePlain(r.balance, r.currency)
+				colored = formatBalance(r.balance, r.currency)
+			}
+			fmt.Printf("  %s%-*s%s  %s\n", Fmt.Bold, labelWidth, r.slug, Fmt.Reset, rightAlignAmount(plain, colored, amountWidth))
+		}
+
+		if len(totals) > 0 {
+			fmt.Printf("  %s%s%s\n", Fmt.Dim, strings.Repeat("─", labelWidth+2+amountWidth), Fmt.Reset)
+			if eurTotal != 0 {
+				fmt.Printf("  %s%-*s%s  %s\n", Fmt.Bold, labelWidth, "Total EUR", Fmt.Reset,
+					rightAlignAmount(formatBalancePlain(eurTotal, "EUR"), formatBalance(eurTotal, "EUR"), amountWidth))
+			}
+			for cur, bal := range totals {
+				if !isEURCurrency(cur) {
+					fmt.Printf("  %s%-*s%s  %s\n", Fmt.Bold, labelWidth, "Total "+cur, Fmt.Reset,
+						rightAlignAmount(formatBalancePlain(bal, cur), formatBalance(bal, cur), amountWidth))
+				}
+			}
+			// "as of" the moment the balances were captured: now under --live,
+			// otherwise the last balance sync (falling back to the most recent
+			// per-account sync when no balance cache exists).
+			if asOf := accountsAsOf(live, cacheTime, configs); !asOf.IsZero() {
+				fmt.Printf("  %sas of %s%s\n", Fmt.Dim, asOf.In(BrusselsTZ()).Format("2006-01-02"), Fmt.Reset)
+			}
+		}
+		fmt.Println()
+		return
 	}
 
-	// Totals per currency
+	// Totals per currency (details view)
 	if len(totals) > 0 {
 		// Merge EUR-family into one total
 		eurTotal := 0.0
@@ -1589,6 +1666,38 @@ func safeChainPrefix(chain string) string {
 	default:
 		return "eth"
 	}
+}
+
+// rightAlignAmount right-pads an ANSI-coloured amount so its visible glyphs end
+// at column `width`. `plain` is the un-coloured form used purely to measure the
+// real display width (the colour codes in `colored` would corrupt %-padding).
+func rightAlignAmount(plain, colored string, width int) string {
+	pad := width - len([]rune(plain))
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad) + colored
+}
+
+// accountsAsOf returns the timestamp the displayed balances reflect: now under
+// --live, otherwise the balance-cache fetch time, falling back to the most
+// recent per-account sync when no balance cache exists.
+func accountsAsOf(live bool, cacheTime string, configs []AccountConfig) time.Time {
+	if live {
+		return time.Now()
+	}
+	if cacheTime != "" {
+		if t, err := time.Parse(time.RFC3339, cacheTime); err == nil {
+			return t
+		}
+	}
+	var latest time.Time
+	for _, acc := range configs {
+		if t := LastSyncTime("account:" + strings.ToLower(acc.Slug)); t.After(latest) {
+			latest = t
+		}
+	}
+	return latest
 }
 
 func formatBalance(balance float64, currency string) string {
@@ -2340,12 +2449,23 @@ func refreshAndPersistAccountBalance(acc *AccountConfig) {
 	saveBalanceCache(cache)
 }
 
-// AccountsFetchAll fetches all configured accounts source → local. It runs
-// accounts serially so each account gets a single summary line in order,
-// captures each fetch's verbose output, and only prints that output if the
-// fetch failed. GenerateTransactions runs once at the end, not after every
-// account. Per-account errors are reported but do not abort the run; the
-// returned error is non-nil if any account failed.
+// accountFetchResult captures one account's pull outcome for the summary table.
+type accountFetchResult struct {
+	Account AccountConfig
+	Count   int
+	Err     error
+}
+
+// accountsFetchParallelism bounds how many accounts are pulled concurrently.
+// Each account writes its own provider files (distinct paths by slug/chain/
+// token) so the fetches don't contend on disk; the cap keeps us comfortably
+// under Etherscan's rate limit (which the source layer also retries on).
+const accountsFetchParallelism = 4
+
+// AccountsFetchAll fetches all configured accounts source → local, concurrently.
+// Archived accounts are skipped (no new activity to pull). GenerateTransactions
+// runs once at the end, not after every account. Per-account errors are reported
+// but do not abort the run; the returned error is non-nil if any account failed.
 func AccountsFetchAll(args []string) (int, error) {
 	configs := LoadAccountConfigs()
 	if len(configs) == 0 {
@@ -2353,62 +2473,82 @@ func AccountsFetchAll(args []string) (int, error) {
 		return 0, nil
 	}
 
-	fmt.Printf("\n%s🔄 Syncing accounts%s\n\n", Fmt.Bold, Fmt.Reset)
-
-	type accountFetchResult struct {
-		Account AccountConfig
-		Count   int
-		Output  string
-		Err     error
-	}
-	results := make([]accountFetchResult, 0, len(configs))
-	failed := 0
+	// Skip archived accounts — they're closed and have nothing new to fetch.
+	active := make([]AccountConfig, 0, len(configs))
+	skipped := 0
 	for _, acc := range configs {
-		slugArgs := accountFetchArgs(acc, args)
-		status := newStatusLine()
-		status.Update("accounts: syncing %s...", acc.Slug)
-		output, count, err := captureTransactionsSync(slugArgs)
-		status.Clear()
-		results = append(results, accountFetchResult{
-			Account: acc,
-			Count:   count,
-			Output:  output,
-			Err:     err,
-		})
-		if err != nil {
+		if acc.IsArchived() {
+			skipped++
+			continue
+		}
+		active = append(active, acc)
+	}
+
+	fmt.Printf("\n%s🔄 Syncing accounts%s", Fmt.Bold, Fmt.Reset)
+	if skipped > 0 {
+		fmt.Printf("  %s(%s skipped)%s", Fmt.Dim, Pluralize(skipped, "archived account", ""), Fmt.Reset)
+	}
+	fmt.Println()
+	fmt.Println()
+
+	results := make([]accountFetchResult, len(active))
+
+	status := newStatusLine()
+	status.Update("accounts: syncing %d accounts (×%d)...", len(active), accountsFetchParallelism)
+
+	// Silence stdout for the whole concurrent phase: the per-account sync prints
+	// progress lines that would interleave and corrupt the terminal. Warnings /
+	// errors still reach stderr + the diagnostics log. Restored before the table.
+	restore := silenceStdout()
+	sem := make(chan struct{}, accountsFetchParallelism)
+	var wg sync.WaitGroup
+	for i := range active {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			count, err := TransactionsSync(accountFetchArgs(active[i], args))
+			results[i] = accountFetchResult{Account: active[i], Count: count, Err: err}
+		}(i)
+	}
+	wg.Wait()
+	restore()
+	status.Clear()
+
+	failed, totalNew := 0, 0
+	for _, r := range results {
+		if r.Err != nil {
 			failed++
 			continue
 		}
-		UpdateSyncSource("account:"+strings.ToLower(acc.Slug), accountSyncIsFull(args))
+		totalNew += r.Count
+		// Shared sync-state file — write serially, off the worker goroutines.
+		UpdateSyncSource("account:"+strings.ToLower(r.Account.Slug), accountSyncIsFull(args))
 	}
 
 	// Regenerate the unified per-month transactions.json files ONCE after all
-	// accounts have been fetched, rather than after each account.
-	status := newStatusLine()
-	status.Update("generated: regenerating per-month transactions...")
-	generateOutput, err := captureGenerateTransactions(args)
-	status.Clear()
-	if err != nil {
-		Errorf("  %s✗ generate: %v%s", Fmt.Red, err, Fmt.Reset)
-		if strings.TrimSpace(generateOutput) != "" {
-			fmt.Print(generateOutput)
+	// accounts have been fetched, rather than after each account — but only when
+	// at least one account actually pulled a new transaction. Nothing new means
+	// the inputs are unchanged, so the generated files would be identical.
+	if totalNew > 0 {
+		genStatus := newStatusLine()
+		genStatus.Update("generated: regenerating per-month transactions...")
+		generateOutput, err := captureGenerateTransactions(args)
+		genStatus.Clear()
+		if err != nil {
+			Errorf("  %s✗ generate: %v%s", Fmt.Red, err, Fmt.Reset)
+			if strings.TrimSpace(generateOutput) != "" {
+				fmt.Print(generateOutput)
+			}
+		} else {
+			odooSyncLine("generated", "per-month transactions refreshed")
 		}
 	} else {
-		odooSyncLine("generated", "per-month transactions refreshed")
+		odooSyncLine("generated", "skipped — no new transactions")
 	}
 
-	for _, row := range results {
-		data := formatAccountSyncData(&row.Account)
-		if row.Err != nil {
-			fmt.Printf("  %s%s%s: %s (issue: %v)\n", Fmt.Bold, row.Account.Slug, Fmt.Reset, data, row.Err)
-			if strings.TrimSpace(row.Output) != "" {
-				fmt.Print(row.Output)
-			}
-			continue
-		}
-		fmt.Printf("  %s%s%s: %s (%s)\n", Fmt.Bold, row.Account.Slug, Fmt.Reset, data, accountSyncFetchStatus(row.Count))
-	}
-	fmt.Println()
+	printAccountsFetchTable(results)
 
 	if failed > 0 {
 		return failed, fmt.Errorf("%s failed", Pluralize(failed, "account", ""))
@@ -2416,31 +2556,75 @@ func AccountsFetchAll(args []string) (int, error) {
 	return 0, nil
 }
 
-func formatAccountSyncData(acc *AccountConfig) string {
-	if acc == nil {
-		return "0 txs, balance: 0.00 EUR"
+// printAccountsFetchTable renders the post-pull summary as an aligned table —
+// one row per account with its tx count, balance and fetch status — instead of
+// repeating "N txs, balance: …" on every line.
+func printAccountsFetchTable(results []accountFetchResult) {
+	type cell struct{ slug, txs, txsC, bal, balC, status, statusC string }
+	cells := make([]cell, 0, len(results))
+	for _, r := range results {
+		txCount, balance, currency := accountSyncTableData(&r.Account)
+		c := cell{
+			slug: r.Account.Slug,
+			txs:  fmt.Sprintf("%d", txCount),
+			txsC: fmt.Sprintf("%d", txCount),
+			bal:  formatBalancePlain(balance, currency),
+			balC: formatBalance(balance, currency),
+		}
+		switch {
+		case r.Err != nil:
+			c.status = "✗ " + r.Err.Error()
+			c.statusC = Fmt.Red + "✗ " + r.Err.Error() + Fmt.Reset
+		case r.Count > 0:
+			c.status = fmt.Sprintf("%d synced", r.Count)
+			c.statusC = Fmt.Green + fmt.Sprintf("%d synced", r.Count) + Fmt.Reset
+		default:
+			c.status = "already in sync"
+			c.statusC = Fmt.Dim + "already in sync" + Fmt.Reset
+		}
+		cells = append(cells, c)
 	}
-	totals := computeAccountTotals(acc)
-	currency := acc.Currency
-	if currency == "" && acc.Token != nil {
-		currency = acc.Token.Symbol
+
+	// Column widths from the plain (un-coloured) forms so ANSI codes don't skew
+	// the alignment; header row included.
+	wSlug, wTxs, wBal := len("Account"), len("Txs"), len("Balance")
+	for _, c := range cells {
+		if len(c.slug) > wSlug {
+			wSlug = len(c.slug)
+		}
+		if len([]rune(c.txs)) > wTxs {
+			wTxs = len([]rune(c.txs))
+		}
+		if len([]rune(c.bal)) > wBal {
+			wBal = len([]rune(c.bal))
+		}
 	}
-	if currency == "" {
-		currency = "EUR"
+
+	fmt.Println()
+	fmt.Printf("  %s%-*s  %*s  %*s  %s%s\n",
+		Fmt.Dim, wSlug, "Account", wTxs, "Txs", wBal, "Balance", "Status", Fmt.Reset)
+	for _, c := range cells {
+		fmt.Printf("  %s%-*s%s  %s  %s  %s\n",
+			Fmt.Bold, wSlug, c.slug, Fmt.Reset,
+			rightAlignAmount(c.txs, c.txsC, wTxs),
+			rightAlignAmount(c.bal, c.balC, wBal),
+			c.statusC)
 	}
-	if totals == nil {
-		return fmt.Sprintf("0 txs, balance: %s", formatAccountDataBalance(0, currency))
-	}
-	return fmt.Sprintf("%s, balance: %s",
-		Pluralize(totals.TxCount, "tx", ""),
-		formatAccountDataBalance(totals.CurrentBalance, totals.Currency))
+	fmt.Println()
 }
 
-func accountSyncFetchStatus(count int) string {
-	if count <= 0 {
-		return "already in sync"
+// accountSyncTableData returns the tx count, computed balance and currency for
+// an account's post-pull summary row.
+func accountSyncTableData(acc *AccountConfig) (int, float64, string) {
+	currency := accountCurrency(acc)
+	totals := computeAccountTotals(acc)
+	if totals == nil {
+		return 0, 0, currency
 	}
-	return fmt.Sprintf("%d synced", count)
+	if totals.Currency != "" {
+		currency = totals.Currency
+	}
+	return totals.TxCount, totals.CurrentBalance, currency
 }
 
 func accountFetchArgs(acc AccountConfig, args []string) []string {
@@ -2525,31 +2709,6 @@ func accountTransactionSource(acc AccountConfig) string {
 	default:
 		return ""
 	}
-}
-
-// captureTransactionsSync runs TransactionsSync with its stdout redirected to
-// a buffer. Returns the captured output, the sync's tx count, and any error.
-// Used by aggregate callers that want one summary line per account instead
-// of the full verbose output.
-func captureTransactionsSync(args []string) (string, int, error) {
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		// Fallback: pipe creation failed, fall back to direct call with output.
-		n, e := TransactionsSync(args)
-		return "", n, e
-	}
-	os.Stdout = w
-	done := make(chan string, 1)
-	go func() {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		done <- buf.String()
-	}()
-	count, syncErr := TransactionsSync(args)
-	w.Close()
-	os.Stdout = old
-	return <-done, count, syncErr
 }
 
 func captureGenerateTransactions(args []string) (string, error) {
@@ -2744,9 +2903,6 @@ func AccountOdooPush(slug string, args []string) error {
 		if !ok {
 			return fmt.Errorf("invalid --startingBalance format: %s (use %s)", sbStr, DateFormatHelp)
 		}
-		if force {
-			return fmt.Errorf("--startingBalance and --force are mutually exclusive: --force wipes and rebuilds the journal (re-creating the opening entry); --startingBalance converges it in place")
-		}
 		if sinceStr != "" && !sinceDate.Equal(t) {
 			return fmt.Errorf("--since (%s) and --startingBalance (%s) must name the same date", sinceStr, sbStr)
 		}
@@ -2754,6 +2910,15 @@ func AccountOdooPush(slug string, args []string) error {
 		// Adopt the cutoff for this run (overrides any configured value) and
 		// drop the explicit --since: the window now comes from the cutoff,
 		// which keeps the cursor stampable and the dedup pass complete.
+		//
+		// --startingBalance picks the cutoff; --force picks the strategy:
+		//   - without --force: converge the existing journal in place (the
+		//     pre-stage below deletes pre-cutoff CHB lines and corrects the
+		//     opening entry), then push windowed from the cutoff.
+		//   - with --force: wipe the journal and rebuild it from local — the
+		//     opening entry is recomputed at this date and every tx from the
+		//     date on is re-imported. The in-place convergence pre-stage is
+		//     skipped (there's nothing to converge once it's wiped).
 		acc.OdooSyncSince = t.Format("2006-01-02")
 		sinceStr = ""
 		sinceDate = time.Time{}
@@ -2809,7 +2974,11 @@ func AccountOdooPush(slug string, args []string) error {
 	// lines, create or correct the manual opening entry — preview it, and
 	// apply only after confirmation. The windowed push below then handles
 	// everything from the cutoff on; no journal reset involved.
-	if !startingBalanceDate.IsZero() {
+	//
+	// Skipped under --force: that wipes the journal and rebuilds it (creating
+	// the opening entry at acc.OdooSyncSince, which --startingBalance set
+	// above), so there are no existing lines to converge.
+	if !startingBalanceDate.IsZero() && !force {
 		cache, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID)
 		if !ok {
 			if _, err := writeOdooJournalLinesCacheFullRefetch(creds, uid, acc.OdooJournalID, nil); err != nil {
@@ -7018,8 +7187,9 @@ func printAccountsHelp() {
 %schb accounts%s — Manage finance accounts (bank/payment accounts only)
 
 %sUSAGE%s
-  %schb accounts%s                          List all accounts with balances
-  %schb accounts -r%s                       Refresh live balances
+  %schb accounts%s                          One line per account (slug + balance), local files only
+  %schb accounts --details%s                Full per-account view (sync status, Odoo, etc.)
+  %schb accounts --live%s                   Fetch live balances from the network (alias: -r)
   %schb accounts pull%s                     Pull all accounts from their source providers
   %schb accounts <slug> pull%s              Pull one account
   %schb accounts <slug> pull --history%s    Pull from earliest cached month
@@ -7041,10 +7211,10 @@ func printAccountsHelp() {
 `,
 		f.Bold, f.Reset, // title
 		f.Bold, f.Reset, // USAGE
-		// 13 USAGE rows
+		// 14 USAGE rows
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
-		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
+		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Bold, f.Reset, // Note word
 		f.Bold, f.Reset, // ENVIRONMENT
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

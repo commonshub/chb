@@ -55,6 +55,23 @@ type AccountToken struct {
 	Decimals int    `json:"decimals"`
 }
 
+// IsArchived reports whether the account's archivedAt date has passed. Archived
+// accounts are excluded from bulk pulls (`chb accounts pull`) — they have no new
+// activity to fetch — while their cached history is still kept and generated. A
+// present-but-malformed archivedAt is treated as archived (the intent is clear).
+func (a *AccountConfig) IsArchived() bool {
+	if a == nil || a.ArchivedAt == "" {
+		return false
+	}
+	archDate, err := time.ParseInLocation("2006-01-02", a.ArchivedAt, BrusselsTZ())
+	if err != nil {
+		return true
+	}
+	now := time.Now().In(BrusselsTZ())
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, BrusselsTZ())
+	return today.After(archDate)
+}
+
 // IsSafe returns true only when this is explicitly configured as a Safe wallet.
 func (a *AccountConfig) IsSafe() bool {
 	if a == nil {

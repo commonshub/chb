@@ -8,22 +8,23 @@ import (
 // emitAccountsJSON is the JSON counterpart of Accounts.
 func emitAccountsJSON(args []string, configs []AccountConfig) {
 	summaries := computeAccountSummaries()
-	refresh := HasFlag(args, "--refresh", "-r")
+	// --live (alias --refresh/-r) fetches from the network; otherwise stay
+	// offline and read whatever local balance cache exists.
+	live := HasFlag(args, "--live", "--refresh", "-r")
 
-	cache := loadBalanceCache()
 	var liveBalances map[string]float64
 	var fetchedAt string
-	if cache != nil && !refresh {
-		liveBalances = cache.Balances
-		fetchedAt = cache.FetchedAt
-	} else {
+	if live {
 		liveBalances = fetchLiveBalances(configs)
 		fetchedAt = time.Now().UTC().Format(time.RFC3339)
+	} else if cache := loadBalanceCache(); cache != nil {
+		liveBalances = cache.Balances
+		fetchedAt = cache.FetchedAt
 	}
 
-	// Local-cache only by default (instant); --refresh queries Odoo live.
+	// Local-cache only by default (instant); --live queries Odoo live.
 	var odooStatuses map[int]*odooSyncStatus
-	if refresh {
+	if live {
 		odooStatuses = fetchOdooSyncStatuses(configs, summaries)
 	} else {
 		odooStatuses = localOdooSyncStatuses(configs, summaries)
