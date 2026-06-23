@@ -116,7 +116,7 @@ func EnsureSettingsBootstrapped() string {
 	// is a no-op on already-migrated files.
 	migrateLegacySettingsSchemas(dir)
 	if err := reconcileDefaultSettings(dir); err != nil {
-		fmt.Printf("%sCould not reconcile default settings:%s %v\n", Fmt.Yellow, Fmt.Reset, err)
+		fmt.Fprintf(os.Stderr, "%sCould not reconcile default settings:%s %v\n", Fmt.Yellow, Fmt.Reset, err)
 	}
 	return dir
 }
@@ -139,10 +139,16 @@ func migrateLegacySettingsSchemas(dir string) {
 // it (so local edits don't survive a `chb` run / upgrade). Use sparingly — only
 // for files meant to be the org-wide source of truth. accounts.json is the
 // canonical account list shared across machines.
+//
+// odoo-journals.json is deliberately NOT here: it is mutated locally by
+// `chb accounts <slug> link` and must survive bootstrap. Force-overwriting it
+// silently reverted every local link back to the embedded default on the next
+// run (see odoo_journal_links.go). The embedded copy still seeds a fresh
+// install (and surfaces as a non-destructive pending update when it drifts),
+// but local links now win.
 var forceOverwriteDefaults = map[string]bool{
 	"accounts.json":              true,
 	"excluded-transactions.json": true,
-	"odoo-journals.json":         true,
 }
 
 // forceOverwriteDefaultsEnabled gates the force-overwrite behavior. Tests that
@@ -182,7 +188,7 @@ func reconcileDefaultSettings(dir string) error {
 			}
 			tracker[rel] = embedHash
 			trackerDirty = true
-			fmt.Printf("  %s✓%s installed default %s\n", Fmt.Green, Fmt.Reset, rel)
+			fmt.Fprintf(os.Stderr, "  %s✓%s installed default %s\n", Fmt.Green, Fmt.Reset, rel)
 			return nil
 		case statErr != nil:
 			return statErr
@@ -213,7 +219,7 @@ func reconcileDefaultSettings(dir string) error {
 			if userEdited {
 				verb = "force-updated"
 			}
-			fmt.Printf("  %s↑%s %s %s from embedded default\n", Fmt.Green, Fmt.Reset, verb, rel)
+			fmt.Fprintf(os.Stderr, "  %s↑%s %s %s from embedded default\n", Fmt.Green, Fmt.Reset, verb, rel)
 			return nil
 		}
 

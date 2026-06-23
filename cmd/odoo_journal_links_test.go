@@ -123,3 +123,32 @@ func TestMigrateOdooJournalLinks(t *testing.T) {
 		t.Errorf("migration overwrote an existing odoo-journals.json")
 	}
 }
+
+// TestOdooJournalLinksSurviveBootstrap is the regression guard for the bug
+// where odoo-journals.json was in forceOverwriteDefaults: every `chb` run
+// reverted a locally-created link (`chb accounts <slug> link`) back to the
+// embedded default. The file is local-mutable and must survive bootstrap.
+func TestOdooJournalLinksSurviveBootstrap(t *testing.T) {
+	appDir := filepath.Join(t.TempDir(), "app")
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("APP_DATA_DIR", appDir)
+
+	// First bootstrap installs the embedded default + records the tracker.
+	EnsureSettingsBootstrapped()
+
+	linksPath := filepath.Join(appDir, "settings", odooJournalLinksFileName)
+	// Simulate `chb accounts <slug> link` choosing a journal that is NOT the
+	// embedded default — a sentinel id (never present in the embedded copy) so
+	// a force-overwrite reversion would be unambiguous.
+	const key = "ethereum:100:address:0xb01ccce2d75d517ee520de31eae6afca735aadc1"
+	if err := saveOdooJournalLinks(OdooJournalLinks{key: 99999}); err != nil {
+		t.Fatalf("save local link: %v", err)
+	}
+
+	// A subsequent bootstrap must NOT clobber the local link.
+	EnsureSettingsBootstrapped()
+
+	if got := loadOdooJournalLinks(); got[key] != 99999 {
+		t.Fatalf("local link reverted by bootstrap: got %v (file %s)", got, linksPath)
+	}
+}

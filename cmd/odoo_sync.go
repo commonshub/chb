@@ -934,7 +934,9 @@ a journal whose existing lines pre-date a fix.
                          CHB lines before the date (confirmed), create or
                          correct the manual opening entry to the locally
                          computed balance, then sync from the date on. Plans
-                         from the local cache; no journal reset.
+                         from the local cache; no journal reset. Combine with
+                         --force to instead wipe the journal and rebuild it
+                         with the opening recomputed at this date.
   %s--months N%s             Limit to the last N months
   %s--until YYYYMMDD%s       Only push transactions up to (inclusive) this date
   %s--skip-reconciliation%s  Don't reconcile created lines (use 'reconcile' later)
@@ -1694,6 +1696,7 @@ func displayWidth(s string) int {
 // against the CSV source-of-truth: missing rows, count, balance.
 func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 	fmt.Printf("\n  %sChecking journal #%d…%s\n", Fmt.Dim, journalID, Fmt.Reset)
+	printJournalBalances(creds, uid, linkedAccountForJournal(journalID), journalID)
 	issues, err := CheckOdooJournalStatements(creds, uid, journalID)
 	if err != nil {
 		return err
@@ -1818,14 +1821,17 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		Warnf("  %s⚠ Could not check statement shape: %v%s", Fmt.Yellow, preErr, Fmt.Reset)
 	}
 
-	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && len(loosePlan.Assign) == 0 && len(issues) == 0 && !deletableUnowned && !openingMismatch && len(preEmpty) == 0 && !preAnchor {
+	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && len(loosePlan.Assign) == 0 && len(loosePlan.Create) == 0 && len(issues) == 0 && !deletableUnowned && !openingMismatch && len(preEmpty) == 0 && !preAnchor {
 		if diagOK && diag.hasGap {
 			printJournalBalanceDiagnostic(diag, res)
-			fmt.Printf("  %s✓ No structural issues to fix — see the balance diagnostic above for how to close the %s gap.%s\n\n",
+			fmt.Printf("  %s✓ No structural issues to fix — see the balance diagnostic above for how to close the %s gap.%s\n",
 				Fmt.Green, fmtEURSigned(diag.balanceDelta), Fmt.Reset)
 		} else {
-			fmt.Printf("\n  %s✓ Nothing to fix%s\n\n", Fmt.Green, Fmt.Reset)
+			fmt.Printf("\n  %s✓ Nothing to fix%s\n", Fmt.Green, Fmt.Reset)
 		}
+		// Always show the balance verdict, even when there's nothing structural
+		// to repair — confirms the journal matches local (or shows the gap).
+		printJournalBalances(creds, uid, res.Account, journalID)
 		return nil
 	}
 
@@ -2047,22 +2053,34 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 	}
 
-	if len(loosePlan.Assign) > 0 {
+	if len(loosePlan.Assign) > 0 || len(loosePlan.Create) > 0 {
 		printLooseLinesPlan(loosePlan)
+		looseTotal := len(loosePlan.Assign)
+		for _, c := range loosePlan.Create {
+			looseTotal += len(c.LineIDs)
+		}
 		proceed := assumeYes
 		if !assumeYes && !dryRun {
-			fmt.Printf("  %sAttach %s to their target statement?%s [y/N] ",
-				Fmt.Bold, Pluralize(len(loosePlan.Assign), "loose line", ""), Fmt.Reset)
+			fmt.Printf("  %sAttach %s to their statement (creating %s)?%s [y/N] ",
+				Fmt.Bold, Pluralize(looseTotal, "loose line", ""),
+				Pluralize(len(loosePlan.Create), "new statement", ""), Fmt.Reset)
 			var resp string
 			fmt.Scanln(&resp)
 			proceed = resp == "y" || resp == "Y" || resp == "yes"
 		}
 		switch {
 		case dryRun:
-			fmt.Printf("  %s(dry-run) would attach %s%s\n\n", Fmt.Dim, Pluralize(len(loosePlan.Assign), "line", ""), Fmt.Reset)
+			createTrailingStatements(creds, uid, journalID, loosePlan.Create, true)
+			if len(loosePlan.Assign) > 0 {
+				fmt.Printf("  %s(dry-run) would attach %s to existing statements%s\n", Fmt.Dim, Pluralize(len(loosePlan.Assign), "line", ""), Fmt.Reset)
+			}
+			fmt.Println()
 		case proceed:
+			made := createTrailingStatements(creds, uid, journalID, loosePlan.Create, false)
 			ok := attachLooseLines(creds, uid, loosePlan.Assign)
-			fmt.Printf("  %s✓ Attached %s%s\n\n", Fmt.Green, Pluralize(ok, "line", ""), Fmt.Reset)
+			fmt.Printf("  %s✓ Attached %s (%s created)%s\n\n",
+				Fmt.Green, Pluralize(ok+looseTotal-len(loosePlan.Assign), "line", ""),
+				Pluralize(made, "statement", ""), Fmt.Reset)
 		default:
 			fmt.Printf("  %sLoose-line attachment skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
 		}
@@ -2072,7 +2090,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	// deletes, duplicate consolidation, import_id repair, loose-line
 	// attachment) can shift line totals or move lines between statements,
 	// so the balance_start/balance_end_real walk has to come after them.
-	if !dryRun && (len(res.Repairs) > 0 || len(res.Duplicates) > 0 || len(res.Orphans) > 0 || len(loosePlan.Assign) > 0 || deletedUnowned > 0) {
+	if !dryRun && (len(res.Repairs) > 0 || len(res.Duplicates) > 0 || len(res.Orphans) > 0 || len(loosePlan.Assign) > 0 || len(loosePlan.Create) > 0 || deletedUnowned > 0) {
 		if rechecked, err := CheckOdooJournalStatements(creds, uid, journalID); err == nil {
 			issues = rechecked
 		}
@@ -2082,7 +2100,15 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	// attachment can fill a previously-empty statement, and the unowned/
 	// orphan deletes may have just closed the line-level gap that gates
 	// the anchor repair.
-	return repairJournalStatementChain(creds, uid, journalID, res.Account, issues, assumeYes, dryRun)
+	if err := repairJournalStatementChain(creds, uid, journalID, res.Account, issues, assumeYes, dryRun); err != nil {
+		return err
+	}
+
+	// Final verdict: the three balances side by side, so the operator sees
+	// whether the journal now matches local (and the post-cutoff tx count
+	// lines up). In dry-run these reflect the pre-fix state.
+	printJournalBalances(creds, uid, res.Account, journalID)
+	return nil
 }
 
 // repairJournalStatementChain runs the non-destructive statement repairs:
@@ -2180,6 +2206,18 @@ func repairJournalStatementChain(creds *OdooCredentials, uid int, journalID int,
 		edits += applied
 	}
 
+	// opening_in_line statements carry the opening balance as their first line,
+	// which Odoo 19 drops from its running balance. The repair moves the opening
+	// into balance_start (SuggestedBalanceStart from the check) and leaves
+	// balance_end_real untouched — recomputing it as balance_start + Σ(lines)
+	// would double-count the opening line.
+	openingFix := map[int]float64{}
+	for _, issue := range issues {
+		if issue.Kind == "opening_in_line" {
+			openingFix[issue.StatementID] = issue.SuggestedBalanceStart
+		}
+	}
+
 	var prevEnd float64
 	hasPrev := false
 	if anchorRepair {
@@ -2189,6 +2227,27 @@ func repairJournalStatementChain(creds *OdooCredentials, uid int, journalID int,
 	}
 	for _, s := range stmts {
 		if droppedStmts[s.ID] || (dryRun && s.LineCount == 0 && s.Reference != "open") {
+			continue
+		}
+		if target, ok := openingFix[s.ID]; ok {
+			// Put the opening balance in balance_start; keep balance_end_real
+			// (already correct — Odoo excludes the opening line from its run).
+			if math.Abs(s.BalanceStart-target) > 0.005 {
+				if dryRun {
+					fmt.Printf("  %s(dry-run)%s #%d %s  balance_start %s → %s  %s(opening balance)%s\n",
+						Fmt.Dim, Fmt.Reset, s.ID, s.Name, fmtEURSigned(s.BalanceStart), fmtEURSigned(target), Fmt.Dim, Fmt.Reset)
+				} else if err := setStatementBalanceStart(creds, uid, s.ID, target); err != nil {
+					fmt.Printf("  %s✗ #%d %s: balance_start: %v%s\n", Fmt.Red, s.ID, s.Name, err, Fmt.Reset)
+					errs++
+				} else {
+					fmt.Printf("  %s✓%s #%d %s  balance_start %s → %s  %s(opening balance)%s\n",
+						Fmt.Green, Fmt.Reset, s.ID, s.Name, fmtEURSigned(s.BalanceStart), fmtEURSigned(target), Fmt.Dim, Fmt.Reset)
+				}
+				edits++
+			}
+			// Chain the next statement from this one's (unchanged) declared end.
+			prevEnd = s.BalanceEndReal
+			hasPrev = true
 			continue
 		}
 		// The open (trailing) statement is repaired like any other: its
@@ -2620,13 +2679,26 @@ type looseLineAssignment struct {
 }
 
 // looseLinesPlan groups the result of planAttachLooseLines into lines we
-// can attach to an existing statement and lines that should stay loose
-// (their date is after every existing statement — typically the
-// current/open period).
+// can attach to an existing statement, lines that need a new trailing
+// statement created for them, and lines that should stay loose.
 type looseLinesPlan struct {
 	Assign       []looseLineAssignment
+	Create       []trailingStatementPlan
 	StayLooseN   int
 	StayLooseSum float64
+}
+
+// trailingStatementPlan describes a monthly statement to create for loose
+// lines that fall after every existing statement (e.g. journal 47's drain
+// lines, which arrived after the last "EURe 2026-04" statement). Once
+// created and populated, the balance-chain walk derives its
+// balance_start/balance_end_real like any other statement.
+type trailingStatementPlan struct {
+	Month   string // "YYYY-MM"
+	Name    string // e.g. "EURe 2026-05"
+	Date    string // representative date (max line date in the month)
+	LineIDs []int
+	Sum     float64
 }
 
 // planAttachLooseLines surveys account.bank.statement.line for lines
@@ -2675,32 +2747,127 @@ func planAttachLooseLines(creds *OdooCredentials, uid int, journalID int) (*loos
 		return nil, fmt.Errorf("parse loose lines: %v", err)
 	}
 
+	// Index existing statements by month ("YYYY-MM" of their date) and derive
+	// the monthly-statement name prefix (e.g. "EURe ") so trailing lines join
+	// the right statement or get a correctly-named new one.
+	type existingStmt struct {
+		id   int
+		date string
+		name string
+	}
+	byMonth := map[string]existingStmt{}
+	namePrefix := ""
+	for _, s := range stmts {
+		d := string(s.Date)
+		if len(d) >= 7 {
+			month := d[:7]
+			if _, ok := byMonth[month]; !ok {
+				byMonth[month] = existingStmt{s.ID, d, string(s.Name)}
+			}
+			if namePrefix == "" && strings.HasSuffix(string(s.Name), month) {
+				namePrefix = strings.TrimSuffix(string(s.Name), month)
+			}
+		}
+	}
+
 	plan := &looseLinesPlan{}
+	trailing := map[string]*trailingStatementPlan{} // month -> plan
 	for _, l := range loose {
 		lineDate := string(l.Date)
-		targetID := 0
-		targetName := ""
+		// 1. The earliest statement whose date covers this line.
+		targetID, targetName := 0, ""
 		for _, s := range stmts {
 			if string(s.Date) >= lineDate {
-				targetID = s.ID
-				targetName = string(s.Name)
+				targetID, targetName = s.ID, string(s.Name)
 				break
 			}
 		}
+		// 2. Otherwise, an existing statement for the line's month (the line
+		//    arrived after that month's representative date).
+		month := ""
+		if len(lineDate) >= 7 {
+			month = lineDate[:7]
+		}
 		if targetID == 0 {
+			if es, ok := byMonth[month]; ok {
+				targetID, targetName = es.id, es.name
+			}
+		}
+		if targetID != 0 {
+			plan.Assign = append(plan.Assign, looseLineAssignment{
+				LineID:        l.ID,
+				Date:          lineDate,
+				Amount:        l.Amount,
+				StatementID:   targetID,
+				StatementName: targetName,
+			})
+			continue
+		}
+		// 3. No statement for this month exists — plan a new monthly one.
+		if month == "" {
 			plan.StayLooseN++
 			plan.StayLooseSum += l.Amount
 			continue
 		}
-		plan.Assign = append(plan.Assign, looseLineAssignment{
-			LineID:        l.ID,
-			Date:          lineDate,
-			Amount:        l.Amount,
-			StatementID:   targetID,
-			StatementName: targetName,
-		})
+		ts := trailing[month]
+		if ts == nil {
+			ts = &trailingStatementPlan{Month: month, Name: namePrefix + month}
+			trailing[month] = ts
+		}
+		ts.LineIDs = append(ts.LineIDs, l.ID)
+		ts.Sum += l.Amount
+		if lineDate > ts.Date {
+			ts.Date = lineDate
+		}
 	}
+	for _, ts := range trailing {
+		plan.Create = append(plan.Create, *ts)
+	}
+	sort.Slice(plan.Create, func(i, j int) bool { return plan.Create[i].Month < plan.Create[j].Month })
 	return plan, nil
+}
+
+// createTrailingStatements creates each planned monthly statement and attaches
+// its lines. Balances are left at 0 — the chain walk that runs afterward
+// derives balance_start/balance_end_real from the previous statement + line
+// sums. Returns the number of statements created.
+func createTrailingStatements(creds *OdooCredentials, uid int, journalID int, plans []trailingStatementPlan, dryRun bool) int {
+	created := 0
+	for _, ts := range plans {
+		if dryRun {
+			fmt.Printf("  %s(dry-run)%s create statement %q (%s) for %s  %s%s%s\n",
+				Fmt.Dim, Fmt.Reset, ts.Name, ts.Date, Pluralize(len(ts.LineIDs), "loose line", ""),
+				Fmt.Dim, fmtEURSigned(ts.Sum), Fmt.Reset)
+			created++
+			continue
+		}
+		res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.bank.statement", "create",
+			[]interface{}{map[string]interface{}{
+				"journal_id": journalID,
+				"name":       ts.Name,
+				"date":       ts.Date,
+			}}, nil)
+		if err != nil {
+			Warnf("  %s✗ create statement %q failed: %v%s", Fmt.Yellow, ts.Name, err, Fmt.Reset)
+			continue
+		}
+		ids := parseOdooCreatedIDs(res)
+		if len(ids) == 0 {
+			Warnf("  %s✗ create statement %q returned no id%s", Fmt.Yellow, ts.Name, Fmt.Reset)
+			continue
+		}
+		if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.bank.statement.line", "write",
+			[]interface{}{intsToInterfaces(ts.LineIDs), map[string]interface{}{"statement_id": ids[0]}}, nil); err != nil {
+			Warnf("  %s✗ attach lines to %q failed: %v%s", Fmt.Yellow, ts.Name, err, Fmt.Reset)
+			continue
+		}
+		fmt.Printf("  %s✓%s created statement %q (#%d) with %s\n",
+			Fmt.Green, Fmt.Reset, ts.Name, ids[0], Pluralize(len(ts.LineIDs), "line", ""))
+		created++
+	}
+	return created
 }
 
 func printLooseLinesPlan(plan *looseLinesPlan) {
@@ -2732,8 +2899,14 @@ func printLooseLinesPlan(plan *looseLinesPlan) {
 		b := bucketByID[id]
 		fmt.Printf("      #%-4d %-24s %18s  %12s\n", id, truncate(b.Name, 24), Pluralize(b.Count, "line", ""), fmtEURSigned(b.Sum))
 	}
+	if len(plan.Create) > 0 {
+		fmt.Printf("\n    %snew statements to create (lines newer than every statement):%s\n", Fmt.Dim, Fmt.Reset)
+		for _, c := range plan.Create {
+			fmt.Printf("      %-24s %18s  %12s\n", truncate(c.Name, 24), Pluralize(len(c.LineIDs), "line", ""), fmtEURSigned(c.Sum))
+		}
+	}
 	if plan.StayLooseN > 0 {
-		fmt.Printf("\n    %s%s stay loose (newer than every statement, %s)%s\n",
+		fmt.Printf("\n    %s%s stay loose (no month, %s)%s\n",
 			Fmt.Dim, Pluralize(plan.StayLooseN, "line", ""), fmtEURSigned(plan.StayLooseSum), Fmt.Reset)
 	}
 	fmt.Println()
@@ -3179,7 +3352,14 @@ func detectStatementShapeRepairs(creds *OdooCredentials, uid int, journalID int,
 					if s.LineCount == 0 {
 						continue
 					}
-					anchorRepair = math.Abs(s.BalanceStart) > 0.005
+					// Re-anchor only when the first statement's balance_start is
+					// non-zero AND Odoo still rejects it. A non-zero balance_start
+					// Odoo already accepts is a legitimate opening balance (set by
+					// the opening_in_line repair); re-anchoring it to 0 would
+					// re-break the statement under Odoo 19, which drops the
+					// journal's first line from the running balance.
+					odooValid := math.Abs(s.BalanceEnd-s.BalanceEndReal) < 0.005
+					anchorRepair = math.Abs(s.BalanceStart) > 0.005 && !odooValid
 					break
 				}
 			}
@@ -3197,7 +3377,7 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 			[]interface{}{"journal_id", "=", journalID},
 		}},
 		map[string]interface{}{
-			"fields": []string{"id", "name", "date", "line_ids", "balance_start", "balance_end_real", "reference"},
+			"fields": []string{"id", "name", "date", "line_ids", "balance_start", "balance_end_real", "balance_end", "reference"},
 			"order":  "date asc, id asc",
 		})
 	if err != nil {
@@ -3211,6 +3391,7 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 		LineIDs        []int         `json:"line_ids"`
 		BalanceStart   odooJSONFloat `json:"balance_start"`
 		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
+		BalanceEnd     odooJSONFloat `json:"balance_end"`
 	}
 	if err := json.Unmarshal(result, &raw); err != nil {
 		return nil, fmt.Errorf("parse statements: %v", err)
@@ -3225,6 +3406,7 @@ func fetchJournalStatementsOrdered(creds *OdooCredentials, uid int, journalID in
 			LineCount:      len(r.LineIDs),
 			BalanceStart:   r.BalanceStart.Float64(),
 			BalanceEndReal: r.BalanceEndReal.Float64(),
+			BalanceEnd:     r.BalanceEnd.Float64(),
 		})
 	}
 	return out, nil
@@ -3238,6 +3420,7 @@ type journalStatement struct {
 	LineCount      int
 	BalanceStart   float64
 	BalanceEndReal float64
+	BalanceEnd     float64 // Odoo's computed running balance (drops the journal's first line)
 }
 
 // mergeDuplicateOpenFeeLines collapses the duplicate "Stripe fees for open
@@ -4025,9 +4208,10 @@ func PrintOdooHelp() {
 	fmt.Printf("  %s%schb odoo journals <id> reconcile%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sReconcile this journal's lines against open A/R / A/P move lines%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> check%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sReport statements whose running balance is invalid%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("    %sReport invalid statements (incl. opening-as-line + lines in no statement)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> fix%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sSet balance_end_real = running balance on invalid statements%s\n\n", f.Dim, f.Reset)
+	fmt.Printf("    %sRepair statements: move an opening balance into balance_start, create%s\n", f.Dim, f.Reset)
+	fmt.Printf("    %strailing statements for loose lines, and re-chain balance_start/end%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> --reset%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sEmpty a journal (delete all statements and lines)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <src> --merge-with <target>%s\n", f.Bold, f.Cyan, f.Reset)

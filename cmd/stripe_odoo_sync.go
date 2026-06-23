@@ -3176,21 +3176,73 @@ func applyOdooMappingAccountBatch(creds *OdooCredentials, uid int, moveIDs, coun
 	if len(moveIDs) == 0 || len(counterpartIDs) == 0 || accountID <= 0 {
 		return nil
 	}
+	// Only POSTED moves can (and must) be reset to draft before rewriting a
+	// non-bank line, then reposted. A move that is already DRAFT is written
+	// directly: Odoo rejects button_draft on a draft move with "Seules les
+	// pièces comptabilisées/annulées peuvent être remises en brouillon" — the
+	// error a fresh push hits, since its just-created statement-line moves are
+	// still draft. CANCELLED moves are skipped; we never mutate a cancelled
+	// entry (matches withOdooMoveTemporarilyDraft's policy).
+	stateRows, err := odooReadMapsByIDs(creds, uid, "account.move", moveIDs, []string{"id", "state"})
+	if err != nil {
+		return fmt.Errorf("read move states for account %s: %v", accountCode, err)
+	}
+	moveState := make(map[int]string, len(stateRows))
+	for _, r := range stateRows {
+		moveState[odooInt(r["id"])] = odooString(r["state"])
+	}
+	var postedMoves []int
+	cancelledMoves := map[int]bool{}
+	for _, id := range moveIDs {
+		switch moveState[id] {
+		case "posted":
+			postedMoves = append(postedMoves, id)
+		case "cancel":
+			cancelledMoves[id] = true
+		}
+	}
+	// Exclude counterpart lines that belong to a cancelled move (rare — one
+	// extra read only when a cancelled move is actually present).
+	writeIDs := counterpartIDs
+	if len(cancelledMoves) > 0 {
+		lineRows, lerr := odooReadMapsByIDs(creds, uid, "account.move.line", counterpartIDs, []string{"id", "move_id"})
+		if lerr != nil {
+			return fmt.Errorf("read counterpart line moves for account %s: %v", accountCode, lerr)
+		}
+		lineMove := make(map[int]int, len(lineRows))
+		for _, r := range lineRows {
+			lineMove[odooInt(r["id"])] = odooFieldID(r["move_id"])
+		}
+		writeIDs = writeIDs[:0]
+		for _, lineID := range counterpartIDs {
+			if !cancelledMoves[lineMove[lineID]] {
+				writeIDs = append(writeIDs, lineID)
+			}
+		}
+		Warnf("  %s⚠ Skipped %s while setting account %s (cancelled)%s",
+			Fmt.Yellow, Pluralize(len(cancelledMoves), "cancelled move", ""), accountCode, Fmt.Reset)
+	}
+	if len(writeIDs) == 0 {
+		return nil
+	}
+
+	if len(postedMoves) > 0 {
+		if status != nil {
+			status.Update("Applying account %s: resetting %d posted moves...", accountCode, len(postedMoves))
+		}
+		if err := runOdooIDChunks(status, "Resetting moves to draft", postedMoves, 100, func(chunk []interface{}) error {
+			_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "button_draft",
+				[]interface{}{chunk}, nil)
+			return err
+		}); err != nil {
+			return fmt.Errorf("reset moves to draft for account %s: %v", accountCode, err)
+		}
+	}
 	if status != nil {
-		status.Update("Applying account %s: resetting %d moves...", accountCode, len(moveIDs))
+		status.Update("Applying account %s: writing %d counterpart lines...", accountCode, len(writeIDs))
 	}
-	if err := runOdooIDChunks(status, "Resetting moves to draft", moveIDs, 100, func(chunk []interface{}) error {
-		_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-			"account.move", "button_draft",
-			[]interface{}{chunk}, nil)
-		return err
-	}); err != nil {
-		return fmt.Errorf("reset moves to draft for account %s: %v", accountCode, err)
-	}
-	if status != nil {
-		status.Update("Applying account %s: writing %d counterpart lines...", accountCode, len(counterpartIDs))
-	}
-	if err := runOdooIDChunks(status, "Writing counterpart accounts", counterpartIDs, 200, func(chunk []interface{}) error {
+	if err := runOdooIDChunks(status, "Writing counterpart accounts", writeIDs, 200, func(chunk []interface{}) error {
 		// Bypass context (same shape used by the metadata stage and
 		// reconcileStatementLineWithMove): tells Odoo to skip its
 		// statement-line ↔ move synchronization and the
@@ -3208,16 +3260,21 @@ func applyOdooMappingAccountBatch(creds *OdooCredentials, uid int, moveIDs, coun
 	}); err != nil {
 		return fmt.Errorf("write counterpart account %s: %v", accountCode, err)
 	}
-	if status != nil {
-		status.Update("Applying account %s: reposting %d moves...", accountCode, len(moveIDs))
-	}
-	if err := runOdooIDChunks(status, "Reposting moves", moveIDs, 100, func(chunk []interface{}) error {
-		_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-			"account.move", "action_post",
-			[]interface{}{chunk}, nil)
-		return err
-	}); err != nil {
-		return fmt.Errorf("repost moves for account %s: %v", accountCode, err)
+	// Repost only the moves we drafted; draft moves stay draft (we never
+	// promoted them) so the operator's intent — and the open statement's
+	// not-yet-posted state — is preserved.
+	if len(postedMoves) > 0 {
+		if status != nil {
+			status.Update("Applying account %s: reposting %d moves...", accountCode, len(postedMoves))
+		}
+		if err := runOdooIDChunks(status, "Reposting moves", postedMoves, 100, func(chunk []interface{}) error {
+			_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.move", "action_post",
+				[]interface{}{chunk}, nil)
+			return err
+		}); err != nil {
+			return fmt.Errorf("repost moves for account %s: %v", accountCode, err)
+		}
 	}
 	return nil
 }

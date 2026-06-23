@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"time"
 )
 
 // odooStr tolerates Odoo's habit of returning `false` for unset string fields.
@@ -58,23 +59,32 @@ func (f odooJSONFloat) Float64() float64 { return float64(f) }
 //     non-stable unique_import_id that produced a fresh duplicate on every
 //     run; `chb odoo journals <id> fix` collapses them.
 type StatementBalanceIssue struct {
-	JournalID        int
-	StatementID      int
-	StatementName    string
-	Date             string
-	BalanceStart     float64
-	BalanceEndReal   float64
-	LineSum          float64
-	RunningBalance   float64 // BalanceStart + LineSum
-	LineCount        int
-	Kind             string             // "balance_mismatch" | "chain_gap" | "duplicate_open_fee_lines"
-	StatementRef     string             // Odoo statement reference field (Stripe payout ID for Stripe journals)
-	PreviousEndReal  float64            // for chain_gap only
-	PreviousStmtID   int                // for chain_gap only
-	PreviousStmtName string             // for chain_gap only
-	PreviousStmtDate string             // for chain_gap only
-	PreviousStmtRef  string             // for chain_gap only
-	DuplicateLines   []DuplicateFeeLine // for duplicate_open_fee_lines only
+	JournalID      int
+	StatementID    int
+	StatementName  string
+	Date           string
+	BalanceStart   float64
+	BalanceEndReal float64
+	LineSum        float64
+	RunningBalance float64 // BalanceStart + LineSum
+	LineCount      int
+	Kind           string // "balance_mismatch" | "chain_gap" | "duplicate_open_fee_lines" | "opening_in_line" | "odoo_running_mismatch" | "unstatemented_lines"
+	StatementRef   string // Odoo statement reference field (Stripe payout ID for Stripe journals)
+	// OdooBalanceEnd is Odoo's own computed running balance for the statement.
+	// Odoo drops the journal's chronologically-first line from it (treating it
+	// as a zero-impact anchor), so when the opening balance is carried as that
+	// first line, OdooBalanceEnd disagrees with BalanceEndReal even though
+	// chb's own RunningBalance matches. Set for opening_in_line / odoo_running_mismatch.
+	OdooBalanceEnd        float64
+	SuggestedBalanceStart float64            // opening_in_line: the balance_start that makes Odoo valid
+	OrphanFirstDate       string             // unstatemented_lines: earliest line date
+	OrphanLastDate        string             // unstatemented_lines: latest line date
+	PreviousEndReal       float64            // for chain_gap only
+	PreviousStmtID        int                // for chain_gap only
+	PreviousStmtName      string             // for chain_gap only
+	PreviousStmtDate      string             // for chain_gap only
+	PreviousStmtRef       string             // for chain_gap only
+	DuplicateLines        []DuplicateFeeLine // for duplicate_open_fee_lines only
 }
 
 // DuplicateFeeLine identifies one of the duplicated open-statement fee lines.
@@ -90,6 +100,146 @@ func (i StatementBalanceIssue) Diff() float64 {
 	return i.RunningBalance - i.BalanceEndReal
 }
 
+// printJournalBalances shows the three figures an operator compares to trust a
+// journal: the provider's live balance, the local archive, and the Odoo journal
+// itself (a live read_group). For a cutoff journal (odooSyncSince) it also
+// compares the post-cutoff transaction count — the journal carries an opening
+// balance that local has no tx for, so only lines on/after the cutoff should
+// match one-for-one. acc may be nil (an unlinked journal): then only the Odoo
+// figure is shown.
+func printJournalBalances(creds *OdooCredentials, uid int, acc *AccountConfig, journalID int) {
+	currency := "EUR"
+	localCount, localBalance, haveLocal := 0, 0.0, false
+	providerBalance, providerKnown := 0.0, false
+
+	if acc != nil {
+		currency = accCurrency(acc)
+		if t := computeAccountTotals(acc); t != nil {
+			localCount, localBalance, haveLocal = t.TxCount, t.CurrentBalance, true
+			if t.Currency != "" {
+				currency = t.Currency
+			}
+		}
+		if cache := loadBalanceCache(); cache != nil {
+			if v, _, ok := resolveAccountBalance(acc, cache.Balances, nil); ok {
+				providerBalance, providerKnown = v, true
+			}
+		}
+	}
+	journalCount, journalBalance, jerr := odooJournalAggregate(creds, uid, journalID)
+
+	mark := func(ok bool) string {
+		if ok {
+			return Fmt.Green + "  ✓" + Fmt.Reset
+		}
+		return Fmt.Red + "  ✗" + Fmt.Reset
+	}
+	rowFmt := func(label string, bal float64, count int, m, count_ string) {
+		fmt.Printf("    %-20s %16s%s%s\n", label, formatBalance(bal, currency), m,
+			func() string {
+				if count_ == "" {
+					return ""
+				}
+				return "  " + Fmt.Dim + count_ + Fmt.Reset
+			}())
+	}
+
+	fmt.Printf("\n  %sBalances%s\n", Fmt.Bold, Fmt.Reset)
+	if providerKnown {
+		rowFmt(accountProviderDisplayName(acc)+" (live):", providerBalance, 0, "  ", Pluralize(accountProviderRawCount(acc), "tx", ""))
+	}
+	if haveLocal {
+		m := "  "
+		if providerKnown {
+			m = mark(roundCents(localBalance) == roundCents(providerBalance))
+		}
+		rowFmt("Local files:", localBalance, localCount, m, Pluralize(localCount, "tx", ""))
+	}
+	if jerr != nil {
+		fmt.Printf("    %-20s %s(unavailable: %v)%s\n", fmt.Sprintf("Odoo journal #%d:", journalID), Fmt.Dim, jerr, Fmt.Reset)
+	} else {
+		m := "  "
+		if haveLocal {
+			m = mark(roundCents(journalBalance) == roundCents(localBalance))
+		}
+		rowFmt(fmt.Sprintf("Odoo journal #%d:", journalID), journalBalance, journalCount, m, Pluralize(journalCount, "tx", ""))
+		// Cutoff journals: the journal keeps an opening balance line so total
+		// counts differ by design; lines on/after the cutoff must match local.
+		if acc != nil {
+			if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+				localPost := accountLocalOdooSyncSnapshotSince(acc, cutoff).TxCount
+				odooPost, perr := odooJournalImportedCountSince(creds, uid, journalID, cutoff)
+				if perr == nil {
+					cm := mark(localPost == odooPost)
+					fmt.Printf("    %ssince %s%s   %d local vs %d journal%s\n",
+						Fmt.Dim, cutoff.Format("2006-01-02"), Fmt.Reset, localPost, odooPost, cm)
+				}
+			}
+		}
+	}
+	fmt.Println()
+}
+
+// odooJournalImportedCountSince counts the chb-owned statement lines (those
+// carrying a unique_import_id, i.e. excluding the manual opening balance) dated
+// on or after the cutoff. This is the count that must match local for a cutoff
+// journal.
+func odooJournalImportedCountSince(creds *OdooCredentials, uid int, journalID int, cutoff time.Time) (int, error) {
+	res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_count",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+			[]interface{}{"date", ">=", cutoff.Format("2006-01-02")},
+			[]interface{}{"unique_import_id", "!=", false},
+		}}, nil)
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	if err := json.Unmarshal(res, &count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// classifyStatementBalance decides whether one statement's balances are
+// invalid, and how. idx is the statement's chronological position (0 = first).
+//
+//   - balance_mismatch: chb's own running (balanceStart + every line) ≠ declared
+//     end — a genuine line-level defect.
+//   - opening_in_line / odoo_running_mismatch: chb's running matches, but Odoo's
+//     own running balance (odooBalanceEnd, which drops the journal's first line)
+//     does not. On the first statement that dropped line is the opening balance
+//     carried as a line; the opening belongs in balance_start instead. The
+//     suggested balance_start that makes Odoo's running tie out is
+//     balanceEndReal − odooBalanceEnd + balanceStart.
+//
+// Returns kind == "" when the statement is valid.
+//
+// Odoo's own running balance (odooBalanceEnd) is the source of truth for
+// validity — it is what `journal_has_invalid_statements` is computed from. chb
+// must NOT recompute its own `balanceStart + Σlines` as the gate: once an
+// opening balance is moved into balance_start (the opening_in_line repair) the
+// opening line is counted twice by that formula but exactly once by Odoo, so a
+// recompute would report a phantom mismatch on a journal Odoo considers clean.
+// chb's own running is used only to classify WHY Odoo rejects a statement.
+func classifyStatementBalance(idx int, balanceStart, balanceEndReal, odooBalanceEnd, lineSum float64) (kind string, suggestedStart float64) {
+	if math.Abs(odooBalanceEnd-balanceEndReal) <= 0.005 {
+		return "", 0 // Odoo accepts it — trust that.
+	}
+	// Odoo rejects it. If chb's full-line running DOES match the declared end,
+	// Odoo dropped a line chb counted — on the first statement that's the
+	// opening balance carried as a line, which belongs in balance_start.
+	if math.Abs((balanceStart+lineSum)-balanceEndReal) <= 0.005 {
+		if idx == 0 {
+			return "opening_in_line", roundCents(balanceEndReal - odooBalanceEnd + balanceStart)
+		}
+		return "odoo_running_mismatch", 0
+	}
+	// Both chb and Odoo disagree with the declared end → genuine line defect.
+	return "balance_mismatch", 0
+}
+
 // CheckOdooJournalStatements returns all invariant violations for the given
 // journal, in chronological order.
 func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) ([]StatementBalanceIssue, error) {
@@ -99,7 +249,7 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 			[]interface{}{"journal_id", "=", journalID},
 		}},
 		map[string]interface{}{
-			"fields": []string{"id", "name", "reference", "date", "balance_start", "balance_end_real"},
+			"fields": []string{"id", "name", "reference", "date", "balance_start", "balance_end_real", "balance_end"},
 			"order":  "date asc, id asc",
 		})
 	if err != nil {
@@ -112,6 +262,7 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 		Date           odooStr       `json:"date"`
 		BalanceStart   odooJSONFloat `json:"balance_start"`
 		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
+		BalanceEnd     odooJSONFloat `json:"balance_end"`
 	}
 	if err := json.Unmarshal(stmtResult, &stmts); err != nil {
 		return nil, fmt.Errorf("parse statements: %v", err)
@@ -131,26 +282,29 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 	var prevID int
 	var prevName, prevDate, prevRef string
 	var hasPrev bool
-	for _, s := range stmts {
+	for idx, s := range stmts {
 		balanceStart := s.BalanceStart.Float64()
 		balanceEndReal := s.BalanceEndReal.Float64()
+		balanceEnd := s.BalanceEnd.Float64()
 		lineSum := lineSums[s.ID]
 		lineCount := lineCounts[s.ID]
 		running := balanceStart + lineSum
 
-		if math.Abs(running-balanceEndReal) > 0.005 {
+		if kind, suggested := classifyStatementBalance(idx, balanceStart, balanceEndReal, balanceEnd, lineSum); kind != "" {
 			issues = append(issues, StatementBalanceIssue{
-				JournalID:      journalID,
-				StatementID:    s.ID,
-				StatementName:  string(s.Name),
-				StatementRef:   string(s.Reference),
-				Date:           string(s.Date),
-				BalanceStart:   balanceStart,
-				BalanceEndReal: balanceEndReal,
-				LineSum:        lineSum,
-				RunningBalance: running,
-				LineCount:      lineCount,
-				Kind:           "balance_mismatch",
+				JournalID:             journalID,
+				StatementID:           s.ID,
+				StatementName:         string(s.Name),
+				StatementRef:          string(s.Reference),
+				Date:                  string(s.Date),
+				BalanceStart:          balanceStart,
+				BalanceEndReal:        balanceEndReal,
+				OdooBalanceEnd:        balanceEnd,
+				LineSum:               lineSum,
+				RunningBalance:        running,
+				LineCount:             lineCount,
+				Kind:                  kind,
+				SuggestedBalanceStart: suggested,
 			})
 		}
 
@@ -216,7 +370,74 @@ func CheckOdooJournalStatements(creds *OdooCredentials, uid int, journalID int) 
 		}
 	}
 
+	// Lines that belong to no statement at all. Odoo's reconciliation report
+	// leaves them outside the statement chain, so the chain's last end no
+	// longer reflects the journal's real balance (e.g. journal 47's trailing
+	// drain-to-zero lines). One summary issue keeps the noise down.
+	if oc, osum, first, last, oerr := findUnstatementedLines(creds, uid, journalID); oerr == nil && oc > 0 {
+		issues = append(issues, StatementBalanceIssue{
+			JournalID:       journalID,
+			Kind:            "unstatemented_lines",
+			LineCount:       oc,
+			LineSum:         osum,
+			OrphanFirstDate: first,
+			OrphanLastDate:  last,
+		})
+	}
+
 	return issues, nil
+}
+
+// findUnstatementedLines returns the count, signed sum, and date range of
+// journal lines that are not attached to any statement. One aggregate
+// read_group + two cheap limit-1 reads, so it scales regardless of how many
+// lines are loose.
+func findUnstatementedLines(creds *OdooCredentials, uid int, journalID int) (count int, sum float64, firstDate, lastDate string, err error) {
+	domain := []interface{}{
+		[]interface{}{"journal_id", "=", journalID},
+		[]interface{}{"statement_id", "=", false},
+	}
+	grpRes, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "read_group",
+		[]interface{}{domain, []string{"amount:sum"}, []interface{}{}},
+		map[string]interface{}{"lazy": false})
+	if err != nil {
+		return 0, 0, "", "", err
+	}
+	var grp []struct {
+		Amount odooJSONFloat `json:"amount"`
+		Count  int           `json:"__count"`
+	}
+	if err := json.Unmarshal(grpRes, &grp); err != nil {
+		return 0, 0, "", "", err
+	}
+	if len(grp) == 0 || grp[0].Count == 0 {
+		return 0, 0, "", "", nil
+	}
+	count = grp[0].Count
+	sum = roundCents(grp[0].Amount.Float64())
+	firstDate = odooFirstLineDate(creds, uid, domain, "date asc, id asc")
+	lastDate = odooFirstLineDate(creds, uid, domain, "date desc, id desc")
+	return count, sum, firstDate, lastDate, nil
+}
+
+// odooFirstLineDate returns the date of the first statement line matching the
+// domain under the given order (empty string on error / no row).
+func odooFirstLineDate(creds *OdooCredentials, uid int, domain []interface{}, order string) string {
+	res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{domain},
+		map[string]interface{}{"fields": []string{"date"}, "order": order, "limit": 1})
+	if err != nil {
+		return ""
+	}
+	var rows []struct {
+		Date odooStr `json:"date"`
+	}
+	if json.Unmarshal(res, &rows) != nil || len(rows) == 0 {
+		return ""
+	}
+	return string(rows[0].Date)
 }
 
 // findDuplicateOpenFeeLines returns, per statement, the set of "Stripe fees
@@ -352,6 +573,31 @@ func PrintStatementIssues(issues []StatementBalanceIssue) {
 			}
 			fmt.Printf("    %s→ would collapse to a single line of %s%s\n\n",
 				Fmt.Dim, fmtEURSigned(sum), Fmt.Reset)
+		case "opening_in_line":
+			fmt.Printf("  %s#%d  %s  %s(%s) — opening balance carried as a line%s\n",
+				Fmt.Bold, i.StatementID, i.StatementName, Fmt.Dim, i.Date, Fmt.Reset)
+			fmt.Printf("    %sbalance_start     %12s  %s← Odoo drops the journal's first line; opening belongs here%s\n",
+				Fmt.Dim, fmtEUR(i.BalanceStart), Fmt.Yellow, Fmt.Reset)
+			fmt.Printf("    %sOdoo balance_end  %12s%s\n", Fmt.Dim, fmtEURSigned(i.OdooBalanceEnd), Fmt.Reset)
+			fmt.Printf("    %sbalance_end_real  %12s  %s← off by %s%s\n",
+				Fmt.Dim, fmtEUR(i.BalanceEndReal), Fmt.Red, fmtEURSigned(i.BalanceEndReal-i.OdooBalanceEnd), Fmt.Reset)
+			fmt.Printf("    %s→ fix sets balance_start %s → %s%s\n\n",
+				Fmt.Green, fmtEUR(i.BalanceStart), fmtEUR(i.SuggestedBalanceStart), Fmt.Reset)
+		case "odoo_running_mismatch":
+			fmt.Printf("  %s#%d  %s  %s(%s) — Odoo running balance disagrees%s\n",
+				Fmt.Bold, i.StatementID, i.StatementName, Fmt.Dim, i.Date, Fmt.Reset)
+			fmt.Printf("    %sOdoo balance_end  %12s%s\n", Fmt.Dim, fmtEURSigned(i.OdooBalanceEnd), Fmt.Reset)
+			fmt.Printf("    %sbalance_end_real  %12s  %s← off by %s%s\n\n",
+				Fmt.Dim, fmtEUR(i.BalanceEndReal), Fmt.Red, fmtEURSigned(i.BalanceEndReal-i.OdooBalanceEnd), Fmt.Reset)
+		case "unstatemented_lines":
+			rng := ""
+			if i.OrphanFirstDate != "" {
+				rng = fmt.Sprintf("  %s(%s → %s)%s", Fmt.Dim, i.OrphanFirstDate, i.OrphanLastDate, Fmt.Reset)
+			}
+			fmt.Printf("  %s%s in no statement%s%s\n",
+				Fmt.Bold, Pluralize(i.LineCount, "line", ""), Fmt.Reset, rng)
+			fmt.Printf("    %ssum %s  %s← chain end no longer reflects the journal balance%s\n\n",
+				Fmt.Dim, fmtEURSigned(i.LineSum), Fmt.Yellow, Fmt.Reset)
 		}
 	}
 }
