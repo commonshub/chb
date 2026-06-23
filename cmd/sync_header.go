@@ -271,16 +271,15 @@ func shortMoneriumScope(addr string) string {
 	return truncateAddr(addr)
 }
 
-// odooTargetHeaderSuffix returns a short " — Odoo: <db>" tag suitable
-// for appending to the top banner of `chb pull` / `chb push`. Returns
-// "" when no Odoo creds are configured. Keeps the Odoo DB visible in
-// one obvious place instead of repeating it on every journal row.
+// odooTargetHeaderSuffix returns a short target tag suitable for appending
+// to the top banner of `chb pull` / `chb push`. Returns "" when no Odoo creds
+// are configured. Keep URL + DB visible once so writes are unambiguous.
 func odooTargetHeaderSuffix() string {
 	creds, err := ResolveOdooCredentials()
 	if err != nil || creds.DB == "" {
 		return ""
 	}
-	return fmt.Sprintf("  %s— Odoo: %s%s", Fmt.Dim, creds.DB, Fmt.Reset)
+	return fmt.Sprintf("  %s— Odoo: %s (DB: %s)%s", Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
 }
 
 // lastSync returns the last-sync time from a SyncSourceState.

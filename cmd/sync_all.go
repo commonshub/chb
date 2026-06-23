@@ -399,16 +399,23 @@ type pushConfirmationJournal struct {
 }
 
 type pushConfirmationPlan struct {
-	Journals          []pushConfirmationJournal
-	NostrOutbox       int
-	NostrTransactions int
-	NostrInvoices     int
-	NostrBills        int
+	OdooURL                 string
+	OdooDB                  string
+	Journals                []pushConfirmationJournal
+	NostrOutbox             int
+	NostrOutboxUniqueURIs   int
+	NostrOutboxDuplicateURI int
+	NostrOutboxWithoutURI   int
+	NostrTransactions       int
+	NostrInvoices           int
+	NostrBills              int
 }
 
 func buildPushConfirmationPlan(args []string) (pushConfirmationPlan, error) {
 	var plan pushConfirmationPlan
-	if os.Getenv("ODOO_URL") != "" {
+	if creds, err := ResolveOdooCredentials(); err == nil {
+		plan.OdooURL = creds.URL
+		plan.OdooDB = creds.DB
 		journals, err := previewOdooPushJournals(args)
 		if err != nil {
 			return plan, err
@@ -416,7 +423,11 @@ func buildPushConfirmationPlan(args []string) (pushConfirmationPlan, error) {
 		plan.Journals = journals
 	}
 	if LoadNostrKeys() != nil {
-		plan.NostrOutbox = countQueuedNostrOutbox()
+		outbox := countQueuedNostrOutbox()
+		plan.NostrOutbox = outbox.Total
+		plan.NostrOutboxUniqueURIs = outbox.UniqueURIs
+		plan.NostrOutboxDuplicateURI = outbox.DuplicateURIs
+		plan.NostrOutboxWithoutURI = outbox.WithoutURI
 		plan.NostrTransactions = countPendingTransactionAnnotations(args)
 		if n, err := countPendingMoveAnnotations(moveKindInvoice, args); err == nil {
 			plan.NostrInvoices = n
@@ -459,11 +470,16 @@ func previewOdooPushJournals(args []string) ([]pushConfirmationJournal, error) {
 			row.Status = strings.Join(diag.Warnings, "; ")
 		}
 		status := addOdooPushPlanNotes(row.Status, args)
+		count := plannedOdooWriteCount(status)
+		otherCount := plannedOdooOtherWriteCount(status, args)
+		if count+otherCount == 0 {
+			continue
+		}
 		out = append(out, pushConfirmationJournal{
 			Slug:       acc.Slug,
 			JournalID:  acc.OdooJournalID,
-			Count:      plannedOdooWriteCount(status),
-			OtherCount: plannedOdooOtherWriteCount(status, args),
+			Count:      count,
+			OtherCount: otherCount,
 			Status:     status,
 		})
 	}
@@ -530,18 +546,38 @@ func addOdooPushPlanNotes(status string, args []string) string {
 	return strings.Join(notes, ", ")
 }
 
-func countQueuedNostrOutbox() int {
+type nostrOutboxPlanStats struct {
+	Total         int
+	UniqueURIs    int
+	DuplicateURIs int
+	WithoutURI    int
+}
+
+func countQueuedNostrOutbox() nostrOutboxPlanStats {
 	entries, err := os.ReadDir(nostrOutboxDir())
 	if err != nil {
-		return 0
+		return nostrOutboxPlanStats{}
 	}
-	count := 0
+	stats := nostrOutboxPlanStats{}
+	seen := map[string]bool{}
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-			count++
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
 		}
+		stats.Total++
+		item, err := readQueuedNostrEvent(filepath.Join(nostrOutboxDir(), e.Name()))
+		if err != nil || item.URI == "" {
+			stats.WithoutURI++
+			continue
+		}
+		if seen[item.URI] {
+			stats.DuplicateURIs++
+			continue
+		}
+		seen[item.URI] = true
+		stats.UniqueURIs++
 	}
-	return count
+	return stats
 }
 
 func (p pushConfirmationPlan) totalWrites() int {
@@ -557,30 +593,39 @@ func confirmPushPlan(plan pushConfirmationPlan, args []string) error {
 		return nil
 	}
 	fmt.Printf("\n  %sPush confirmation%s\n", Fmt.Bold, Fmt.Reset)
+	if plan.OdooURL != "" || plan.OdooDB != "" {
+		fmt.Printf("  %sOdoo target:%s %s (DB: %s)\n", Fmt.Dim, Fmt.Reset, plan.OdooURL, plan.OdooDB)
+	}
 	if len(plan.Journals) > 0 {
 		fmt.Printf("  %sOdoo writes:%s\n", Fmt.Dim, Fmt.Reset)
 		for _, j := range plan.Journals {
-			status := j.Status
-			if status == "" {
-				status = "no transaction writes planned"
-			}
 			other := ""
 			if j.OtherCount > 0 {
 				other = fmt.Sprintf(", %s", Pluralize(j.OtherCount, "other Odoo write", ""))
 			}
-			fmt.Printf("    #%d %s: %s%s (%s)\n", j.JournalID, j.Slug, Pluralize(j.Count, "transaction", ""), other, status)
+			fmt.Printf("    #%d %s: %s%s\n", j.JournalID, j.Slug, Pluralize(j.Count, "new transaction", ""), other)
 		}
 		if !HasFlag(args, "--skip-reconcile", "--skip-reconciliation") {
 			fmt.Printf("    %sAuto-reconcile may run on journals with %d or fewer new transactions.%s\n", Fmt.Dim, reconcileAutoThreshold, Fmt.Reset)
 		}
 	}
 	if plan.NostrOutbox+plan.NostrTransactions+plan.NostrInvoices+plan.NostrBills > 0 {
-		fmt.Printf("  %sNostr posts:%s %s queued outbox, %s transaction annotations, %s invoice annotations, %s bill annotations\n",
+		fmt.Printf("  %sNostr posts:%s %s already queued in outbox; new annotations: %s transactions, %s invoices, %s bills\n",
 			Fmt.Dim, Fmt.Reset,
 			Pluralize(plan.NostrOutbox, "event", ""),
-			Pluralize(plan.NostrTransactions, "transaction", ""),
-			Pluralize(plan.NostrInvoices, "invoice", ""),
-			Pluralize(plan.NostrBills, "bill", ""))
+			formatThousands(plan.NostrTransactions),
+			formatThousands(plan.NostrInvoices),
+			formatThousands(plan.NostrBills))
+		if plan.NostrOutbox > 0 {
+			details := []string{fmt.Sprintf("%s unique URIs", formatThousands(plan.NostrOutboxUniqueURIs))}
+			if plan.NostrOutboxDuplicateURI > 0 {
+				details = append(details, fmt.Sprintf("%s duplicate URI events", formatThousands(plan.NostrOutboxDuplicateURI)))
+			}
+			if plan.NostrOutboxWithoutURI > 0 {
+				details = append(details, fmt.Sprintf("%s without URI", formatThousands(plan.NostrOutboxWithoutURI)))
+			}
+			fmt.Printf("    %sOutbox detail: %s.%s\n", Fmt.Dim, strings.Join(details, ", "), Fmt.Reset)
+		}
 	}
 	if !isInteractiveTTY() {
 		return fmt.Errorf("refusing to push without --yes on a non-interactive shell")

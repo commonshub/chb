@@ -20,12 +20,40 @@ type OdooCredentials struct {
 	Password string
 }
 
+// HarmonizeOdooEnv keeps ODOO_URL and ODOO_DATABASE interchangeable.
+// The booleans describe which variables were present before config.env was
+// loaded, so one-off shell overrides win over persisted config values.
+func HarmonizeOdooEnv(urlExplicit, dbExplicit bool) {
+	url := strings.TrimSpace(os.Getenv("ODOO_URL"))
+	db := strings.TrimSpace(os.Getenv("ODOO_DATABASE"))
+
+	switch {
+	case dbExplicit && !urlExplicit && db != "":
+		_ = os.Setenv("ODOO_URL", odooURLFromDB(db))
+	case urlExplicit && !dbExplicit && url != "":
+		_ = os.Setenv("ODOO_DATABASE", odooDBFromURL(url))
+	case url == "" && db != "":
+		_ = os.Setenv("ODOO_URL", odooURLFromDB(db))
+	case db == "" && url != "":
+		_ = os.Setenv("ODOO_DATABASE", odooDBFromURL(url))
+	}
+}
+
+func odooURLFromDB(db string) string {
+	db = strings.TrimSpace(db)
+	if db == "" {
+		return ""
+	}
+	return "https://" + db + ".odoo.com"
+}
+
 // ResolveOdooCredentials returns Odoo credentials from env vars (set in APP_DATA_DIR/settings/config.env).
-// Database is derived from the ODOO_URL hostname unless ODOO_DATABASE is set.
+// ODOO_URL and ODOO_DATABASE are interchangeable for Odoo SaaS databases.
 func ResolveOdooCredentials() (*OdooCredentials, error) {
+	HarmonizeOdooEnv(false, false)
 	creds := &OdooCredentials{
-		URL:      os.Getenv("ODOO_URL"),
-		DB:       os.Getenv("ODOO_DATABASE"),
+		URL:      strings.TrimSpace(os.Getenv("ODOO_URL")),
+		DB:       strings.TrimSpace(os.Getenv("ODOO_DATABASE")),
 		Login:    os.Getenv("ODOO_LOGIN"),
 		Password: os.Getenv("ODOO_PASSWORD"),
 	}
@@ -230,11 +258,8 @@ func OdooAnalyticSync(args []string) (int, error) {
 		return 0, nil
 	}
 
-	odooURL := os.Getenv("ODOO_URL")
-	odooLogin := os.Getenv("ODOO_LOGIN")
-	odooPassword := os.Getenv("ODOO_PASSWORD")
-
-	if odooURL == "" || odooLogin == "" || odooPassword == "" {
+	creds, credErr := ResolveOdooCredentials()
+	if credErr != nil {
 		if quietOdooContext() {
 			odooSyncLine("categories", odooItemSyncStatus(0, "category", "issue: ODOO env not set"))
 		} else {
@@ -243,12 +268,10 @@ func OdooAnalyticSync(args []string) (int, error) {
 		return 0, nil
 	}
 
-	db := odooDBFromURL(odooURL)
-
 	odooLog("\n%s🏢 Syncing Odoo analytics%s\n", Fmt.Bold, Fmt.Reset)
-	odooLog("%sURL: %s  DB: %s%s\n", Fmt.Dim, odooURL, db, Fmt.Reset)
+	odooLog("%sURL: %s  DB: %s%s\n", Fmt.Dim, creds.URL, creds.DB, Fmt.Reset)
 
-	uid, err := odooAuth(odooURL, db, odooLogin, odooPassword)
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
 	if err != nil || uid == 0 {
 		return 0, fmt.Errorf("Odoo authentication failed: %v", err)
 	}
@@ -258,7 +281,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 	categoryMapping := map[int]string{} // Odoo analytic account ID -> our category slug
 
 	// Fetch analytic accounts for name→ID lookup
-	accountsResult, err := odooExec(odooURL, db, uid, odooPassword,
+	accountsResult, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.analytic.account", "search_read",
 		[]interface{}{[]interface{}{
 			[]interface{}{"active", "=", true},
@@ -290,7 +313,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 	// Fetch analytic lines — these are the actual categorized postings
 	// Each line links an amount to an analytic account, with a reference
 	// back to the journal entry line (move_line_id).
-	linesResult, err := odooExec(odooURL, db, uid, odooPassword,
+	linesResult, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.analytic.line", "search_read",
 		[]interface{}{[]interface{}{}},
 		map[string]interface{}{
@@ -325,7 +348,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 	odooLog("  %sFetched %d analytic lines%s\n", Fmt.Dim, len(lines), Fmt.Reset)
 
 	// Fetch payment transactions to match Stripe references
-	paymentResult, err := odooExec(odooURL, db, uid, odooPassword,
+	paymentResult, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"payment.transaction", "search_read",
 		[]interface{}{[]interface{}{
 			[]interface{}{"provider_reference", "!=", false},
@@ -351,7 +374,7 @@ func OdooAnalyticSync(args []string) (int, error) {
 	// "{chain}:{account}:{txHash}:{logIndex}". Filtering server-side avoids
 	// pulling every statement line in the database (the previous client-side
 	// 5000-row cap silently truncated journals with more lines than that).
-	bslResult, err := odooExec(odooURL, db, uid, odooPassword,
+	bslResult, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
 		"account.bank.statement.line", "search_read",
 		[]interface{}{[]interface{}{
 			[]interface{}{"ref", "ilike", "%:%:%:%"},

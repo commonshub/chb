@@ -33,7 +33,10 @@ func exitAfterDiagnostics() {
 func main() {
 	cmd.Version = cmd.ResolveVersion(VERSION)
 	cmd.EnsureSettingsBootstrapped()
+	odooURLExplicit := os.Getenv("ODOO_URL") != ""
+	odooDBExplicit := os.Getenv("ODOO_DATABASE") != ""
 	cmd.LoadEnvFromConfig()
+	cmd.HarmonizeOdooEnv(odooURLExplicit, odooDBExplicit)
 	defer cmd.CloseDiagnosticsLog()
 	defer cmd.PrintDiagnosticsSummary()
 
