@@ -922,12 +922,12 @@ func generateMarkdownFiles(dataDir string) {
 	generateRoomsMd(dataDir)
 }
 
-func generateEventsMd(dataDir string) {
+func loadUpcomingFullEvents(dataDir string) []FullEvent {
 	now := time.Now().In(BrusselsTZ())
 	var events []FullEvent
 
 	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
-		return
+		return events
 	}
 
 	yearDirs, _ := os.ReadDir(dataDir)
@@ -959,10 +959,15 @@ func generateEventsMd(dataDir string) {
 		}
 	}
 
+	events = dedupeFullEvents(events)
 	sort.Slice(events, func(i, j int) bool {
 		return events[i].StartAt < events[j].StartAt
 	})
+	return events
+}
 
+func generateEventsMd(dataDir string) {
+	events := loadUpcomingFullEvents(dataDir)
 	baseURL := "https://commonshub.brussels"
 
 	var eventsMarkdown string

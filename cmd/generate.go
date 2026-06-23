@@ -863,7 +863,7 @@ func Generate(args []string) error {
 	})
 
 	genStep("Latest events", func() string {
-		generateLatestEventsGo(dataDir, years)
+		generateLatestEventsGo(dataDir)
 		generateMarkdownFiles(dataDir)
 		return ""
 	})
@@ -1066,7 +1066,7 @@ func GenerateEvents(args []string) error {
 	fmt.Printf("\n%s🎟  Attaching ticket sales to events...%s\n", Fmt.Bold, Fmt.Reset)
 	enrichEventsWithTicketSales(dataDir)
 	fmt.Printf("\n%s📅 Generating latest events...%s\n", Fmt.Bold, Fmt.Reset)
-	generateLatestEventsGo(dataDir, years)
+	generateLatestEventsGo(dataDir)
 	generateMarkdownFiles(dataDir)
 	fmt.Printf("%s✓ Events generators complete%s\n\n", Fmt.Green, Fmt.Reset)
 	return nil
@@ -3574,52 +3574,10 @@ type LatestEventsFile struct {
 	Events      []LatestEvent `json:"events"`
 }
 
-func generateLatestEventsGo(dataDir string, years []string) {
+func generateLatestEventsGo(dataDir string) {
 	now := time.Now()
-	today := now.Format("2006-01-02")
-
-	var allEvents []FullEvent
-
-	for _, year := range years {
-		yearPath := filepath.Join(dataDir, year)
-		monthDirs, err := os.ReadDir(yearPath)
-		if err != nil {
-			continue
-		}
-		for _, d := range monthDirs {
-			if !d.IsDir() || len(d.Name()) != 2 {
-				continue
-			}
-			eventsPath := filepath.Join(yearPath, d.Name(), "generated", "events.json")
-			data, err := os.ReadFile(eventsPath)
-			if err != nil {
-				continue
-			}
-			var ef FullEventsFile
-			if json.Unmarshal(data, &ef) == nil {
-				allEvents = append(allEvents, ef.Events...)
-			}
-		}
-	}
-
-	// Defensive dedup: if any per-month file still carries duplicate events
-	// (URL + start + end), collapse them so the aggregated latest feed is
-	// clean even before those months get re-synced.
-	allEvents = dedupeFullEvents(allEvents)
-
-	// Filter to upcoming public events (have a URL and startAt >= today)
 	var upcoming []LatestEvent
-	for _, ev := range allEvents {
-		startDate := ev.StartAt
-		if len(startDate) >= 10 {
-			startDate = startDate[:10]
-		}
-		if startDate < today {
-			continue
-		}
-		if ev.URL == "" {
-			continue
-		}
+	for _, ev := range loadUpcomingFullEvents(dataDir) {
 		upcoming = append(upcoming, LatestEvent{
 			ID:              ev.ID,
 			Name:            ev.Name,
@@ -3633,11 +3591,6 @@ func generateLatestEventsGo(dataDir string, years []string) {
 			Location:        ev.Location,
 		})
 	}
-
-	// Sort by start date ascending
-	sort.Slice(upcoming, func(i, j int) bool {
-		return upcoming[i].StartAt < upcoming[j].StartAt
-	})
 
 	outputPath := filepath.Join(dataDir, "latest", "generated", "events.json")
 	out := LatestEventsFile{

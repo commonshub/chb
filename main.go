@@ -512,7 +512,7 @@ func main() {
 				exitWithError(err)
 			}
 			cmd.PrintMirrorGenerateSkipped()
-			if err := cmd.PushAllTargets(args[1:]); err != nil {
+			if err := cmd.PushAllTargets(append(args[1:], "--yes")); err != nil {
 				exitWithError(err)
 			}
 			break
@@ -523,7 +523,7 @@ func main() {
 		if err := cmd.Generate(args[1:]); err != nil {
 			exitWithError(err)
 		}
-		if err := cmd.PushAllTargets(args[1:]); err != nil {
+		if err := cmd.PushAllTargets(append(args[1:], "--yes")); err != nil {
 			exitWithError(err)
 		}
 	case "report":

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -308,12 +309,24 @@ func PushAllTargets(args []string) error {
 		return nil
 	}
 	verbose := HasFlag(args, "--verbose", "-v") || HasFlag(args, "--debug")
+	dryRun := HasFlag(args, "--dry-run")
+	assumeYes := HasFlag(args, "--yes", "-y")
 	// Reset captured-diagnostics for a fresh footer at the end. When
 	// PushAllTargets is invoked as the second half of `chb sync`, the
 	// pull half has already printed its own footer, so it's safe to
 	// clear here.
 	ResetCapturedStepDiagnostics()
 	startedAt := time.Now()
+	plan, err := buildPushConfirmationPlan(args)
+	ResetCapturedStepDiagnostics()
+	if err != nil {
+		return err
+	}
+	if !dryRun && !assumeYes {
+		if err := confirmPushPlan(plan, args); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("\n  %sPushing changes%s%s\n", Fmt.Bold, Fmt.Reset, odooTargetHeaderSuffix())
 	renderSyncHeader("", pushTargetHeaderItems(), verbose)
 	var firstErr error
@@ -375,6 +388,210 @@ func PushAllTargets(args []string) error {
 		Fmt.Dim, FormatElapsedFixed(time.Since(startedAt).Round(100*time.Millisecond)), Fmt.Reset)
 
 	return firstErr
+}
+
+type pushConfirmationJournal struct {
+	Slug       string
+	JournalID  int
+	Count      int
+	OtherCount int
+	Status     string
+}
+
+type pushConfirmationPlan struct {
+	Journals          []pushConfirmationJournal
+	NostrOutbox       int
+	NostrTransactions int
+	NostrInvoices     int
+	NostrBills        int
+}
+
+func buildPushConfirmationPlan(args []string) (pushConfirmationPlan, error) {
+	var plan pushConfirmationPlan
+	if os.Getenv("ODOO_URL") != "" {
+		journals, err := previewOdooPushJournals(args)
+		if err != nil {
+			return plan, err
+		}
+		plan.Journals = journals
+	}
+	if LoadNostrKeys() != nil {
+		plan.NostrOutbox = countQueuedNostrOutbox()
+		plan.NostrTransactions = countPendingTransactionAnnotations(args)
+		if n, err := countPendingMoveAnnotations(moveKindInvoice, args); err == nil {
+			plan.NostrInvoices = n
+		}
+		if n, err := countPendingMoveAnnotations(moveKindBill, args); err == nil {
+			plan.NostrBills = n
+		}
+	}
+	return plan, nil
+}
+
+func previewOdooPushJournals(args []string) ([]pushConfirmationJournal, error) {
+	if err := RequireOdooWriteCapability(); err != nil {
+		return nil, err
+	}
+	configs := LoadAccountConfigs()
+	dryArgs := appendFlagIfMissing(args, "--dry-run")
+	dryArgs = appendFlagIfMissing(dryArgs, "--yes")
+	wasQuiet := quietOdooContext()
+	setQuietOdooContext(true)
+	defer setQuietOdooContext(wasQuiet)
+
+	var out []pushConfirmationJournal
+	for _, acc := range configs {
+		if acc.OdooJournalID == 0 || acc.IsOdooSourceOfTruth() {
+			continue
+		}
+		var row journalSyncRow
+		journalRowSink = &row
+		restore := silenceStdout()
+		diag := BeginStepDiagnostics(fmt.Sprintf("#%d %s preflight", acc.OdooJournalID, acc.Slug))
+		err := AccountOdooPush(acc.Slug, dryArgs)
+		EndStepDiagnostics()
+		restore()
+		journalRowSink = nil
+		if err != nil {
+			return out, err
+		}
+		if row.Status == "" && len(diag.Warnings) > 0 {
+			row.Status = strings.Join(diag.Warnings, "; ")
+		}
+		status := addOdooPushPlanNotes(row.Status, args)
+		out = append(out, pushConfirmationJournal{
+			Slug:       acc.Slug,
+			JournalID:  acc.OdooJournalID,
+			Count:      plannedOdooWriteCount(status),
+			OtherCount: plannedOdooOtherWriteCount(status, args),
+			Status:     status,
+		})
+	}
+	return out, nil
+}
+
+func appendFlagIfMissing(args []string, flag string) []string {
+	if HasFlag(args, flag) {
+		return args
+	}
+	out := make([]string, 0, len(args)+1)
+	out = append(out, args...)
+	out = append(out, flag)
+	return out
+}
+
+func plannedOdooWriteCount(status string) int {
+	var n int
+	if _, err := fmt.Sscanf(status, "dry-run: %d tx would be uploaded", &n); err == nil {
+		return n
+	}
+	if _, err := fmt.Sscanf(status, "dry-run: %d line would be merged", &n); err == nil {
+		return n
+	}
+	if _, err := fmt.Sscanf(status, "dry-run: %d lines would be merged", &n); err == nil {
+		return n
+	}
+	if _, err := fmt.Sscanf(status, "%d new", &n); err == nil {
+		return n
+	}
+	return 0
+}
+
+func plannedOdooOtherWriteCount(status string, args []string) int {
+	total := 0
+	for _, label := range []string{"partners", "accounts", "metadata"} {
+		if i := strings.Index(status, label+" "); i >= 0 {
+			var updated, reviewed int
+			if _, err := fmt.Sscanf(status[i:], label+" %d/%d", &updated, &reviewed); err == nil {
+				total += updated
+			}
+		}
+	}
+	if HasFlag(args, "--force") {
+		total++
+	}
+	if GetOption(args, "--startingBalance", "--starting-balance") != "" && !HasFlag(args, "--force") {
+		total++
+	}
+	return total
+}
+
+func addOdooPushPlanNotes(status string, args []string) string {
+	var notes []string
+	if status != "" {
+		notes = append(notes, status)
+	}
+	if HasFlag(args, "--force") {
+		notes = append(notes, "journal reset/rebuild")
+	}
+	if GetOption(args, "--startingBalance", "--starting-balance") != "" && !HasFlag(args, "--force") {
+		notes = append(notes, "starting-balance convergence")
+	}
+	return strings.Join(notes, ", ")
+}
+
+func countQueuedNostrOutbox() int {
+	entries, err := os.ReadDir(nostrOutboxDir())
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			count++
+		}
+	}
+	return count
+}
+
+func (p pushConfirmationPlan) totalWrites() int {
+	total := p.NostrOutbox + p.NostrTransactions + p.NostrInvoices + p.NostrBills
+	for _, j := range p.Journals {
+		total += j.Count + j.OtherCount
+	}
+	return total
+}
+
+func confirmPushPlan(plan pushConfirmationPlan, args []string) error {
+	if plan.totalWrites() == 0 {
+		return nil
+	}
+	fmt.Printf("\n  %sPush confirmation%s\n", Fmt.Bold, Fmt.Reset)
+	if len(plan.Journals) > 0 {
+		fmt.Printf("  %sOdoo writes:%s\n", Fmt.Dim, Fmt.Reset)
+		for _, j := range plan.Journals {
+			status := j.Status
+			if status == "" {
+				status = "no transaction writes planned"
+			}
+			other := ""
+			if j.OtherCount > 0 {
+				other = fmt.Sprintf(", %s", Pluralize(j.OtherCount, "other Odoo write", ""))
+			}
+			fmt.Printf("    #%d %s: %s%s (%s)\n", j.JournalID, j.Slug, Pluralize(j.Count, "transaction", ""), other, status)
+		}
+		if !HasFlag(args, "--skip-reconcile", "--skip-reconciliation") {
+			fmt.Printf("    %sAuto-reconcile may run on journals with %d or fewer new transactions.%s\n", Fmt.Dim, reconcileAutoThreshold, Fmt.Reset)
+		}
+	}
+	if plan.NostrOutbox+plan.NostrTransactions+plan.NostrInvoices+plan.NostrBills > 0 {
+		fmt.Printf("  %sNostr posts:%s %s queued outbox, %s transaction annotations, %s invoice annotations, %s bill annotations\n",
+			Fmt.Dim, Fmt.Reset,
+			Pluralize(plan.NostrOutbox, "event", ""),
+			Pluralize(plan.NostrTransactions, "transaction", ""),
+			Pluralize(plan.NostrInvoices, "invoice", ""),
+			Pluralize(plan.NostrBills, "bill", ""))
+	}
+	if !isInteractiveTTY() {
+		return fmt.Errorf("refusing to push without --yes on a non-interactive shell")
+	}
+	fmt.Printf("\n  %sApply these changes? [y/N] %s", Fmt.Bold, Fmt.Reset)
+	resp, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	resp = strings.ToLower(strings.TrimSpace(resp))
+	if resp != "y" && resp != "yes" {
+		return fmt.Errorf("cancelled")
+	}
+	return nil
 }
 
 // PrintSyncCronHelp is the help shown for the all-in-one `chb sync`
@@ -439,9 +656,10 @@ func printPushAllHelp() {
 
 %sDESCRIPTION%s
   Walks every configured push target (Odoo journals, then Nostr outbox)
-  and publishes whatever pending changes are waiting locally. Designed
-  for cron use: each target prints its own summary and a failure on one
-  target does not abort the others.
+  and publishes whatever pending changes are waiting locally. By default,
+  live mode previews the planned writes and asks for confirmation; use
+  --yes for unattended runs. A failure on one target does not abort the
+  others.
 
   Equivalent to:
     %schb odoo journals push%s
@@ -449,12 +667,13 @@ func printPushAllHelp() {
 
 %sOPTIONS%s
   %s--dry-run%s          Preview what would be pushed
+  %s--yes, -y%s          Push without the confirmation prompt
   %s--skip-reconcile%s   Skip the auto-reconcile after push
   %s--help, -h%s         Show this help
 
 %sCRON%s
   Pair with %schb pull%s for the full loop:
-    %schb sync%s         # = chb pull && chb push
+    %schb sync%s         # = chb pull && chb push --yes
 `,
 		Fmt.Bold, Fmt.Reset,
 		Fmt.Bold, Fmt.Reset,
@@ -464,6 +683,7 @@ func printPushAllHelp() {
 		Fmt.Cyan, Fmt.Reset,
 		Fmt.Bold, Fmt.Reset,
 		Fmt.Yellow, Fmt.Reset, // --dry-run
+		Fmt.Yellow, Fmt.Reset, // --yes
 		Fmt.Yellow, Fmt.Reset, // --skip-reconcile
 		Fmt.Yellow, Fmt.Reset, // --help, -h
 		Fmt.Bold, Fmt.Reset,

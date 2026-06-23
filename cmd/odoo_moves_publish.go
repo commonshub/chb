@@ -27,6 +27,54 @@ func BillsPublish(args []string) error {
 	return publishMoves(moveKindBill, args)
 }
 
+func countPendingMoveAnnotations(kind moveKind, args []string) (int, error) {
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return 0, err
+	}
+	host := OdooHost(creds.URL)
+	db := creds.DB
+	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	now := time.Now()
+	var startMonth, endMonth string
+	if posFound {
+		if posMonth != "" {
+			startMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
+			endMonth = startMonth
+		} else {
+			startMonth = fmt.Sprintf("%s-01", posYear)
+			endMonth = fmt.Sprintf("%s-12", posYear)
+		}
+	} else {
+		startMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
+		endMonth = startMonth
+	}
+	publishedIDs := loadPublishedEventIDs()
+	count := 0
+	dataDir := DataDir()
+	err = walkMoveMonths(dataDir, kind, func(year, month string) error {
+		ym := year + "-" + month
+		if ym < startMonth || ym > endMonth {
+			return nil
+		}
+		moves, err := loadMoves(dataDir, year, month, kind)
+		if err != nil {
+			return nil
+		}
+		for _, m := range moves {
+			if m.Category == "" && m.Collective == "" && m.Event == "" {
+				continue
+			}
+			uri := OdooURI(host, db, kind.model, m.ID)
+			if !publishedIDs[uri] {
+				count++
+			}
+		}
+		return nil
+	})
+	return count, err
+}
+
 func publishMoves(kind moveKind, args []string) error {
 	keys := LoadNostrKeys()
 	if keys == nil {

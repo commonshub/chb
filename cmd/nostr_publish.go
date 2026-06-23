@@ -11,6 +11,79 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
+func countPendingTransactionAnnotations(args []string) int {
+	posYear, posMonth, posFound := ParseYearMonthArg(args)
+	dataDir := DataDir()
+	now := time.Now()
+	var startMonth, endMonth string
+	if posFound {
+		if posMonth != "" {
+			startMonth = fmt.Sprintf("%s-%s", posYear, posMonth)
+			endMonth = startMonth
+		} else {
+			startMonth = fmt.Sprintf("%s-01", posYear)
+			endMonth = fmt.Sprintf("%s-12", posYear)
+		}
+	} else {
+		startMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
+		endMonth = startMonth
+	}
+
+	publishedIDs := loadPublishedEventIDs()
+	count := 0
+	yearDirs, _ := os.ReadDir(dataDir)
+	for _, yd := range yearDirs {
+		if !yd.IsDir() || len(yd.Name()) != 4 {
+			continue
+		}
+		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, yd.Name()))
+		for _, md := range monthDirs {
+			if !md.IsDir() || len(md.Name()) != 2 {
+				continue
+			}
+			ym := yd.Name() + "-" + md.Name()
+			if ym < startMonth || ym > endMonth {
+				continue
+			}
+			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), "generated", "transactions.json")
+			data, err := os.ReadFile(txPath)
+			if err != nil {
+				continue
+			}
+			var txFile TransactionsFile
+			if json.Unmarshal(data, &txFile) != nil {
+				continue
+			}
+			for _, tx := range txFile.Transactions {
+				if tx.Category == "" || tx.Type == "INTERNAL" {
+					continue
+				}
+				uri := ""
+				if tx.Provider == "stripe" {
+					uri = BuildStripeURI(tx.StripeChargeID)
+				} else if tx.Provider == "etherscan" && tx.TxHash != "" {
+					chainID := 0
+					if tx.Chain != nil {
+						switch *tx.Chain {
+						case "gnosis":
+							chainID = 100
+						case "celo":
+							chainID = 42220
+						}
+					}
+					if chainID > 0 {
+						uri = BuildBlockchainURI(chainID, tx.TxHash)
+					}
+				}
+				if uri != "" && !publishedIDs[uri] {
+					count++
+				}
+			}
+		}
+	}
+	return count
+}
+
 // TransactionsPublish previews and publishes local categorizations to Nostr.
 // NEVER publishes without explicit user confirmation.
 func TransactionsPublish(args []string) error {
