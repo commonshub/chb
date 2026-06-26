@@ -341,3 +341,20 @@ func TestInvoiceRuleSubstringGlobCatchesReversal(t *testing.T) {
 		}
 	}
 }
+
+func TestRuleMatchesProduct(t *testing.T) {
+	r := Rule{Match: RuleMatch{Product: "*Open Letter*"}}
+	yes := TransactionEntry{Metadata: map[string]interface{}{"product": "Support Open Letter"}}
+	no := TransactionEntry{Metadata: map[string]interface{}{"product": "Donation to the Commons Hub Brussels"}}
+	if !r.MatchesTransaction(yes) {
+		t.Fatal("expected product glob to match 'Support Open Letter'")
+	}
+	if r.MatchesTransaction(no) {
+		t.Fatal("expected product glob NOT to match Commons Hub product")
+	}
+	// productName fallback key also works.
+	alt := TransactionEntry{Metadata: map[string]interface{}{"productName": "Support Open Letter campaign"}}
+	if !r.MatchesTransaction(alt) {
+		t.Fatal("expected productName key to match")
+	}
+}

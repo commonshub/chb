@@ -120,6 +120,151 @@ func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, ac
 	return fixes, nil
 }
 
+// odooFeeRepairs groups the Stripe aggregate-fee-line problems found in a
+// journal: lines whose amount disagrees with the locally-recomputed aggregate
+// fee, and stale fee lines that no longer correspond to any expected fee.
+type odooFeeRepairs struct {
+	Corrections []odooAmountFix // wrong amount → rewrite in place
+	Spurious    []odooAmountFix // no matching expected fee → delete
+}
+
+func (r odooFeeRepairs) empty() bool { return len(r.Corrections) == 0 && len(r.Spurious) == 0 }
+
+// detectOdooJournalFeeFixes recomputes the aggregate Stripe ":fees" lines from
+// local balance transactions and compares them to what's in the journal. Only
+// meaningful for Stripe journals — other providers have no aggregate fee lines.
+//
+// The push folds each charge's implicit Stripe fee into one aggregate fee line
+// per statement: a "stripe:<acct>:<payout>:fees" line when an automatic payout
+// closes the statement, plus a single rolling "stripe:<acct>:open:<stmt>:fees"
+// line for the still-open statement. That rolling line is updated ADDITIVELY
+// across sync runs, which is exactly how it drifts: a re-push can double-add,
+// leaving the open-statement fee line far larger than the fees it represents
+// (the canonical symptom — one open-fee line carrying thousands of euros of
+// phantom fees).
+//
+// This mirrors the push's partition (stripeImplicitChargeFeeCents accumulated
+// between stripePayoutClosesStatement boundaries) to derive the correct amount
+// for every fee line, then classifies:
+//   - closed-payout or open-statement fee line, wrong amount → correction
+//   - closed-payout fee line whose payout isn't expected, or an extra/obsolete
+//     open-statement fee line → spurious (delete)
+//
+// Missing fee lines are left to `push`/`sync`, which create them.
+// expectedStripePerChargeFees returns the correct amount (EUR) for every
+// per-charge Stripe fee line, keyed by lowercased import id
+// (stripeBTFeeImportID — "stripe:<acct>:<txn>:fee"). One entry per charge that
+// carries an implicit processing fee. Pure; windowed by the account's cutoff so
+// it lines up with what the push books. Exported for unit testing.
+func expectedStripePerChargeFees(acc *AccountConfig, bts []stripesource.Transaction) map[string]float64 {
+	out := map[string]float64{}
+	if acc == nil {
+		return out
+	}
+	cutoffUnix := int64(0)
+	hasCutoff := false
+	if cutoff, ok := acc.OdooSyncSinceTime(); ok {
+		cutoffUnix, hasCutoff = cutoff.Unix(), true
+	}
+	for _, bt := range bts {
+		if hasCutoff && bt.Created < cutoffUnix {
+			continue
+		}
+		cents, ok := stripeImplicitChargeFeeCents(bt)
+		if !ok || cents == 0 {
+			continue
+		}
+		out[strings.ToLower(stripeBTFeeImportID(acc, bt))] = roundCents(stripeAggregateFeeLineAmount(cents))
+	}
+	return out
+}
+
+// detectOdooJournalFeeFixes reconciles the journal's Stripe fee lines against
+// the per-charge model. Deprecated aggregate lines — per-payout "…:fees" and
+// the rolling "…:open:<stmt>:fees" — are all spurious now (one-time migration
+// deletes them). Per-charge "…:fee" lines are corrected if their amount drifted
+// and deleted if they no longer correspond to a local charge. Missing per-charge
+// fee lines are created by `push`/`sync`, not here.
+func detectOdooJournalFeeFixes(creds *OdooCredentials, uid, journalID int, acc *AccountConfig) (odooFeeRepairs, error) {
+	var out odooFeeRepairs
+	if acc == nil || acc.Provider != "stripe" {
+		return out, nil
+	}
+	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
+	if err != nil {
+		return out, fmt.Errorf("load Stripe provider transactions: %v", err)
+	}
+	expected := expectedStripePerChargeFees(acc, bts)
+
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
+		[]string{"id", "date", "amount", "unique_import_id", "move_id", "is_reconciled"},
+		"date asc, id asc")
+	if err != nil {
+		return out, err
+	}
+	for _, row := range rows {
+		id := odooString(row["unique_import_id"])
+		lid := strings.ToLower(id)
+		isAggregate := strings.HasSuffix(lid, ":fees") // per-payout or :open: rolling
+		isPerCharge := strings.HasSuffix(lid, ":fee")
+		if id == "" || (!isAggregate && !isPerCharge) {
+			continue
+		}
+		fix := odooAmountFix{
+			LineID:       odooInt(row["id"]),
+			MoveID:       odooFieldID(row["move_id"]),
+			Date:         odooString(row["date"]),
+			ImportID:     id,
+			OldAmount:    roundCents(odooFloat(row["amount"])),
+			IsReconciled: odooBool(row["is_reconciled"]),
+		}
+		if isAggregate {
+			// Deprecated aggregate fee line — always delete.
+			out.Spurious = append(out.Spurious, fix)
+			continue
+		}
+		want, ok := expected[lid]
+		if !ok {
+			out.Spurious = append(out.Spurious, fix)
+			continue
+		}
+		if math.Abs(fix.OldAmount-want) > 0.005 {
+			fix.NewAmount = want
+			out.Corrections = append(out.Corrections, fix)
+		}
+	}
+	return out, nil
+}
+
+// printOdooJournalFeeFixes previews the fee corrections and stale deletions and
+// the net journal-balance change they represent.
+func printOdooJournalFeeFixes(r odooFeeRepairs) {
+	var delta float64
+	if len(r.Corrections) > 0 {
+		fmt.Printf("\n  %s%s with the wrong aggregate-fee amount:%s\n", Fmt.Yellow, Pluralize(len(r.Corrections), "fee line", ""), Fmt.Reset)
+		for _, f := range r.Corrections {
+			note := ""
+			if f.IsReconciled {
+				note = Fmt.Dim + "  (reconciled → will unreconcile)" + Fmt.Reset
+			}
+			fmt.Printf("    %s%s%s  line #%d  %s → %s%s\n",
+				Fmt.Dim, f.Date, Fmt.Reset, f.LineID,
+				fmtEURSigned(f.OldAmount), fmtEURSigned(f.NewAmount), note)
+			delta += f.NewAmount - f.OldAmount
+		}
+	}
+	if len(r.Spurious) > 0 {
+		fmt.Printf("\n  %s%s with no matching expected fee (stale → delete):%s\n", Fmt.Yellow, Pluralize(len(r.Spurious), "fee line", ""), Fmt.Reset)
+		for _, f := range r.Spurious {
+			fmt.Printf("    %s%s%s  line #%d  %s%s\n",
+				Fmt.Dim, f.Date, Fmt.Reset, f.LineID, fmtEURSigned(f.OldAmount), Fmt.Reset)
+			delta += -f.OldAmount
+		}
+	}
+	fmt.Printf("\n  %sNet journal balance change: %s%s\n", Fmt.Dim, fmtEURSigned(delta), Fmt.Reset)
+}
+
 // countReconciledAmountFixes reports how many of the fixes sit on a reconciled
 // line (and so must be unreconciled before the amount can be rewritten).
 func countReconciledAmountFixes(fixes []odooAmountFix) int {

@@ -689,6 +689,19 @@ func Generate(args []string) error {
 	}
 
 	allScopes := collectGenerateScopes(dataDir, years, startMonth, endMonth)
+	// Also reprocess any PREVIOUSLY-generated month outside the recent window
+	// whose source files moved since it was last generated — e.g. a `pull` that
+	// backfilled charges/products into old months. Without this, those changes
+	// would silently never reach the generated output (the default window only
+	// covers recent months). Only months with an existing cursor are added, so a
+	// fresh setup still needs --history for the full backlog.
+	allScopes = append(allScopes, collectStaleGeneratedScopes(dataDir, years, startMonth)...)
+	sort.Slice(allScopes, func(i, j int) bool {
+		if allScopes[i].Year != allScopes[j].Year {
+			return allScopes[i].Year < allScopes[j].Year
+		}
+		return allScopes[i].Month < allScopes[j].Month
+	})
 	scopeYears := uniqueGenerateScopeYears(allScopes)
 
 	// Dirty-scope filter: drop months whose source files haven't moved
@@ -1148,6 +1161,30 @@ func dirExists(p string) bool {
 type generateScope struct {
 	Year  string
 	Month string
+}
+
+// collectStaleGeneratedScopes returns months BEFORE the recent window that were
+// generated before but whose source files have moved since (cursor is stale).
+// This makes `chb generate` pick up out-of-window source changes — e.g. a pull
+// that backfilled products into old-month charges — without needing --history.
+func collectStaleGeneratedScopes(dataDir string, years []string, beforeMonth string) []generateScope {
+	var out []generateScope
+	for _, year := range years {
+		for _, month := range getAvailableMonths(dataDir, year) {
+			ym := year + "-" + month
+			if beforeMonth == "" || ym >= beforeMonth {
+				continue // in-window months are handled by collectGenerateScopes
+			}
+			cur := LoadSyncCursor(SyncCursorKeyForGenerateMonth(year, month))
+			if cur.UpdatedAt.IsZero() {
+				continue // never generated — leave the backlog to --history
+			}
+			if monthSourceMaxMTime(dataDir, year, month).After(cur.MaxSourceMTime) {
+				out = append(out, generateScope{Year: year, Month: month})
+			}
+		}
+	}
+	return out
 }
 
 func collectGenerateScopes(dataDir string, years []string, startMonth, endMonth string) []generateScope {
@@ -2395,6 +2432,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 						if ch.PaymentLink != "" {
 							metadata["paymentLink"] = ch.PaymentLink
 						}
+						if ch.ProductName != "" {
+							metadata["product"] = ch.ProductName
+						}
 						for k, v := range ch.Metadata {
 							foldStripeMetadataValue(metadata, k, v)
 						}
@@ -3019,12 +3059,21 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// summary when those tags are known. The customer name is preserved
 	// in the PII file (loaded with --with-pii) so detail views can still
 	// show it on demand.
+	eventsByID := loadEventsByID(dataDir)
 	for i := range transactions {
 		tx := &transactions[i]
 		if tx.Provider != "stripe" {
 			continue
 		}
 		desc := buildPublicStripeDescription(tx)
+		// Fallback only: if the Stripe description didn't give us an event name
+		// (desc is the bare "ticket" label), resolve it from the events registry
+		// by the tx's event UID.
+		if strings.EqualFold(desc, "ticket") && tx.Event != "" {
+			if ev, ok := eventsByID[bareEventID(tx.Event)]; ok && strings.TrimSpace(ev.Name) != "" {
+				desc = ev.Name
+			}
+		}
 		if tx.Metadata == nil {
 			tx.Metadata = map[string]interface{}{}
 		}
@@ -3032,6 +3081,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			delete(tx.Metadata, "description")
 		} else {
 			tx.Metadata["description"] = desc
+		}
+		// Drop event-id duplicates (the UID lives once in tx.Event) and
+		// low-value provider internals so ticket metadata stays clean.
+		for _, k := range stripeRedundantEventMetaKeys {
+			delete(tx.Metadata, k)
 		}
 	}
 
@@ -3242,10 +3296,26 @@ func buildPublicStripeDescription(tx *TransactionEntry) string {
 		eventID = tx.Event
 	}
 	if eventID != "" || eventName != "" {
+		// The Stripe charge description IS the event name (Luma sets it) — use it
+		// directly. It's more resilient than depending on the events registry,
+		// and the category already conveys "ticket". Fall back to a known event
+		// name, then the registry (in the generate pass), then "ticket".
+		if desc := strings.TrimSpace(stringMetadata(tx.Metadata, "description")); desc != "" && !strings.EqualFold(desc, "ticket") {
+			return scrubCustomerNameFromDescription(desc, tx.Counterparty)
+		}
 		if eventName != "" {
-			return "ticket " + eventName
+			return eventName
 		}
 		return "ticket"
+	}
+
+	// Stripe fees (processing fees, Automatic Tax, Usage Fee, and fee credits
+	// like "€10,000 free Credit") carry their meaning in the Stripe description,
+	// not a "<category> <collective>" summary — keep the original text.
+	if strings.EqualFold(stringMetadata(tx.Metadata, "kind"), "fee") || strings.EqualFold(tx.Category, "stripe_fee") {
+		if desc := stringMetadata(tx.Metadata, "description"); desc != "" {
+			return scrubCustomerNameFromDescription(desc, tx.Counterparty)
+		}
 	}
 
 	cat := tx.Category
@@ -3285,6 +3355,16 @@ func scrubCustomerNameFromDescription(desc, name string) string {
 		desc = desc[:i] + desc[i+len(name):]
 	}
 	return strings.TrimSpace(strings.Trim(strings.TrimSpace(desc), "-,;:"))
+}
+
+// stripeRedundantEventMetaKeys are the per-transaction metadata keys that
+// duplicate the canonical tx.Event UID, or are low-value provider internals
+// (e.g. Luma payment-session ids). They're stripped once tx.Event is resolved,
+// so a ticket transaction carries the event UID once (in tx.Event) and the
+// event's name/URL stay in the events registry — not on every ticket.
+var stripeRedundantEventMetaKeys = []string{
+	"eventId", "event_api_id", "event_id", "eventApiId",
+	"luma_payment_started_api_id", "payment_type",
 }
 
 func foldStripeMetadataValue(metadata map[string]interface{}, k, v string) {

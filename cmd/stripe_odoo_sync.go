@@ -155,6 +155,11 @@ func syncStripeChronological(
 	// without it, a line deleted in Odoo between two syncs lets the
 	// cursor wrongly conclude "already in sync" and the dedup pass
 	// that would have re-created the line never runs.
+	// checkpointWindowed records that the in-sync checkpoint scan (below)
+	// narrowed bts to the drifted tail. It still vouches for the FULL local
+	// set (pre-checkpoint by the line-level scan, in-window by the push), so a
+	// clean run may re-stamp the cursor — unlike a watermark-filtered run.
+	checkpointWindowed := false
 	if !useHistory && !force && sinceDate.IsZero() && untilDate.IsZero() && !dryRun && totalLocalBTs > 0 {
 		cur := LoadSyncCursor(SyncCursorKeyForStripeAccount(acc.AccountID))
 		if cur.LastImportID != "" && cur.Count == totalLocalBTs && cur.LastImportID == latestLocalImportID {
@@ -163,22 +168,45 @@ func syncStripeChronological(
 					Fmt.Dim, totalLocalBTs, Fmt.Reset)
 				return stripeSummaryCursorMatched, nil
 			}
-			odooLog("  %sCursor matches local but Odoo journal #%d drifted — running full push%s\n",
+			odooLog("  %sCursor matches local but Odoo journal #%d drifted — finding in-sync checkpoint%s\n",
 				Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
 		}
 		// The cursor can't vouch for the journal (first run, new local BTs,
 		// destination drift, or the last push had create failures and was
-		// deliberately not stamped). The watermark filter below would hide
-		// any gap BEFORE the latest Odoo line — exactly where failed
-		// creates land — so escalate to the full duplicate check. The
-		// cursor is re-stamped only by a fully clean push, which restores
-		// the cheap short-circuit.
-		odooLog("  %sCursor can't confirm journal #%d is complete — using full duplicate check%s\n",
-			Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
-		useHistory = true
+		// deliberately not stamped). Rather than replay the entire windowed
+		// history through the expensive per-BT enrichment loop, locate the
+		// latest in-sync checkpoint from the freshly-verified local journal
+		// cache: the earliest local BT whose Odoo line is missing or whose
+		// amount drifted. Everything before it is line-for-line identical in
+		// Odoo, so we window the push to start there. Falls back to the full
+		// duplicate check only when no usable cache exists.
+		if cacheLines, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID); ok && len(cacheLines) > 0 {
+			if checkpoint, hasGap := stripeLocalInSyncCheckpoint(acc, bts, cacheLines); hasGap {
+				before := len(bts)
+				bts = filterStripeBTsByDateWindow(bts, checkpoint, time.Time{})
+				checkpointWindowed = true
+				odooLog("  %sCheckpoint: journal #%d in sync before %s — reprocessing %s from there (was %d)%s\n",
+					Fmt.Dim, acc.OdooJournalID, checkpoint.Format("2006-01-02"),
+					Pluralize(len(bts), "BT", ""), before, Fmt.Reset)
+			} else {
+				// No BT line is missing or drifted — the push has nothing to
+				// create. Any remaining journal-balance drift is structural
+				// (the opening entry or aggregate-fee lines) and is repaired by
+				// `chb odoo journals <id> fix`, not by re-pushing transactions.
+				// Re-stamp so the next run takes the cheap cursor short-circuit.
+				odooLog("  %sCheckpoint: every local BT already in journal #%d — nothing to push%s\n",
+					Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
+				stampStripeSyncCursor(creds, uid, acc, latestLocalImportID, latestLocalCreated, totalLocalBTs)
+				return stripeSummaryCursorMatched, nil
+			}
+		} else {
+			odooLog("  %sCursor can't confirm journal #%d is complete — using full duplicate check%s\n",
+				Fmt.Dim, acc.OdooJournalID, Fmt.Reset)
+			useHistory = true
+		}
 	}
 
-	if !useHistory && sinceDate.IsZero() && untilDate.IsZero() && !(dryRun && force) {
+	if !useHistory && !checkpointWindowed && sinceDate.IsZero() && untilDate.IsZero() && !(dryRun && force) {
 		cursor, cursorErr := fetchLatestStripeOdooImportCursor(creds, uid, acc.OdooJournalID, acc.AccountID)
 		if cursorErr != nil {
 			Warnf("  %s⚠ Could not read latest Odoo line, using full duplicate check: %v%s", Fmt.Yellow, cursorErr, Fmt.Reset)
@@ -198,7 +226,19 @@ func syncStripeChronological(
 		progressStatus.Update("Stripe transactions: loading local metadata...")
 	}
 	chargeIndex := loadArchivedStripeCharges(DataDir())
+	refundMap := loadArchivedStripeRefundMap(DataDir())
 	eventHints := loadLocalStripeEventHints(DataDir())
+	// Lazily classify all charges by amount, only when a reversal without a charge
+	// link (a bank payment refund) actually needs to inherit an account.
+	var refundOriginIndex map[int64][]stripeChargeClass
+	originIndexReady := false
+	getOriginIndex := func() map[int64][]stripeChargeClass {
+		if !originIndexReady {
+			refundOriginIndex = loadStripeRefundOriginIndex(acc, chargeIndex, eventHints)
+			originIndexReady = true
+		}
+		return refundOriginIndex
+	}
 	progressStatus.Clear()
 	windowLabel := Pluralize(len(bts), "selected balance transaction", "")
 	if archivedBTs == len(bts) {
@@ -286,10 +326,11 @@ func syncStripeChronological(
 	odooMappings, _ := LoadOdooMappings()
 	var batch []map[string]interface{}
 	var batchAccountCodes []string
-	feeCents := int64(0)
-	feeBTs := 0
-	feeStartDate := ""
-	feeEndDate := ""
+	// Account-rule assignments for already-existing standalone-fee lines,
+	// grouped by account code and applied once per code after the loop (the
+	// per-line draft → write → post pass is the expensive bit; batching it
+	// mirrors applyStripeBatchAccountCodes for newly-created lines).
+	feeAccountLineIDsByCode := map[string][]int{}
 	processedBTs := 0
 	skippedBTs := 0
 	existingUpdates := 0
@@ -317,58 +358,49 @@ func syncStripeChronological(
 		})
 	}
 
-	// Fees seen on already-pushed (duplicate) transactions are tracked
-	// separately: they're already represented in Odoo (their payout's fee
-	// line, or the rolling open-statement fee line), so they must never feed
-	// the additive open-statement update below. They're only consulted when
-	// rebuilding a payout fee line that is missing entirely.
-	dupFeeCents := int64(0)
-	dupFeeBTs := 0
-	dupFeeStartDate := ""
-	dupFeeEndDate := ""
-
-	resetFeeAccumulator := func() {
-		feeCents = 0
-		feeBTs = 0
-		feeStartDate = ""
-		feeEndDate = ""
-		dupFeeCents = 0
-		dupFeeBTs = 0
-		dupFeeStartDate = ""
-		dupFeeEndDate = ""
-	}
-	appendAggregateFeeLine := func(paymentRef, importID, date string) {
-		if feeCents == 0 {
-			resetFeeAccumulator()
+	// ensureFeeLine books a charge's implicit Stripe fee as its own line, dated
+	// at the charge, when that fee line doesn't already exist. One line per
+	// charge with a deterministic id (stripeBTFeeImportID) — the amount is set,
+	// never accumulated, so the journal's running balance tracks Stripe's net
+	// at every transaction and the old open-statement rolling-fee drift cannot
+	// recur. statementID is the charge's open statement (0 → loose line, e.g.
+	// when back-filling fees onto an already-closed charge; `fix` attaches it
+	// by date). Marks the id seen so a single run never double-books it.
+	ensureFeeLine := func(bt stripesource.Transaction, statementID int) {
+		cents, ok := stripeImplicitChargeFeeCents(bt)
+		if !ok || cents == 0 {
 			return
 		}
-		amount := stripeAggregateFeeLineAmount(feeCents)
-		narration := buildStripeAggregateFeeNarration(acc, importID, feeCents, feeBTs, feeStartDate, feeEndDate)
-		runningBalance += amount
-		if feeBTs > 0 && feeStartDate != "" && feeEndDate != "" && feeStartDate != feeEndDate {
-			paymentRef = fmt.Sprintf("%s (%s to %s)", paymentRef, feeStartDate, feeEndDate)
+		feeID := stripeBTFeeImportID(acc, bt)
+		if existingIDs[feeID] {
+			return
 		}
+		amount := stripeAggregateFeeLineAmount(cents)
+		date := time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02")
 		accountCode := ""
 		if inlineAccounts {
 			accountCode = stripeFeeOdooAccountCode(odooMappings)
 		}
+		runningBalance += amount
+		existingIDs[feeID] = true
 		if dryRun {
-			addDryRunPlan("create", date, paymentRef, "", accountCode, amount, importID)
+			addDryRunPlan("create", date, "Stripe fee", "", accountCode, amount, feeID)
+			stats.LinesCreated++
+			return
 		}
-		batch = append(batch, map[string]interface{}{
-			"statement_id":     openStmtID,
+		line := map[string]interface{}{
 			"journal_id":       acc.OdooJournalID,
 			"date":             date,
-			"payment_ref":      paymentRef,
+			"payment_ref":      "Stripe fee",
 			"amount":           amount,
-			"unique_import_id": importID,
-			"narration":        narration,
-		})
-		batchAccountCodes = append(batchAccountCodes, accountCode)
-		if dryRun {
-			stats.LinesCreated++
+			"unique_import_id": feeID,
+			"narration":        buildStripeBTFeeNarration(acc, bt, cents),
 		}
-		resetFeeAccumulator()
+		if statementID > 0 {
+			line["statement_id"] = statementID
+		}
+		batch = append(batch, line)
+		batchAccountCodes = append(batchAccountCodes, accountCode)
 	}
 
 	flush := func(reason string) error {
@@ -465,14 +497,18 @@ func syncStripeChronological(
 			}
 		}
 		importID := stripeBTImportID(acc, bt)
-		bt = enrichStripeBTFromCharge(bt, chargeIndex)
-		bt = enrichStripeBTFromLocalEvent(bt, eventHints)
-		bt.CustomerName = normalizeStripePartnerName(bt.CustomerName, bt.CustomerEmail)
+		// A refund/chargeback inherits the original charge's classification (and
+		// thus its counterpart account) — booked with the reversal's negative
+		// amount. Customer card refunds resolve via the re_→charge map; chargebacks
+		// via the ch_ id in their description; bank payment refunds (pyr_) carry no
+		// charge link and are matched by amount after classification below.
+		bt = enrichStripeBTForClassification(bt, chargeIndex, refundMap, eventHints)
 		if existingIDs[importID] {
 			date := time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02")
 			amount := stripeStatementLineAmount(bt)
-			ruleTx := stripeRuleTransaction(acc, bt, amount)
+			ruleTx := stripeClassificationTransaction(acc, bt, amount)
 			categorizer.Apply(&ruleTx)
+			stripeApplyReversalFallback(bt, &ruleTx, getOriginIndex())
 			paymentRef := stripeOdooPaymentRef(bt, ruleTx)
 			accountCode := ""
 			if inlineAccounts {
@@ -496,14 +532,17 @@ func syncStripeChronological(
 					}
 				} else if row := existingRows[importID]; row != nil {
 					if lineID := odooInt(row["id"]); lineID > 0 {
-						// Use the metadata-aware wrapper so posted moves get
-						// drafted → written → reposted. The bare write fails
-						// with Odoo's UserError ("can't modify a validated
-						// accounting entry") whenever the bank-statement
-						// line's account.move is in 'posted' state, which
-						// happens for every reconciled Stripe line.
 						moveID := odooFieldID(row["move_id"])
-						if err := updateStatementLineFieldsForMetadata(creds, uid, lineID, moveID, update); err != nil {
+						// Only preserve lines truly matched against an invoice /
+						// payment (receivable/payable counterpart) — drafting those
+						// would break that reconciliation. A line merely categorised
+						// to an income/expense account (e.g. a donation on 740040) is
+						// safe to draft → update → repost; we MUST refresh it when the
+						// classification changed (e.g. commonshub → openletter), or
+						// the Odoo entry stays wrong forever.
+						if odooBool(row["is_reconciled"]) && stripeLineIsInvoiceMatched(creds, uid, moveID) {
+							// invoice-matched — leave it
+						} else if err := updateStatementLineFieldsForMetadata(creds, uid, lineID, moveID, update); err != nil {
 							Warnf("  %s⚠ Failed to update Stripe line %s: %v%s", Fmt.Yellow, importID, err, Fmt.Reset)
 						} else {
 							existingUpdates++
@@ -515,84 +554,27 @@ func syncStripeChronological(
 				if len(dryRunPlan) > 0 && dryRunPlan[len(dryRunPlan)-1].Ref == importID {
 					dryRunPlan[len(dryRunPlan)-1].Reason = "account"
 				}
-			} else if inlineAccounts && !dryRun && stripeBTIsFee(bt) && accountCode != "" {
-				if row := existingRows[importID]; row != nil {
-					if lineID := odooInt(row["id"]); lineID > 0 {
-						if err := applyOdooMappingAccount(creds, uid, []int{lineID}, accountCode); err != nil {
-							Warnf("  %s⚠ Failed to set fee account on %s: %v%s", Fmt.Yellow, importID, err, Fmt.Reset)
-						} else {
-							existingUpdates++
-						}
-					}
-				}
 			} else if dryRun {
 				addDryRunPlan("skip", date, paymentRef, bt.CustomerName, accountCode, amount, importID)
 			}
-			// Keep the payout fee aggregation running across duplicates so a
-			// missing aggregate ":fees" line can be rebuilt. A payout's fee
-			// line may be absent even though all its transactions were pushed
-			// (e.g. its creation was blocked by a since-resolved cross-journal
-			// import-id conflict) — and it can only be reconstructed while
-			// walking the full transaction stream. Only on --history runs:
-			// that's when existingIDs holds the journal's complete id set.
-			if useHistory {
-				if cents, ok := stripeImplicitChargeFeeCents(bt); ok {
-					dupFeeCents += cents
-					dupFeeBTs++
-					if dupFeeStartDate == "" {
-						dupFeeStartDate = date
+			// Ensure a fee line carries the Stripe-fees account independently of
+			// the payment_ref/narration refresh above — a fee credit that also
+			// needs its label updated would otherwise never get its account
+			// fixed in the same run. Batched per code after the loop.
+			if inlineAccounts && !dryRun && stripeBTIsFee(bt) && accountCode != "" {
+				if row := existingRows[importID]; row != nil {
+					if lineID := odooInt(row["id"]); lineID > 0 {
+						feeAccountLineIDsByCode[accountCode] = append(feeAccountLineIDsByCode[accountCode], lineID)
 					}
-					dupFeeEndDate = date
-				}
-				if stripePayoutClosesStatement(bt) {
-					feeKey := bt.PayoutID
-					if feeKey == "" {
-						feeKey = bt.ID
-					}
-					feeImportID := fmt.Sprintf("stripe:%s:%s:fees", strings.ToLower(acc.AccountID), strings.ToLower(feeKey))
-					// The whole period's fees: new transactions accumulate in
-					// feeCents (normal path), already-pushed ones in dupFeeCents.
-					totalCents := feeCents + dupFeeCents
-					if !existingIDs[feeImportID] && totalCents != 0 {
-						// Create the missing fee line without a statement_id —
-						// it belongs to a long-closed period, not the open
-						// statement; `chb odoo journals <id> fix` attaches
-						// loose lines to the right statement by date.
-						start, end := feeStartDate, feeEndDate
-						if start == "" || (dupFeeStartDate != "" && dupFeeStartDate < start) {
-							start = dupFeeStartDate
-						}
-						if end == "" || (dupFeeEndDate != "" && dupFeeEndDate > end) {
-							end = dupFeeEndDate
-						}
-						amount := stripeAggregateFeeLineAmount(totalCents)
-						narration := buildStripeAggregateFeeNarration(acc, feeImportID, totalCents, feeBTs+dupFeeBTs, start, end)
-						ref := fmt.Sprintf("Stripe fees for payout %s", feeKey)
-						if start != "" && end != "" && start != end {
-							ref = fmt.Sprintf("%s (%s to %s)", ref, start, end)
-						}
-						accountCode := ""
-						if inlineAccounts {
-							accountCode = stripeFeeOdooAccountCode(odooMappings)
-						}
-						if dryRun {
-							addDryRunPlan("create", date, ref, "", accountCode, amount, feeImportID)
-							stats.LinesCreated++
-						} else {
-							batch = append(batch, map[string]interface{}{
-								"journal_id":       acc.OdooJournalID,
-								"date":             date,
-								"payment_ref":      ref,
-								"amount":           amount,
-								"unique_import_id": feeImportID,
-								"narration":        narration,
-							})
-							batchAccountCodes = append(batchAccountCodes, accountCode)
-						}
-					}
-					resetFeeAccumulator()
 				}
 			}
+			// Back-fill the per-charge fee line for an already-pushed charge
+			// that doesn't have one yet — this is how an existing journal
+			// migrates from the old aggregate ":fees" model to per-charge fee
+			// lines, and how a fee line lost to a failed create is restored.
+			// The charge already lives in a (usually closed) statement, so the
+			// fee line is created loose; `fix` attaches it by date.
+			ensureFeeLine(bt, 0)
 			stats.LinesSkipped++
 			skippedBTs++
 			continue
@@ -601,8 +583,9 @@ func syncStripeChronological(
 		amount := stripeStatementLineAmount(bt)
 		date := time.Unix(bt.Created, 0).In(BrusselsTZ()).Format("2006-01-02")
 		runningBalance += amount
-		ruleTx := stripeRuleTransaction(acc, bt, amount)
+		ruleTx := stripeClassificationTransaction(acc, bt, amount)
 		categorizer.Apply(&ruleTx)
+		stripeApplyReversalFallback(bt, &ruleTx, getOriginIndex())
 		paymentRef := stripeOdooPaymentRef(bt, ruleTx)
 		accountCode := ""
 		if inlineAccounts {
@@ -648,14 +631,10 @@ func syncStripeChronological(
 
 		updateBTStats(stats, bt, amount)
 
-		if cents, ok := stripeImplicitChargeFeeCents(bt); ok {
-			feeCents += cents
-			feeBTs++
-			if feeStartDate == "" {
-				feeStartDate = date
-			}
-			feeEndDate = date
-		}
+		// Book the charge's Stripe fee as its own line, dated at the charge and
+		// attached to the same open statement, so the running balance matches
+		// Stripe's net immediately (no deferral to the payout).
+		ensureFeeLine(bt, openStmtID)
 
 		// Close the open statement on automatic payout. Older local Stripe
 		// archives may lack the expanded payout object, so fall back to treating
@@ -668,15 +647,8 @@ func syncStripeChronological(
 				progressStatus.Clear()
 				odooLog("  %sPayout %d: %s  (%d/%d Stripe balance transactions)%s\n", Fmt.Dim, payoutsSeen, name, i+1, len(bts), Fmt.Reset)
 			}
-			feeKey := bt.PayoutID
-			if feeKey == "" {
-				feeKey = bt.ID
-			}
-			appendAggregateFeeLine(
-				fmt.Sprintf("Stripe fees for payout %s", feeKey),
-				fmt.Sprintf("stripe:%s:%s:fees", strings.ToLower(acc.AccountID), strings.ToLower(feeKey)),
-				date,
-			)
+			// Each charge already carried its own fee line (ensureFeeLine), so
+			// there is nothing to flush here — just close the statement.
 			if err := flush("before payout close"); err != nil {
 				return "", err
 			}
@@ -741,43 +713,30 @@ func syncStripeChronological(
 		}
 	}
 
-	if feeCents != 0 {
-		// Stable importID per open statement: the same statement persists
-		// across sync runs until an automatic payout closes it, so we want
-		// a single rolling fee line that we update in place rather than a
-		// new line per run. See openStatementFeeImportID.
-		importID := openStatementFeeImportID(acc.AccountID, openStmtID)
-		date := feeEndDate
-		if date == "" {
-			date = time.Now().In(BrusselsTZ()).Format("2006-01-02")
-		}
-		paymentRef := "Stripe fees for open statement"
-		addAmount := stripeAggregateFeeLineAmount(feeCents)
-
-		if dryRun {
-			runningBalance += addAmount
-			resetFeeAccumulator()
-		} else if existingID, existingAmount, existingMoveID, err := fetchOdooLineByImportID(creds, uid, acc.OdooJournalID, importID); err == nil && existingID > 0 {
-			newAmount := existingAmount + addAmount
-			runningBalance += addAmount
-			// Same posted-move dance as the per-tx update path: the bank
-			// statement line's account.move locks once posted, so we draft
-			// → write → repost via updateStatementLineFieldsForMetadata.
-			if werr := updateStatementLineFieldsForMetadata(creds, uid, existingID, existingMoveID, stripeOpenStatementFeeLineUpdateVals(
-				acc, importID, newAmount, feeCents, feeBTs, feeStartDate, feeEndDate,
-			)); werr != nil {
-				Warnf("  %s⚠ Failed to update open-statement fee line #%d: %v%s", Fmt.Yellow, existingID, werr, Fmt.Reset)
-			} else if !compactStatementLogs {
-				odooLog("    %supdated open-statement fee line #%d  %s → %s%s\n",
-					Fmt.Dim, existingID, fmtEURSigned(existingAmount), fmtEURSigned(newAmount), Fmt.Reset)
-			}
-			resetFeeAccumulator()
-		} else {
-			appendAggregateFeeLine(paymentRef, importID, date)
-		}
-	}
+	// Per-charge fee lines were already booked inline (ensureFeeLine); the open
+	// statement carries them like any other line, so there is no rolling fee
+	// line to reconcile here — just flush the final batch.
 	if err := flush("final open statement"); err != nil {
 		return "", err
+	}
+
+	// Apply deferred account rules to existing standalone-fee lines, one
+	// batched draft → write → post pass per code (same shape as
+	// applyStripeBatchAccountCodes for new lines).
+	if len(feeAccountLineIDsByCode) > 0 {
+		ci, codes := 0, len(feeAccountLineIDsByCode)
+		for code, ids := range feeAccountLineIDsByCode {
+			ci++
+			if progressVisible {
+				progressStatus.Update("Stripe: applying fee account rules %d/%d (%s)...", ci, codes, code)
+			}
+			if err := applyOdooMappingAccount(creds, uid, ids, code, progressStatus); err != nil {
+				Warnf("  %s⚠ Failed to set fee account %s on %s: %v%s", Fmt.Yellow, code, Pluralize(len(ids), "line", ""), err, Fmt.Reset)
+			} else {
+				existingUpdates += len(ids)
+			}
+		}
+		progressStatus.Clear()
 	}
 
 	// Persist the trailing open statement's running balance from the
@@ -839,30 +798,94 @@ func syncStripeChronological(
 	// circuit can detect destination-side drift (lines deleted /
 	// edited in Odoo between syncs).
 	// Only a run that actually vouched for the FULL local set may stamp:
-	// a full-dedup pass (useHistory) or a reset rebuild (force). A
-	// watermark-filtered run only verified the window past the latest Odoo
-	// line — stamping from it would baseline any pre-watermark gap (e.g.
-	// lines whose create failed in an earlier push) as "expected state",
-	// and the short-circuit would hide it forever.
-	if !dryRun && stats.LinesFailed == 0 && (useHistory || force) && totalLocalBTs > 0 && sinceDate.IsZero() && untilDate.IsZero() {
-		destCount, destBalance, derr := odooJournalAggregate(creds, uid, acc.OdooJournalID)
-		cursor := SyncCursor{
-			Key:           SyncCursorKeyForStripeAccount(acc.AccountID),
-			LastImportID:  latestLocalImportID,
-			LastTimestamp: latestLocalCreated,
-			Count:         totalLocalBTs,
-		}
-		if derr == nil {
-			cursor.DestCount = destCount
-			cursor.DestBalanceCents = int64(math.Round(destBalance * 100))
-		}
-		_ = SaveSyncCursor(cursor)
+	// a full-dedup pass (useHistory), a reset rebuild (force), or an in-sync
+	// checkpoint run (checkpointWindowed) — which verified every pre-window
+	// line line-for-line and pushed the rest. A plain watermark-filtered run
+	// only verified the window past the latest Odoo line — stamping from it
+	// would baseline any pre-watermark gap (e.g. lines whose create failed in
+	// an earlier push) as "expected state", and the short-circuit would hide
+	// it forever. The snapshot fields (latestLocalImportID / totalLocalBTs)
+	// reflect the full local set, captured before any windowing.
+	if !dryRun && stats.LinesFailed == 0 && (useHistory || force || checkpointWindowed) && totalLocalBTs > 0 && sinceDate.IsZero() && untilDate.IsZero() {
+		stampStripeSyncCursor(creds, uid, acc, latestLocalImportID, latestLocalCreated, totalLocalBTs)
 	}
 	return summary, nil
 }
 
 func stripeOdooProgressVisible() bool {
 	return !quietOdooContext() || journalRowLayoutActive != nil
+}
+
+// stripeLocalInSyncCheckpoint scans the cutoff-windowed, created-ascending
+// local balance transactions against the (freshly-verified) Odoo journal-lines
+// cache and returns the Brussels-day from which a push must reprocess: the date
+// of the earliest local BT whose Odoo statement line is missing or whose amount
+// has drifted. Everything before it is line-for-line identical in Odoo, so the
+// caller can window the expensive per-BT enrichment loop to start there instead
+// of replaying the whole history.
+//
+// The journal mirrors Stripe's ledger one line per balance transaction, with a
+// deterministic unique_import_id (stripeBTImportID) and amount
+// (stripeStatementLineAmount). So "Odoo is in sync through BT k" is exactly
+// "every BT ≤ k has its line, with the right amount" — and because each line
+// matches, the running balance matches at every point too. This is the
+// line-level form of the running-balance checkpoint, and it deliberately
+// sidesteps the open-statement fee-timing skew a naive per-day balance compare
+// would hit: aggregate ":fees" lines flush only at payout boundaries, so the
+// Stripe-net balance and the Odoo balance only agree at those boundaries, never
+// mid-period.
+//
+// found is false when no BT diverges — the push has no statement line to
+// create. Any remaining journal-balance drift is then structural (the opening
+// entry or aggregate-fee lines) and is repaired by `chb odoo journals <id> fix`
+// / a `--history` rebuild, not by re-pushing individual transactions.
+func stripeLocalInSyncCheckpoint(acc *AccountConfig, bts []stripesource.Transaction, cacheLines []OdooCacheLine) (since time.Time, found bool) {
+	cacheAmt := make(map[string]float64, len(cacheLines))
+	for _, l := range cacheLines {
+		if l.UniqueImportID == "" {
+			continue
+		}
+		cacheAmt[strings.ToLower(l.UniqueImportID)] = l.Amount
+	}
+	dayStart := func(ts int64) time.Time {
+		t := time.Unix(ts, 0).In(BrusselsTZ())
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, BrusselsTZ())
+	}
+	for _, bt := range bts {
+		id := strings.ToLower(stripeBTImportID(acc, bt))
+		amt, ok := cacheAmt[id]
+		if !ok || math.Abs(amt-stripeStatementLineAmount(bt)) > 0.005 {
+			return dayStart(bt.Created), true
+		}
+		// A charge whose per-charge fee line is missing or drifted is also a
+		// gap — windowing from here re-books it. Keeps normal (non --history)
+		// pushes self-healing, including the migration from aggregate fees.
+		if cents, hasFee := stripeImplicitChargeFeeCents(bt); hasFee && cents != 0 {
+			feeAmt, feeOK := cacheAmt[strings.ToLower(stripeBTFeeImportID(acc, bt))]
+			if !feeOK || math.Abs(feeAmt-stripeAggregateFeeLineAmount(cents)) > 0.005 {
+				return dayStart(bt.Created), true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// stampStripeSyncCursor records the post-push local + Odoo-destination snapshot
+// so the next sync's cheap local-first short-circuit can fire. Safe to call
+// only when the full local set was vouched for — a clean full-dedup pass, a
+// reset rebuild, or an in-sync checkpoint that verified every earlier line.
+func stampStripeSyncCursor(creds *OdooCredentials, uid int, acc *AccountConfig, lastImportID string, lastCreated int64, count int) {
+	cursor := SyncCursor{
+		Key:           SyncCursorKeyForStripeAccount(acc.AccountID),
+		LastImportID:  lastImportID,
+		LastTimestamp: lastCreated,
+		Count:         count,
+	}
+	if destCount, destBalance, derr := odooJournalAggregate(creds, uid, acc.OdooJournalID); derr == nil {
+		cursor.DestCount = destCount
+		cursor.DestBalanceCents = int64(math.Round(destBalance * 100))
+	}
+	_ = SaveSyncCursor(cursor)
 }
 
 func filterStripeBTsByDateWindow(bts []stripesource.Transaction, sinceDate, untilDate time.Time) []stripesource.Transaction {
@@ -1008,12 +1031,47 @@ func buildStripeExistingFromCacheLines(lines []OdooCacheLine) (map[string]bool, 
 		}
 		ids[l.UniqueImportID] = true
 		rows[l.UniqueImportID] = map[string]interface{}{
-			"id":          l.ID,
-			"payment_ref": l.PaymentRef,
-			"narration":   l.Narration,
+			"id":            l.ID,
+			"move_id":       l.MoveID,
+			"payment_ref":   l.PaymentRef,
+			"narration":     l.Narration,
+			"is_reconciled": l.IsReconciled,
 		}
 	}
 	return ids, rows
+}
+
+// stripeLocalImportIDs returns every unique_import_id the push would create for
+// this Stripe account: one per balance transaction, plus a per-charge ":fee"
+// line. Windowed by the account's cutoff. The orphan check uses this so a
+// just-pushed BT — read straight from the archive, not yet in the generated
+// transaction view — isn't flagged as an orphan to delete.
+func stripeLocalImportIDs(acc *AccountConfig) map[string]bool {
+	out := map[string]bool{}
+	if acc == nil || acc.Provider != "stripe" {
+		return out
+	}
+	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
+	if err != nil {
+		return out
+	}
+	cutoffUnix := int64(0)
+	hasCutoff := false
+	if c, ok := acc.OdooSyncSinceTime(); ok {
+		cutoffUnix, hasCutoff = c.Unix(), true
+	}
+	for _, bt := range bts {
+		if hasCutoff && bt.Created < cutoffUnix {
+			continue
+		}
+		if id := stripeBTImportID(acc, bt); id != "" {
+			out[id] = true
+		}
+		if cents, ok := stripeImplicitChargeFeeCents(bt); ok && cents != 0 {
+			out[stripeBTFeeImportID(acc, bt)] = true
+		}
+	}
+	return out
 }
 
 func stripeBTImportID(acc *AccountConfig, bt stripesource.Transaction) string {
@@ -1066,15 +1124,6 @@ func stripeOdooLocalSnapshotSince(acc *AccountConfig, cutoff time.Time) (account
 	if len(bts) == 0 {
 		return snap, true
 	}
-	feeCents := int64(0)
-	addFeeLine := func() {
-		if feeCents == 0 {
-			return
-		}
-		snap.TxCount++
-		snap.Balance += stripeAggregateFeeLineAmount(feeCents)
-		feeCents = 0
-	}
 	for _, bt := range bts {
 		if bt.Created > 0 {
 			t := time.Unix(bt.Created, 0)
@@ -1087,14 +1136,13 @@ func stripeOdooLocalSnapshotSince(acc *AccountConfig, cutoff time.Time) (account
 		}
 		snap.TxCount++
 		snap.Balance += stripeStatementLineAmount(bt)
-		if cents, ok := stripeImplicitChargeFeeCents(bt); ok {
-			feeCents += cents
-		}
-		if stripePayoutClosesStatement(bt) {
-			addFeeLine()
+		// Each charge with an implicit fee gets its own fee line in the new
+		// per-charge model, so the snapshot counts one extra line per such BT.
+		if cents, ok := stripeImplicitChargeFeeCents(bt); ok && cents != 0 {
+			snap.TxCount++
+			snap.Balance += stripeAggregateFeeLineAmount(cents)
 		}
 	}
-	addFeeLine()
 	snap.Balance = roundCents(snap.Balance)
 	return snap, true
 }
@@ -1108,6 +1156,14 @@ func stripeOdooAccountCode(bt stripesource.Transaction, tx TransactionEntry, odo
 	}
 	if matched := LookupOdooMapping(odooMappings, tx); matched != nil {
 		return matched.Set.AccountCode
+	}
+	// Every Stripe fee belongs to the Stripe-fees account — including fee
+	// credits/refunds (e.g. "€10,000 free Credit"), which are CREDITs and so
+	// miss a direction:"out"-scoped stripe_fee mapping above. Route them to the
+	// same account regardless of direction; the positive amount naturally
+	// offsets the negative fee lines there.
+	if stripeBTIsFee(bt) {
+		return stripeFeeOdooAccountCode(odooMappings)
 	}
 	return ""
 }
@@ -1127,6 +1183,15 @@ func stripeFeeOdooAccountCode(odooMappings []OdooMapping) string {
 func stripeBTIsFee(bt stripesource.Transaction) bool {
 	switch strings.ToLower(bt.Type) {
 	case "stripe_fee":
+		return true
+	}
+	// reporting_category is Stripe's stable classifier, independent of the
+	// (variable) human description. "fee" covers Stripe-fee charges AND fee
+	// credits/refunds booked as type=adjustment — e.g. the daily
+	// "€10,000 free Credit" lines that give back processing fees. It excludes
+	// disputes/chargebacks (reporting_category=dispute) and customer refunds
+	// (reporting_category=refund), which must NOT be treated as fees.
+	if strings.EqualFold(strings.TrimSpace(bt.ReportingCategory), "fee") {
 		return true
 	}
 	text := strings.ToLower(strings.TrimSpace(bt.Description))
@@ -1167,7 +1232,10 @@ func stripeOdooStageLineIsAggregateFee(line stripeOdooStageLine) bool {
 	if strings.EqualFold(metaString(line.Metadata, "type"), "aggregate_fee") {
 		return true
 	}
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(line.UniqueImportID)), ":fees")
+	// Skip both the deprecated aggregate ":fees" lines and the per-charge
+	// ":fee" lines — fee lines carry no customer/partner.
+	id := strings.ToLower(strings.TrimSpace(line.UniqueImportID))
+	return strings.HasSuffix(id, ":fees") || strings.HasSuffix(id, ":fee")
 }
 
 func fetchStripeOdooStageLines(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time) ([]stripeOdooStageLine, error) {
@@ -2240,6 +2308,9 @@ func localStripeOdooDesiredLinesByImportID(acc *AccountConfig, targetIDs map[str
 	})
 	var chargeIndex map[string]*stripesource.Charge
 	var eventHints []stripeLocalEventHint
+	var refundMap map[string]string
+	var refundOriginIndex map[int64][]stripeChargeClass
+	originIndexReady := false
 	categorizer := NewCategorizer(nil)
 	for _, bt := range bts {
 		importID := stripeBTImportID(acc, bt)
@@ -2249,13 +2320,19 @@ func localStripeOdooDesiredLinesByImportID(acc *AccountConfig, targetIDs map[str
 		if chargeIndex == nil {
 			chargeIndex = loadArchivedStripeCharges(DataDir())
 			eventHints = loadLocalStripeEventHints(DataDir())
+			refundMap = loadArchivedStripeRefundMap(DataDir())
 		}
-		bt = enrichStripeBTFromCharge(bt, chargeIndex)
-		bt = enrichStripeBTFromLocalEvent(bt, eventHints)
-		bt.CustomerName = normalizeStripePartnerName(bt.CustomerName, bt.CustomerEmail)
+		bt = enrichStripeBTForClassification(bt, chargeIndex, refundMap, eventHints)
 		amount := stripeStatementLineAmount(bt)
-		tx := stripeRuleTransaction(acc, bt, amount)
+		tx := stripeClassificationTransaction(acc, bt, amount)
 		categorizer.Apply(&tx)
+		if stripeBTIsReversal(bt) && tx.Category == "" {
+			if !originIndexReady {
+				refundOriginIndex = loadStripeRefundOriginIndex(acc, chargeIndex, eventHints)
+				originIndexReady = true
+			}
+			stripeApplyReversalFallback(bt, &tx, refundOriginIndex)
+		}
 		narr := buildStripeOdooNarration(acc, bt, tx, importID, amount)
 		var meta map[string]interface{}
 		if err := json.Unmarshal([]byte(narr), &meta); err == nil {
@@ -2319,23 +2396,28 @@ func applyStripeBatchAccountCodes(creds *OdooCredentials, uid int, createdIDs []
 	if len(createdIDs) != len(accountCodes) {
 		return
 	}
-	total := 0
-	for _, accountCode := range accountCodes {
-		if accountCode != "" {
-			total++
-		}
-	}
-	done := 0
-	for i, accountCode := range accountCodes {
-		if accountCode == "" {
+	// Group lines by account code so the draft → write → post pass runs once
+	// per code over ALL its lines (applyOdooMappingAccount batch-reads the
+	// moves/counterparts and chunks the bulk draft/write/post) — instead of
+	// ~6 sequential RPCs per line. For a batch of 100 lines spread over a
+	// handful of codes that's ~600 round-trips down to a few dozen.
+	linesByCode := map[string][]int{}
+	var order []string
+	for i, code := range accountCodes {
+		if code == "" || createdIDs[i] <= 0 {
 			continue
 		}
-		done++
-		if showProgress && (done == 1 || done%10 == 0 || done == total) {
-			status.Update("Stripe: applying account rules %d/%d...", done, total)
+		if _, seen := linesByCode[code]; !seen {
+			order = append(order, code)
 		}
-		if err := applyOdooMappingAccount(creds, uid, []int{createdIDs[i]}, accountCode); err != nil {
-			Warnf("    %s⚠ rule account %s: %v%s", Fmt.Yellow, accountCode, err, Fmt.Reset)
+		linesByCode[code] = append(linesByCode[code], createdIDs[i])
+	}
+	for ci, code := range order {
+		if showProgress {
+			status.Update("Stripe: applying account rules %d/%d (%s)...", ci+1, len(order), code)
+		}
+		if err := applyOdooMappingAccount(creds, uid, linesByCode[code], code, status); err != nil {
+			Warnf("    %s⚠ rule account %s: %v%s", Fmt.Yellow, code, err, Fmt.Reset)
 		}
 	}
 }
@@ -2369,6 +2451,298 @@ func loadArchivedStripeCharges(dataDir string) map[string]*stripesource.Charge {
 	return charges
 }
 
+// loadArchivedStripeRefundMap aggregates every month's refund→charge mapping
+// (refund id "re_…" → original charge id "ch_…"), so a refund balance
+// transaction can be enriched from — and booked to the same account as — the
+// charge it reverses.
+func loadArchivedStripeRefundMap(dataDir string) map[string]string {
+	out := map[string]string{}
+	years, err := os.ReadDir(dataDir)
+	if err != nil {
+		return out
+	}
+	for _, year := range years {
+		if !year.IsDir() {
+			continue
+		}
+		months, err := os.ReadDir(dataDir + "/" + year.Name())
+		if err != nil {
+			continue
+		}
+		for _, month := range months {
+			if !month.IsDir() {
+				continue
+			}
+			_, refunds := stripesource.LoadChargeData(dataDir, year.Name(), month.Name())
+			for refundID, chargeID := range refunds {
+				if refundID != "" && chargeID != "" {
+					out[refundID] = chargeID
+				}
+			}
+		}
+	}
+	return out
+}
+
+// resolveStripeRefundChargeID returns the original charge id for a refund
+// balance transaction (source "re_…"), looked up in the refund map, or "" if
+// the BT isn't a resolvable refund. Charges (ch_/py_) are left to ExtractChargeID.
+func resolveStripeRefundChargeID(bt stripesource.Transaction, refundMap map[string]string) string {
+	if len(refundMap) == 0 {
+		return ""
+	}
+	switch strings.ToLower(bt.Type) {
+	case "refund", "payment_refund":
+	default:
+		return ""
+	}
+	srcID := stripesource.ExtractSourceID(bt.Source)
+	if strings.HasPrefix(srcID, "re_") {
+		return refundMap[srcID]
+	}
+	return ""
+}
+
+// stripeBTIsReversal reports whether a BT REVERSES an earlier charge and so must
+// land on that charge's account, booked negative: customer refunds and
+// dispute/chargeback withdrawals. Fee adjustments (e.g. "€10,000 free Credit")
+// are NOT reversals — they belong on the Stripe-fees account and are handled by
+// the fee path.
+func stripeBTIsReversal(bt stripesource.Transaction) bool {
+	switch strings.ToLower(strings.TrimSpace(bt.Type)) {
+	case "refund", "payment_refund":
+		return true
+	case "adjustment":
+		if stripeBTIsFee(bt) {
+			return false
+		}
+		if strings.HasPrefix(stripesource.ExtractSourceID(bt.Source), "du_") {
+			return true
+		}
+		return strings.Contains(strings.ToLower(bt.Description), "chargeback")
+	}
+	return false
+}
+
+// extractStripeChargeIDFromText pulls the first "ch_…"/"py_…" token out of free
+// text — e.g. a chargeback's "Chargeback withdrawal for ch_3TQ2Vl…" description,
+// the only place its originating charge id is recorded.
+func extractStripeChargeIDFromText(text string) string {
+	isIDChar := func(r rune) bool {
+		return r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+	}
+	for _, prefix := range []string{"ch_", "py_"} {
+		idx := strings.Index(text, prefix)
+		if idx < 0 {
+			continue
+		}
+		rest := text[idx:]
+		end := len(rest)
+		for i, r := range rest {
+			if !isIDChar(r) {
+				end = i
+				break
+			}
+		}
+		return rest[:end]
+	}
+	return ""
+}
+
+// resolveStripeReversalChargeID resolves the charge a refund/chargeback reverses:
+// customer card refunds via the re_→charge map, chargebacks via the ch_ id in
+// their description. Returns "" when no charge link is recoverable (notably bank
+// payment refunds, pyr_, which carry none — those are matched by amount instead).
+func resolveStripeReversalChargeID(bt stripesource.Transaction, refundMap map[string]string) string {
+	if cid := resolveStripeRefundChargeID(bt, refundMap); cid != "" {
+		return cid
+	}
+	if strings.EqualFold(strings.TrimSpace(bt.Type), "adjustment") {
+		return extractStripeChargeIDFromText(bt.Description)
+	}
+	return ""
+}
+
+// stripeChargeClass is an earlier charge's resolved classification, indexed by
+// amount so a reversal with no charge link can inherit the same account.
+type stripeChargeClass struct {
+	Created    int64
+	ChargeID   string
+	Category   string
+	Collective string
+	EventKey   string // normalized description, to disambiguate equal amounts
+}
+
+// stripeRefundEventName strips Stripe's "REFUND FOR PAYMENT (…)" /
+// "REFUND FOR CHARGE (…)" wrapper, returning the inner label (typically the event
+// name) used to pick the right charge when several share an amount.
+func stripeRefundEventName(desc string) string {
+	open := strings.Index(desc, "(")
+	closeIdx := strings.LastIndex(desc, ")")
+	if open >= 0 && closeIdx > open {
+		return strings.TrimSpace(desc[open+1 : closeIdx])
+	}
+	return ""
+}
+
+// loadStripeRefundOriginIndex classifies every local charge/payment BT and
+// indexes it by absolute amount (cents). Used to back-classify a reversal that
+// carries no charge link (bank payment refunds, pyr_) by matching the earlier
+// charge it reverses — same amount, disambiguated by event name. Scans ALL
+// months: the origin charge is frequently outside a push's date window.
+func loadStripeRefundOriginIndex(acc *AccountConfig, chargeIndex map[string]*stripesource.Charge, eventHints []stripeLocalEventHint) map[int64][]stripeChargeClass {
+	idx := map[int64][]stripeChargeClass{}
+	if acc == nil {
+		return idx
+	}
+	bts, err := stripesource.LoadTransactionsSince(DataDir(), acc.AccountID, 0)
+	if err != nil {
+		return idx
+	}
+	categorizer := NewCategorizer(nil)
+	for _, bt := range bts {
+		switch strings.ToLower(strings.TrimSpace(bt.Type)) {
+		case "charge", "payment":
+		default:
+			continue
+		}
+		e := enrichStripeBTFromCharge(bt, chargeIndex)
+		e = enrichStripeBTFromLocalEvent(e, eventHints)
+		tx := stripeRuleTransaction(acc, e, stripeStatementLineAmount(e))
+		categorizer.Apply(&tx)
+		key := bt.Amount
+		if key < 0 {
+			key = -key
+		}
+		idx[key] = append(idx[key], stripeChargeClass{
+			Created:    bt.Created,
+			ChargeID:   e.ChargeID,
+			Category:   tx.Category,
+			Collective: tx.Collective,
+			EventKey:   normalizeLumaMatchText(e.Description),
+		})
+	}
+	for k := range idx {
+		list := idx[k]
+		sort.SliceStable(list, func(i, j int) bool { return list[i].Created < list[j].Created })
+		idx[k] = list
+	}
+	return idx
+}
+
+// resolveStripeRefundOriginClass finds the earlier charge a reversal undoes, by
+// amount. When several charges share the amount, the one whose event name matches
+// the refund's wins; otherwise the most recent charge preceding the reversal.
+func resolveStripeRefundOriginClass(bt stripesource.Transaction, idx map[int64][]stripeChargeClass) (stripeChargeClass, bool) {
+	amt := bt.Amount
+	if amt < 0 {
+		amt = -amt
+	}
+	cands := idx[amt]
+	if len(cands) == 0 {
+		return stripeChargeClass{}, false
+	}
+	// Only categorized charges can lend an account — an uncategorized origin would
+	// leave the reversal just as unbooked, so skip those when matching.
+	event := normalizeLumaMatchText(stripeRefundEventName(bt.Description))
+	var best stripeChargeClass
+	found := false
+	if event != "" {
+		for _, c := range cands { // sorted ascending → keep the latest match
+			if c.Created < bt.Created && c.EventKey == event && c.Category != "" {
+				best, found = c, true
+			}
+		}
+	}
+	if !found {
+		for _, c := range cands {
+			if c.Created < bt.Created && c.Category != "" {
+				best, found = c, true
+			}
+		}
+	}
+	return best, found
+}
+
+// stripeApplyReversalFallback back-classifies a refund/chargeback that resolved to
+// NO category (no recoverable charge link — e.g. a bank payment refund) by
+// inheriting the earlier charge it reverses, matched by amount. Mutates ruleTx so
+// it books on that charge's account (negative). A no-op for non-reversals and for
+// reversals already classified via their charge link.
+func stripeApplyReversalFallback(bt stripesource.Transaction, ruleTx *TransactionEntry, idx map[int64][]stripeChargeClass) {
+	if ruleTx == nil || ruleTx.Category != "" || !stripeBTIsReversal(bt) {
+		return
+	}
+	origin, ok := resolveStripeRefundOriginClass(bt, idx)
+	if !ok || origin.Category == "" {
+		return
+	}
+	ruleTx.Category = origin.Category
+	if ruleTx.Collective == "" {
+		ruleTx.Collective = origin.Collective
+	}
+	if ruleTx.Metadata == nil {
+		ruleTx.Metadata = map[string]interface{}{}
+	}
+	ruleTx.Metadata["category"] = origin.Category
+	if origin.Collective != "" {
+		ruleTx.Metadata["collective"] = origin.Collective
+	}
+}
+
+// enrichStripeReversalEvent classifies a ticket refund/chargeback directly from
+// the event name in its "REFUND FOR …(Event)" description when that event is a
+// known local event. A refund of a ticket is itself a ticket (reversed), so this
+// gives it the ticket account even when the original charge is missing or
+// uncategorized — independent of the amount-match fallback.
+func enrichStripeReversalEvent(bt stripesource.Transaction, eventHints []stripeLocalEventHint) stripesource.Transaction {
+	if !stripeBTIsReversal(bt) || len(eventHints) == 0 {
+		return bt
+	}
+	if strings.EqualFold(stringMetadata(bt.Metadata, "category"), "ticket") {
+		return bt
+	}
+	event := stripeRefundEventName(bt.Description)
+	if event == "" {
+		return bt
+	}
+	// Probe the event matcher with just the event name (the original charge's
+	// description), then copy any ticket metadata it resolves onto the reversal.
+	probe := enrichStripeBTFromLocalEvent(
+		stripesource.Transaction{Description: event, Metadata: map[string]interface{}{}},
+		eventHints,
+	)
+	if !strings.EqualFold(stringMetadata(probe.Metadata, "category"), "ticket") {
+		return bt
+	}
+	if bt.Metadata == nil {
+		bt.Metadata = map[string]interface{}{}
+	}
+	for _, k := range []string{"category", "collective", "application", "eventName", "eventId", "eventUrl"} {
+		if v := stringMetadata(probe.Metadata, k); v != "" {
+			bt.Metadata[k] = v
+		}
+	}
+	return bt
+}
+
+// enrichStripeBTForClassification resolves a BT's charge link (including
+// refund/chargeback reversals) plus local-event metadata, returning it ready for
+// rule classification. Shared by push, generate, and the label-refresh detector
+// so all three classify identically.
+func enrichStripeBTForClassification(bt stripesource.Transaction, chargeIndex map[string]*stripesource.Charge, refundMap map[string]string, eventHints []stripeLocalEventHint) stripesource.Transaction {
+	if bt.ChargeID == "" {
+		if cid := resolveStripeReversalChargeID(bt, refundMap); cid != "" {
+			bt.ChargeID = cid
+		}
+	}
+	bt = enrichStripeBTFromCharge(bt, chargeIndex)
+	bt = enrichStripeBTFromLocalEvent(bt, eventHints)
+	bt = enrichStripeReversalEvent(bt, eventHints)
+	bt.CustomerName = normalizeStripePartnerName(bt.CustomerName, bt.CustomerEmail)
+	return bt
+}
+
 func enrichStripeBTFromCharge(bt stripesource.Transaction, chargeIndex map[string]*stripesource.Charge) stripesource.Transaction {
 	chargeID := bt.ChargeID
 	if chargeID == "" {
@@ -2398,6 +2772,9 @@ func enrichStripeBTFromCharge(bt stripesource.Transaction, chargeIndex map[strin
 	}
 	if charge.PaymentLink != "" {
 		bt.Metadata["paymentLink"] = charge.PaymentLink
+	}
+	if charge.ProductName != "" {
+		bt.Metadata["product"] = charge.ProductName
 	}
 	if charge.CustomerID != "" {
 		bt.Metadata["stripeCustomerId"] = charge.CustomerID
@@ -2578,15 +2955,18 @@ func stripeOdooPaymentRef(bt stripesource.Transaction, tx TransactionEntry) stri
 		collective = stringMetadata(bt.Metadata, "collective")
 	}
 	if strings.EqualFold(category, "ticket") {
-		eventName := firstNonEmptyStripeMetadata(bt.Metadata, "eventName", "event_name", "eventTitle", "event_title")
+		// The event name is the label; the 700150 account already says "ticket".
+		// Prefer the Stripe charge description (the event name), then a known
+		// event-name tag, then "ticket".
+		eventName := strings.TrimSpace(bt.Description)
+		if eventName == "" || strings.EqualFold(eventName, "ticket") {
+			eventName = firstNonEmptyStripeMetadata(bt.Metadata, "eventName", "event_name", "eventTitle", "event_title")
+		}
 		if eventName == "" {
 			eventName = firstNonEmptyStripeMetadata(tx.Metadata, "eventName", "event_name", "eventTitle", "event_title")
 		}
-		if eventName == "" {
-			eventName = strings.TrimSpace(bt.Description)
-		}
 		if eventName != "" {
-			return "ticket " + eventName
+			return eventName
 		}
 		return "ticket"
 	}
@@ -2616,6 +2996,19 @@ func stripeFeePaymentRef(bt stripesource.Transaction) string {
 	default:
 		return "Stripe fee"
 	}
+}
+
+// stripeClassificationTransaction builds the rule-transaction used to CATEGORISE
+// a BT. A reversal (refund or chargeback) is classified as if it were the
+// original (incoming) charge — flipping the sign so income-direction rules and
+// mappings match — so it inherits that charge's category / collective / account.
+// The booked line still uses the reversal's real (negative) amount, giving "same
+// account, negative".
+func stripeClassificationTransaction(acc *AccountConfig, bt stripesource.Transaction, statementAmount float64) TransactionEntry {
+	if stripeBTIsReversal(bt) && statementAmount < 0 {
+		statementAmount = -statementAmount
+	}
+	return stripeRuleTransaction(acc, bt, statementAmount)
 }
 
 func stripeRuleTransaction(acc *AccountConfig, bt stripesource.Transaction, statementAmount float64) TransactionEntry {
@@ -2755,32 +3148,6 @@ func compactStripeSource(source json.RawMessage) map[string]interface{} {
 	return out
 }
 
-func buildStripeAggregateFeeNarration(acc *AccountConfig, importID string, feeCents int64, feeBTs int, startDate, endDate string) string {
-	details := map[string]interface{}{
-		"provider":          "stripe",
-		"account":           strings.ToLower(acc.AccountID),
-		"uniqueImportId":    importID,
-		"type":              "aggregate_fee",
-		"balanceTxCount":    feeBTs,
-		"fee":               centsToEuros(feeCents),
-		"statementAmount":   stripeAggregateFeeLineAmount(feeCents),
-		"aggregationPeriod": map[string]string{"start": startDate, "end": endDate},
-	}
-	data, _ := json.Marshal(details)
-	return string(data)
-}
-
-func stripeOpenStatementFeeLineUpdateVals(acc *AccountConfig, importID string, amount float64, feeCents int64, feeBTs int, startDate, endDate string) map[string]interface{} {
-	// Keep the original date on existing statement lines. Odoo posts an
-	// accounting move behind the line, and changing its date can violate
-	// date-based journal sequences unless the move is manually resequenced.
-	return map[string]interface{}{
-		"amount":      amount,
-		"payment_ref": "Stripe fees for open statement",
-		"narration":   buildStripeAggregateFeeNarration(acc, importID, feeCents, feeBTs, startDate, endDate),
-	}
-}
-
 func compactStripeMetadata(metadata map[string]interface{}) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range metadata {
@@ -2846,8 +3213,9 @@ func stripePayoutMetadataPresent(bt stripesource.Transaction) bool {
 
 // stripeStatementLineAmount returns the amount to write on the Odoo statement
 // line. Customer-facing transactions use the gross amount paid/refunded; Stripe
-// fees are represented by separate rows, so folding the fee into each charge
-// would understate customer revenue and double count fees in the journal view.
+// fees are represented by a dedicated per-charge fee line (stripeBTFeeImportID),
+// so folding the fee into each charge would understate customer revenue and
+// break the gross-amount match against the customer's invoice.
 func stripeStatementLineAmount(bt stripesource.Transaction) float64 {
 	switch bt.Type {
 	case "charge", "payment", "refund", "payment_refund":
@@ -2858,10 +3226,11 @@ func stripeStatementLineAmount(bt stripesource.Transaction) float64 {
 }
 
 // stripeImplicitChargeFeeCents returns the per-charge processing fee that
-// Stripe deducts but does NOT emit as a standalone balance transaction. We
-// roll these into a single aggregate fee line per statement. Standalone fee
-// BTs (type=stripe_fee, type=adjustment, etc.) are pushed as their own
-// Odoo lines and must not be folded into the aggregate.
+// Stripe deducts but does NOT emit as a standalone balance transaction. Each
+// such fee becomes its own Odoo line (stripeBTFeeImportID), dated at the charge
+// so the journal's running balance tracks Stripe's net at every transaction.
+// Standalone fee BTs (type=stripe_fee, type=adjustment, etc.) already carry
+// their own balance transaction and must not get a second fee line.
 func stripeImplicitChargeFeeCents(bt stripesource.Transaction) (int64, bool) {
 	switch bt.Type {
 	case "charge", "payment", "refund", "payment_refund":
@@ -2874,8 +3243,36 @@ func stripeImplicitChargeFeeCents(bt stripesource.Transaction) (int64, bool) {
 	}
 }
 
+// stripeAggregateFeeLineAmount is the signed Odoo amount for a fee of feeCents
+// (a positive fee debits the journal, so the line is negative). Still used by
+// the local-snapshot balance helper.
 func stripeAggregateFeeLineAmount(feeCents int64) float64 {
 	return -centsToEuros(feeCents)
+}
+
+// stripeBTFeeImportID is the deterministic unique_import_id of the per-charge
+// Stripe fee line: the charge's own import id with a ":fee" suffix. One fee
+// line per charge (1:1), so the amount is always set, never accumulated — the
+// open-statement rolling-fee drift cannot recur.
+func stripeBTFeeImportID(acc *AccountConfig, bt stripesource.Transaction) string {
+	return stripeBTImportID(acc, bt) + ":fee"
+}
+
+// buildStripeBTFeeNarration is the JSON narration stamped on a per-charge fee
+// line, linking it back to the charge it offsets.
+func buildStripeBTFeeNarration(acc *AccountConfig, bt stripesource.Transaction, feeCents int64) string {
+	meta := map[string]interface{}{
+		"source":         "stripe",
+		"kind":           "fee",
+		"chargeId":       bt.ID,
+		"uniqueImportId": stripeBTFeeImportID(acc, bt),
+		"feeEur":         stripeAggregateFeeLineAmount(feeCents),
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // updateBTStats tallies stats per BT type.
@@ -3075,6 +3472,26 @@ func updateStatementLineFields(creds *OdooCredentials, uid int, lineID int, vals
 		"account.bank.statement.line", "write",
 		[]interface{}{[]interface{}{lineID}, vals}, nil)
 	return err
+}
+
+// stripeLineIsInvoiceMatched reports whether a statement line is reconciled
+// against an invoice/payment — i.e. its counterpart is a receivable/payable
+// account — as opposed to merely categorised to an income/expense account.
+// Only the former must be preserved; the latter is safe to draft/repost. When
+// the counterpart can't be determined it returns true (preserve, to be safe).
+func stripeLineIsInvoiceMatched(creds *OdooCredentials, uid, moveID int) bool {
+	if moveID <= 0 {
+		return false
+	}
+	info, err := fetchCounterpartMoveLinesByMoveID(creds, uid, []int{moveID})
+	if err != nil {
+		return true
+	}
+	switch info[moveID].AccountType {
+	case "asset_receivable", "liability_payable":
+		return true
+	}
+	return false
 }
 
 func updateStatementLineFieldsForMetadata(creds *OdooCredentials, uid int, lineID, moveID int, vals map[string]interface{}) error {

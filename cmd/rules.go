@@ -32,6 +32,7 @@ type RuleMatch struct {
 	Direction   string   `json:"direction,omitempty"`   // "in" or "out"
 	Application string   `json:"application,omitempty"` // stripe connect app: luma, opencollective, etc.
 	PaymentLink string   `json:"paymentLink,omitempty"` // Stripe Checkout payment link ID
+	Product     string   `json:"product,omitempty"`     // glob on the Stripe product name (from the checkout line items)
 	// Kind matches the provider-native classifier stashed in
 	// metadata.kind by each provider's generate step. For Stripe this is
 	// the reporting_category (charge / fee / payout / refund / …). Useful
@@ -287,6 +288,16 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		}
 	}
 
+	if m.Product != "" {
+		// The Stripe product name behind the charge (resolved from the
+		// checkout session's line items at pull time). Glob-matched like
+		// description so "*Open Letter*" works.
+		txProduct := firstNonEmptyStripeMetadata(tx.Metadata, "product", "productName")
+		if !globMatch(strings.ToLower(m.Product), strings.ToLower(txProduct)) {
+			return false
+		}
+	}
+
 	if m.Kind != "" {
 		// metadata.kind is the provider-native classifier — for Stripe this
 		// is the reporting_category ("payout", "fee", "charge", "refund").
@@ -397,6 +408,9 @@ func (r *Rule) RuleSummary() string {
 	}
 	if r.Match.PaymentLink != "" {
 		parts = append(parts, fmt.Sprintf("paymentLink: %s", r.Match.PaymentLink))
+	}
+	if r.Match.Product != "" {
+		parts = append(parts, fmt.Sprintf("product: %s", r.Match.Product))
 	}
 	if r.Match.IBAN != "" {
 		parts = append(parts, fmt.Sprintf("iban: %s", r.Match.IBAN))

@@ -43,9 +43,34 @@ func WriteJSON(dataDir, year, month string, v interface{}, elems ...string) erro
 }
 
 func SaveChargeData(dataDir, year, month string, charges map[string]*Charge, refundToCharge map[string]string) error {
-	return WriteJSON(dataDir, year, month, ChargeData{
+	if err := WriteJSON(dataDir, year, month, ChargeData{
 		FetchedAt:      time.Now().UTC().Format(time.RFC3339),
 		Charges:        charges,
 		RefundToCharge: refundToCharge,
-	}, ChargesFile)
+	}, ChargesFile); err != nil {
+		return err
+	}
+	// Mirror the products referenced this month into a separate registry file
+	// so the catalogue is browsable on its own (id → name). Skip when no
+	// charge carried product info.
+	products := map[string]string{}
+	for _, ch := range charges {
+		if ch != nil && ch.ProductID != "" && ch.ProductName != "" {
+			products[ch.ProductID] = ch.ProductName
+		}
+	}
+	if len(products) == 0 {
+		return nil
+	}
+	return WriteJSON(dataDir, year, month, ProductData{
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		Products:  products,
+	}, ProductsFile)
+}
+
+// ProductData is the per-month registry of Stripe products (id → name) seen in
+// that month's charges.
+type ProductData struct {
+	FetchedAt string            `json:"fetchedAt"`
+	Products  map[string]string `json:"products"`
 }

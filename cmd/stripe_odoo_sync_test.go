@@ -242,17 +242,6 @@ func TestOpenStatementFeeImportIDIsStableAcrossRuns(t *testing.T) {
 	}
 }
 
-func TestOpenStatementFeeLineUpdateDoesNotChangeDate(t *testing.T) {
-	acc := &AccountConfig{AccountID: "acct_1ABC"}
-	vals := stripeOpenStatementFeeLineUpdateVals(acc, "stripe:acct_1abc:open:48:fees", -12.34, 1234, 3, "2026-05-01", "2026-05-18")
-	if _, ok := vals["date"]; ok {
-		t.Fatalf("existing open-statement fee line update must not include date: %#v", vals)
-	}
-	if got, want := vals["payment_ref"], "Stripe fees for open statement"; got != want {
-		t.Fatalf("payment_ref = %v, want %q", got, want)
-	}
-}
-
 func TestParseStripeAccountIDFromOpenFeeImportID(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -319,6 +308,34 @@ func TestStripeStandaloneFeeBTsAreNotAggregated(t *testing.T) {
 		if got := stripeStatementLineAmount(bt); got != centsToEuros(bt.Net) {
 			t.Fatalf("standalone fee BT %q line amount = %.2f, want %.2f", bt.Description, got, centsToEuros(bt.Net))
 		}
+	}
+}
+
+// Fee credits/refunds booked as type=adjustment with reporting_category="fee"
+// (e.g. the daily "€10,000 free Credit" lines) must be treated as Stripe fees —
+// they reduce the fee total and carry their own description, not the collective.
+// Disputes (reporting_category="dispute") and refunds must NOT.
+func TestStripeBTIsFeeUsesReportingCategory(t *testing.T) {
+	cases := []struct {
+		bt   stripesource.Transaction
+		want bool
+	}{
+		{stripesource.Transaction{Type: "adjustment", ReportingCategory: "fee", Description: "€10,000 free Credit"}, true},
+		{stripesource.Transaction{Type: "stripe_fee", ReportingCategory: "fee", Description: "Billing - Usage Fee"}, true},
+		{stripesource.Transaction{Type: "adjustment", ReportingCategory: "dispute", Description: "Chargeback withdrawal"}, false},
+		{stripesource.Transaction{Type: "refund", ReportingCategory: "refund", Description: "REFUND FOR PAYMENT"}, false},
+		{stripesource.Transaction{Type: "charge", ReportingCategory: "charge", Description: "Membership"}, false},
+	}
+	for _, c := range cases {
+		if got := stripeBTIsFee(c.bt); got != c.want {
+			t.Fatalf("stripeBTIsFee(%s/%s) = %v, want %v", c.bt.Type, c.bt.ReportingCategory, got, c.want)
+		}
+	}
+	// The payment_ref of a fee credit is its Stripe description, not "commonshub".
+	bt := stripesource.Transaction{Type: "adjustment", ReportingCategory: "fee", Net: 435, Description: "€10,000 free Credit"}
+	tx := TransactionEntry{Collective: "commonshub"}
+	if got := stripeOdooPaymentRef(bt, tx); got != "€10,000 free Credit" {
+		t.Fatalf("fee-credit payment_ref = %q, want %q", got, "€10,000 free Credit")
 	}
 }
 
@@ -416,12 +433,16 @@ func TestStripeOdooPaymentRefIncludesTicketEventName(t *testing.T) {
 	}
 	tx := TransactionEntry{Category: "ticket"}
 
-	if got, want := stripeOdooPaymentRef(bt, tx), "ticket Building IRL communities - why, how and with what"; got != want {
+	// The payment_ref IS the event name (from the Stripe charge description) —
+	// no "ticket " prefix, since the 700150 account already conveys "ticket".
+	if got, want := stripeOdooPaymentRef(bt, tx), "Building IRL communities - why, how and with what"; got != want {
 		t.Fatalf("stripeOdooPaymentRef() = %q, want %q", got, want)
 	}
 
+	// A bare "ticket" description falls through to the canonical event-name tag.
+	bt.Description = "ticket"
 	bt.Metadata["eventName"] = "Canonical event title"
-	if got, want := stripeOdooPaymentRef(bt, tx), "ticket Canonical event title"; got != want {
+	if got, want := stripeOdooPaymentRef(bt, tx), "Canonical event title"; got != want {
 		t.Fatalf("stripeOdooPaymentRef() = %q, want %q", got, want)
 	}
 }
@@ -695,5 +716,90 @@ func TestBuildStripeExistingFromCacheLines(t *testing.T) {
 	}
 	if odooString(row["narration"]) != "n1" {
 		t.Fatalf("row narration = %v, want n1", row["narration"])
+	}
+}
+
+func TestStripeLocalInSyncCheckpoint(t *testing.T) {
+	acc := &AccountConfig{Provider: "stripe", AccountID: "acct_X"}
+	tz := BrusselsTZ()
+	// Three charges on distinct days; created ascending.
+	day := func(y int, m time.Month, d int) int64 {
+		return time.Date(y, m, d, 12, 0, 0, 0, tz).Unix()
+	}
+	bts := []stripesource.Transaction{
+		{ID: "txn_1", Type: "charge", Amount: 1000, Net: 950, Created: day(2025, 1, 2)},
+		{ID: "txn_2", Type: "charge", Amount: 2000, Net: 1900, Created: day(2025, 1, 3)},
+		{ID: "txn_3", Type: "charge", Amount: 3000, Net: 2850, Created: day(2025, 1, 4)},
+	}
+	// Helper: a cache line for a BT at its expected (gross) amount.
+	line := func(id string, amt float64) OdooCacheLine {
+		return OdooCacheLine{UniqueImportID: "stripe:acct_x:" + id, Amount: amt}
+	}
+
+	t.Run("all present and correct -> no gap", func(t *testing.T) {
+		cache := []OdooCacheLine{
+			line("txn_1", 10), line("txn_2", 20), line("txn_3", 30),
+			{UniqueImportID: "", Amount: 9326.90}, // opening, ignored
+		}
+		if _, found := stripeLocalInSyncCheckpoint(acc, bts, cache); found {
+			t.Fatal("expected no gap when every BT line is present with the right amount")
+		}
+	})
+
+	t.Run("missing tail line -> checkpoint at that BT's day", func(t *testing.T) {
+		cache := []OdooCacheLine{line("txn_1", 10), line("txn_2", 20)} // txn_3 absent
+		since, found := stripeLocalInSyncCheckpoint(acc, bts, cache)
+		if !found {
+			t.Fatal("expected a gap for the missing tail line")
+		}
+		want := time.Date(2025, 1, 4, 0, 0, 0, 0, tz)
+		if !since.Equal(want) {
+			t.Fatalf("checkpoint = %s, want %s", since, want)
+		}
+	})
+
+	t.Run("drifted amount in the middle -> checkpoint there", func(t *testing.T) {
+		cache := []OdooCacheLine{line("txn_1", 10), line("txn_2", 99 /*wrong*/), line("txn_3", 30)}
+		since, found := stripeLocalInSyncCheckpoint(acc, bts, cache)
+		if !found {
+			t.Fatal("expected a gap for the drifted amount")
+		}
+		want := time.Date(2025, 1, 3, 0, 0, 0, 0, tz)
+		if !since.Equal(want) {
+			t.Fatalf("checkpoint = %s, want %s (earliest divergence)", since, want)
+		}
+	})
+
+	t.Run("import-id case-insensitive match", func(t *testing.T) {
+		cache := []OdooCacheLine{
+			{UniqueImportID: "STRIPE:ACCT_X:TXN_1", Amount: 10},
+			{UniqueImportID: "stripe:acct_x:txn_2", Amount: 20},
+			{UniqueImportID: "stripe:acct_x:txn_3", Amount: 30},
+		}
+		if _, found := stripeLocalInSyncCheckpoint(acc, bts, cache); found {
+			t.Fatal("import-id comparison must be case-insensitive")
+		}
+	})
+}
+
+// A Stripe fee CREDIT (e.g. "€10,000 free Credit", a positive adjustment) must
+// route to the Stripe-fees account even though the mapping is scoped
+// direction:"out" — the fee fallback in stripeOdooAccountCode handles it.
+func TestStripeFeeCreditRoutesToFeeAccount(t *testing.T) {
+	mappings := []OdooMapping{
+		{Match: OdooMappingMatch{Category: "stripe_fee", Direction: "out"},
+			Set: OdooMappingResult{AccountCode: "657020"}},
+	}
+	// Positive adjustment with reporting_category "fee" → a CREDIT fee refund.
+	bt := stripesource.Transaction{Type: "adjustment", ReportingCategory: "fee", Net: 435, Amount: 435, Description: "€10,000 free Credit"}
+	tx := stripeRuleTransaction(&AccountConfig{Provider: "stripe", AccountID: "acct_X"}, bt, stripeStatementLineAmount(bt))
+	if tx.Type != "CREDIT" {
+		t.Fatalf("fee credit should be a CREDIT, got %s", tx.Type)
+	}
+	if tx.Category != "stripe_fee" {
+		t.Fatalf("fee credit category = %q, want stripe_fee", tx.Category)
+	}
+	if got := stripeOdooAccountCode(bt, tx, mappings); got != "657020" {
+		t.Fatalf("fee credit account = %q, want 657020 (same as other Stripe fees)", got)
 	}
 }

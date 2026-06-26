@@ -637,6 +637,7 @@ func OdooJournals(args []string) error {
 				HasFlag(args, "--dry-run"),
 				HasFlag(args, "--verbose", "-v"),
 				HasFlag(args, "--interactive", "-i"),
+				true, // explicit reconcile: run the partner-linking pass
 			)
 		}
 		if len(args) >= 2 && args[1] == "lines" {
@@ -744,7 +745,6 @@ func OdooJournals(args []string) error {
 			}
 			fmt.Printf("    %s⚠ not in sync%s  %s%s%s\n", Fmt.Yellow, Fmt.Reset, Fmt.Dim, strings.Join(parts, " — "), Fmt.Reset)
 		}
-		fmt.Println()
 	}
 
 	if !hasLinked {
@@ -1042,10 +1042,21 @@ balance is invalid (start + sum(lines) ≠ end). Read-only.
 		fmt.Printf(`
 %schb odoo journals <id|slug> fix%s — Repair a journal: rewrite orphan
 import-ids, remove unmatched lines, correct line amounts that disagree with
-local (e.g. mis-signed transfers), and recompute balances. Also diffs the
-journal against local: offers to push local txs missing from Odoo, and reports
-any balance gap from manual (non-chb) entries. Each repair is previewed and
-confirmed separately. See also '%sfix-amounts%s' to run only the amount step.
+local (e.g. mis-signed transfers), and recompute every statement's start/end
+balance from its actual lines — rewriting any that disagree (this clears stale
+stored balances even when the journal reports as "valid"). For Stripe journals
+it migrates fees to the per-charge model: deletes the deprecated aggregate
+"…:fees"/open-statement fee lines and corrects any drifted per-charge "…:fee"
+line (run a push afterwards to back-fill missing per-charge fee lines). When the
+linked account defines odooSyncSince, also removes legacy lines dated before
+that cutoff (the opening entry already carries the pre-cutoff balance, so they
+double-count). On an odooSourceOfTruth journal it first carries that pre-cutoff
+balance into a starting-balance entry at the cutoff (computed from the lines
+being removed) before deleting them, so the running balance is preserved. Also
+diffs the journal against local: offers to push local txs
+missing from Odoo, and reports any balance gap from manual (non-chb) entries.
+Each repair is previewed and confirmed separately. See also '%sfix-amounts%s' to
+run only the amount step.
 
 %sOPTIONS%s
   %s--dry-run%s              Preview only; no writes to Odoo
@@ -1078,7 +1089,12 @@ with '%sreconcile%s'.
 		fmt.Printf(`
 %schb odoo journals <id|slug> reconcile%s — Match unreconciled statement
 lines against open invoices and bills, or move reconciliations from another
-journal onto equivalent lines in this journal.
+journal onto equivalent lines in this journal. First ensures every line is
+linked to a partner: lines without one are matched to an existing partner by
+bank account (perfect match) or by name (case-insensitive), else a new partner
+is created carrying the bank account number — previewed with a summary you
+confirm before any partner is created. For Stripe journals the customer name and
+Stripe customer id (stored as the partner's bank account) are used instead.
 
 %sUSAGE%s
   %schb odoo journals 53 reconcile --dry-run%s
@@ -1287,19 +1303,29 @@ func odooJournalStatements(creds *OdooCredentials, uid int, journalID int, args 
 	return nil
 }
 
-// odooJournalPull refreshes the local journal-lines cache for one
-// journal. Lighter than the full `chb odoo pull` when the operator just
-// wants to re-sync state for a specific journal — e.g. after a manual
-// edit in the Odoo UI or after `chb odoo journals <id> --reset`.
+// odooJournalPull downloads the full history of one journal into the local
+// cache (a complete refetch, not the watermark-incremental refresh), then
+// prints the journal's count + balance alongside the linked account's
+// provider-live and local-files balances so any drift is obvious. Reach for it
+// after a manual edit in the Odoo UI, a `--reset`, or whenever the local cache
+// and Odoo have diverged.
 func odooJournalPull(creds *OdooCredentials, uid int, journalID int) error {
 	printOdooTargetLine(creds)
-	fmt.Printf("\n  %sRefreshing local cache for journal #%d...%s\n", Fmt.Dim, journalID, Fmt.Reset)
-	count, err := writeOdooJournalLinesCache(creds, uid, journalID)
+	fmt.Printf("\n  %sDownloading the full history of journal #%d...%s\n", Fmt.Dim, journalID, Fmt.Reset)
+	// Full refetch (not the watermark-incremental refresh): `pull` is the verb
+	// the operator reaches for to get an authoritative, complete local mirror —
+	// including any pre-cutoff/legacy lines an incremental merge would never
+	// see — and to confirm the journal's true count + balance against Odoo.
+	cur := LoadSyncCursor(SyncCursorKeyForOdooJournal(journalID))
+	count, err := writeOdooJournalLinesCacheFullRefetch(creds, uid, journalID, &cur)
 	if err != nil {
-		return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
+		return fmt.Errorf("download journal #%d: %v", journalID, err)
 	}
-	fmt.Printf("  %s✓ Cached %d statement line%s for journal #%d%s\n\n",
+	fmt.Printf("  %s✓ Cached %d statement line%s for journal #%d%s\n",
 		Fmt.Green, count, plural(count), journalID, Fmt.Reset)
+	// Show the journal's count + balance and compare with the linked account
+	// (provider-live and local-files balances), so a drift is obvious at a glance.
+	printJournalBalances(creds, uid, linkedAccountForJournal(journalID), journalID)
 	return nil
 }
 
@@ -1385,6 +1411,11 @@ func odooJournalDetail(creds *OdooCredentials, uid int, journalID int) error {
 	}
 	fmt.Printf("  %sStatement lines: %d%s\n", Fmt.Dim, lineCount, Fmt.Reset)
 	fmt.Printf("  %sReconciled lines: %d%s\n", Fmt.Dim, reconciledCount, Fmt.Reset)
+	if overview, err := fetchOdooJournalOverview(creds, uid, journalID); err == nil {
+		printOdooJournalOverview(overview, currency)
+	} else {
+		fmt.Printf("  %sReconciliation overview: unavailable (%v)%s\n", Fmt.Dim, err, Fmt.Reset)
+	}
 	fmt.Printf("  %sStatements: %d  %s(see: chb odoo journals %d statements)%s\n\n",
 		Fmt.Dim, stmtCount, Fmt.Dim, journalID, Fmt.Reset)
 
@@ -1394,7 +1425,6 @@ func odooJournalDetail(creds *OdooCredentials, uid int, journalID int) error {
 		}
 		fmt.Printf("  %sLinked account%s\n", Fmt.Bold, Fmt.Reset)
 		printAccountDetailSummary(linkedAccount, nil)
-		fmt.Println()
 	} else {
 		fmt.Printf("  %sNo local account is linked to this Odoo journal.%s\n\n", Fmt.Dim, Fmt.Reset)
 	}
@@ -1402,6 +1432,243 @@ func odooJournalDetail(creds *OdooCredentials, uid int, journalID int) error {
 	fmt.Printf("  %sTo reset: chb odoo journals %d --reset%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
 	fmt.Printf("  %sTo reconcile: chb odoo journals %d reconcile --dry-run%s\n\n", Fmt.Dim, journalID, Fmt.Reset)
 	return nil
+}
+
+type odooJournalOverview struct {
+	TotalLines          int
+	OdooReconciledLines int
+	InvoiceBillLines    int
+	NoPartnerLines      int
+	Accounts            []odooJournalOverviewAccount
+}
+
+type odooJournalOverviewAccount struct {
+	AccountID        int
+	Label            string
+	LineCount        int
+	InvoiceBillLines int
+	NoPartnerLines   int
+	Balance          float64
+}
+
+func fetchOdooJournalOverview(creds *OdooCredentials, uid int, journalID int) (*odooJournalOverview, error) {
+	lines, err := fetchOdooJournalLinesForCache(creds, uid, journalID)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := fetchInvoiceBillMatchesForJournalLines(creds, uid, lines)
+	if err != nil {
+		return nil, err
+	}
+	accountIDs := make([]int, 0, len(lines))
+	for _, line := range lines {
+		if line.AccountID > 0 {
+			accountIDs = append(accountIDs, line.AccountID)
+		}
+	}
+	accountLabels := fetchOdooAccountLabels(creds, uid, accountIDs)
+	overview := &odooJournalOverview{TotalLines: len(lines)}
+	buckets := map[int]*odooJournalOverviewAccount{}
+	for _, line := range lines {
+		if line.IsReconciled {
+			overview.OdooReconciledLines++
+		}
+		if line.PartnerID == 0 {
+			overview.NoPartnerLines++
+		}
+		if matches[line.ID] {
+			overview.InvoiceBillLines++
+		}
+		accountID := line.AccountID
+		bucket := buckets[accountID]
+		if bucket == nil {
+			label := accountLabels[accountID]
+			if label == "" {
+				if accountID > 0 {
+					label = fmt.Sprintf("account #%d", accountID)
+				} else {
+					label = "no counterpart account"
+				}
+			}
+			bucket = &odooJournalOverviewAccount{AccountID: accountID, Label: label}
+			buckets[accountID] = bucket
+		}
+		bucket.LineCount++
+		bucket.Balance += line.Amount
+		if line.PartnerID == 0 {
+			bucket.NoPartnerLines++
+		}
+		if matches[line.ID] {
+			bucket.InvoiceBillLines++
+		}
+	}
+	overview.Accounts = make([]odooJournalOverviewAccount, 0, len(buckets))
+	for _, bucket := range buckets {
+		overview.Accounts = append(overview.Accounts, *bucket)
+	}
+	sort.Slice(overview.Accounts, func(i, j int) bool {
+		a := overview.Accounts[i]
+		b := overview.Accounts[j]
+		if a.LineCount != b.LineCount {
+			return a.LineCount > b.LineCount
+		}
+		return a.Label < b.Label
+	})
+	return overview, nil
+}
+
+func fetchInvoiceBillMatchesForJournalLines(creds *OdooCredentials, uid int, lines []OdooCacheLine) (map[int]bool, error) {
+	matches := map[int]bool{}
+	counterpartToStatementLine := map[int]int{}
+	var counterpartIDs []int
+	for _, line := range lines {
+		if line.CounterpartID <= 0 {
+			continue
+		}
+		counterpartToStatementLine[line.CounterpartID] = line.ID
+		counterpartIDs = append(counterpartIDs, line.CounterpartID)
+	}
+	counterpartIDs = uniquePositiveInts(counterpartIDs)
+	if len(counterpartIDs) == 0 {
+		return matches, nil
+	}
+	counterpartRows, err := odooReadMapsByIDs(creds, uid, "account.move.line", counterpartIDs, []string{"id", "matched_debit_ids", "matched_credit_ids"})
+	if err != nil {
+		return nil, err
+	}
+	partialToStatementLines := map[int][]int{}
+	var partialIDs []int
+	for _, row := range counterpartRows {
+		statementLineID := counterpartToStatementLine[odooInt(row["id"])]
+		if statementLineID == 0 {
+			continue
+		}
+		for _, partialID := range append(odooIDList(row["matched_debit_ids"]), odooIDList(row["matched_credit_ids"])...) {
+			partialToStatementLines[partialID] = append(partialToStatementLines[partialID], statementLineID)
+			partialIDs = append(partialIDs, partialID)
+		}
+	}
+	partialIDs = uniquePositiveInts(partialIDs)
+	if len(partialIDs) == 0 {
+		return matches, nil
+	}
+	partialRows, err := odooReadMapsByIDs(creds, uid, "account.partial.reconcile", partialIDs, []string{"id", "debit_move_id", "credit_move_id"})
+	if err != nil {
+		return nil, err
+	}
+	oppositeToStatementLines := map[int][]int{}
+	var oppositeIDs []int
+	for _, row := range partialRows {
+		partialID := odooInt(row["id"])
+		statementLineIDs := partialToStatementLines[partialID]
+		if len(statementLineIDs) == 0 {
+			continue
+		}
+		debitID := odooFieldID(row["debit_move_id"])
+		creditID := odooFieldID(row["credit_move_id"])
+		for _, statementLineID := range statementLineIDs {
+			oppositeID := debitID
+			if _, ok := counterpartToStatementLine[debitID]; ok {
+				oppositeID = creditID
+			}
+			if oppositeID <= 0 {
+				continue
+			}
+			oppositeToStatementLines[oppositeID] = append(oppositeToStatementLines[oppositeID], statementLineID)
+			oppositeIDs = append(oppositeIDs, oppositeID)
+		}
+	}
+	oppositeIDs = uniquePositiveInts(oppositeIDs)
+	if len(oppositeIDs) == 0 {
+		return matches, nil
+	}
+	oppositeRows, err := odooReadMapsByIDs(creds, uid, "account.move.line", oppositeIDs, []string{"id", "move_id"})
+	if err != nil {
+		return nil, err
+	}
+	moveToStatementLines := map[int][]int{}
+	var moveIDs []int
+	for _, row := range oppositeRows {
+		moveID := odooFieldID(row["move_id"])
+		if moveID <= 0 {
+			continue
+		}
+		lineIDs := oppositeToStatementLines[odooInt(row["id"])]
+		if len(lineIDs) == 0 {
+			continue
+		}
+		moveToStatementLines[moveID] = append(moveToStatementLines[moveID], lineIDs...)
+		moveIDs = append(moveIDs, moveID)
+	}
+	moveIDs = uniquePositiveInts(moveIDs)
+	if len(moveIDs) == 0 {
+		return matches, nil
+	}
+	moveRows, err := odooReadMapsByIDs(creds, uid, "account.move", moveIDs, []string{"id", "move_type"})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range moveRows {
+		moveType := odooString(row["move_type"])
+		if moveType != "out_invoice" && moveType != "in_invoice" {
+			continue
+		}
+		for _, statementLineID := range moveToStatementLines[odooInt(row["id"])] {
+			matches[statementLineID] = true
+		}
+	}
+	return matches, nil
+}
+
+func fetchOdooAccountLabels(creds *OdooCredentials, uid int, accountIDs []int) map[int]string {
+	labels := map[int]string{}
+	accountIDs = uniquePositiveInts(accountIDs)
+	if len(accountIDs) == 0 {
+		return labels
+	}
+	rows, err := odooReadMapsByIDs(creds, uid, "account.account", accountIDs, []string{"id", "code", "name"})
+	if err != nil {
+		return labels
+	}
+	for _, row := range rows {
+		id := odooInt(row["id"])
+		code := odooString(row["code"])
+		name := odooString(row["name"])
+		switch {
+		case code != "" && name != "":
+			labels[id] = code + " " + name
+		case code != "":
+			labels[id] = code
+		case name != "":
+			labels[id] = name
+		}
+	}
+	return labels
+}
+
+func printOdooJournalOverview(overview *odooJournalOverview, currency string) {
+	if overview == nil {
+		return
+	}
+	unmatched := overview.TotalLines - overview.InvoiceBillLines
+	fmt.Printf("  %sInvoice/bill links: %d reconciled, %d unreconciled%s\n", Fmt.Dim, overview.InvoiceBillLines, unmatched, Fmt.Reset)
+	fmt.Printf("  %sOdoo reconciled flag: %d yes, %d no%s\n", Fmt.Dim, overview.OdooReconciledLines, overview.TotalLines-overview.OdooReconciledLines, Fmt.Reset)
+	if overview.NoPartnerLines > 0 {
+		fmt.Printf("  %sPartner gaps: %d line%s without partner%s\n", Fmt.Yellow, overview.NoPartnerLines, plural(overview.NoPartnerLines), Fmt.Reset)
+	} else {
+		fmt.Printf("  %sPartner gaps: none%s\n", Fmt.Dim, Fmt.Reset)
+	}
+	if len(overview.Accounts) == 0 {
+		return
+	}
+	fmt.Printf("  %sAccount breakdown:%s\n", Fmt.Dim, Fmt.Reset)
+	for _, account := range overview.Accounts {
+		fmt.Printf("    %s%-36s%s %5d lines  %5d linked  %5d unlinked  %12s", Fmt.Dim, truncate(account.Label, 36), Fmt.Reset, account.LineCount, account.InvoiceBillLines, account.LineCount-account.InvoiceBillLines, formatBalancePlain(account.Balance, currency))
+		fmt.Println()
+		if account.NoPartnerLines > 0 {
+			fmt.Printf("      %s↳ %d line%s in this account without partner%s\n", Fmt.Yellow, account.NoPartnerLines, plural(account.NoPartnerLines), Fmt.Reset)
+		}
+	}
 }
 
 // missingLocalTx is a local transaction whose unique_import_id has no
@@ -1420,6 +1687,7 @@ type missingLocalTx struct {
 // cache populated by `chb odoo pull`; if it's missing, the operator gets
 // pointed at the right command instead of a silent fallback.
 func findLocalTxsMissingFromOdoo(journalID int, acc *AccountConfig) ([]missingLocalTx, error) {
+	cutoff, hasCutoff := acc.OdooSyncSinceTime()
 	cached, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID)
 	if !ok {
 		return nil, fmt.Errorf("no local cache for journal #%d — run `chb odoo pull` first", journalID)
@@ -1436,12 +1704,16 @@ func findLocalTxsMissingFromOdoo(journalID int, acc *AccountConfig) ([]missingLo
 	localTxs := loadAccountTransactionsForOdoo(acc)
 	var missing []missingLocalTx
 	for _, tx := range localTxs {
+		txTime := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
+		if hasCutoff && txTime.Before(cutoff) {
+			continue
+		}
 		importID := buildUniqueImportID(acc, tx)
 		if importID == "" || odooIDs[importID] {
 			continue
 		}
 		missing = append(missing, missingLocalTx{
-			Date:         time.Unix(tx.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02"),
+			Date:         txTime.Format("2006-01-02"),
 			Amount:       signedOdooAmountForTransaction(acc, tx),
 			Counterparty: tx.Counterparty,
 			ImportID:     importID,
@@ -1674,7 +1946,6 @@ func printAlignedTable(headers []string, rows [][]string, rightAlign map[int]boo
 				fmt.Print(padRight(cell, widths[i]))
 			}
 		}
-		fmt.Println()
 	}
 
 	printRow(headers)
@@ -1765,6 +2036,16 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	var loosePlan *looseLinesPlan
 	var issues []StatementBalanceIssue
 	var amountFixes []odooAmountFix
+	var feeFixes odooFeeRepairs
+	var preCutoff []preCutoffLine
+	var cutoff time.Time
+	var hasCutoff bool
+	var staleBalanceCount int
+	var misfiledLineCount int
+	var accountReclass []odooLineAccountFix
+	var paymentRefFixes []stripePaymentRefFix
+	var feeAccountFixes []stripeFeeAccountFix
+	var feeAccountCode string
 	detect := func() error {
 		fmt.Printf("  %sChecking orphan/duplicate statement lines...%s\n", Fmt.Dim, Fmt.Reset)
 		var err error
@@ -1793,6 +2074,38 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 			amountFixes = nil
 		}
 
+		fmt.Printf("  %sChecking aggregate fee lines...%s\n", Fmt.Dim, Fmt.Reset)
+		var feeErr error
+		feeFixes, feeErr = detectOdooJournalFeeFixes(creds, uid, journalID, res.Account)
+		if feeErr != nil {
+			Warnf("  %s⚠ Could not check fee lines: %v%s", Fmt.Yellow, feeErr, Fmt.Reset)
+			feeFixes = odooFeeRepairs{}
+		}
+
+		fmt.Printf("  %sChecking line accounts vs category mapping...%s\n", Fmt.Dim, Fmt.Reset)
+		if ar, arErr := detectOdooJournalAccountReclassification(creds, uid, journalID, res.Account); arErr != nil {
+			Warnf("  %s⚠ Could not check line accounts: %v%s", Fmt.Yellow, arErr, Fmt.Reset)
+			accountReclass = nil
+		} else {
+			accountReclass = ar
+		}
+
+		fmt.Printf("  %sChecking line labels vs classification...%s\n", Fmt.Dim, Fmt.Reset)
+		if pr, prErr := detectStripePaymentRefFixes(creds, uid, journalID, res.Account); prErr != nil {
+			Warnf("  %s⚠ Could not check line labels: %v%s", Fmt.Yellow, prErr, Fmt.Reset)
+			paymentRefFixes = nil
+		} else {
+			paymentRefFixes = pr
+		}
+
+		fmt.Printf("  %sChecking Stripe fee lines on the fees account...%s\n", Fmt.Dim, Fmt.Reset)
+		if ff, code, ffErr := detectStripeFeeAccountFixes(creds, uid, journalID, res.Account); ffErr != nil {
+			Warnf("  %s⚠ Could not check fee accounts: %v%s", Fmt.Yellow, ffErr, Fmt.Reset)
+			feeAccountFixes = nil
+		} else {
+			feeAccountFixes, feeAccountCode = ff, code
+		}
+
 		fmt.Printf("  %sChecking loose statement lines...%s\n", Fmt.Dim, Fmt.Reset)
 		var looseErr error
 		loosePlan, looseErr = planAttachLooseLines(creds, uid, journalID)
@@ -1803,7 +2116,50 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 
 		fmt.Printf("  %sChecking statement balances...%s\n", Fmt.Dim, Fmt.Reset)
 		issues, err = CheckOdooJournalStatements(creds, uid, journalID)
-		return err
+		if err != nil {
+			return err
+		}
+
+		// Lines pooled in the wrong statement (notably payouts), which makes a
+		// statement's running balance balloon instead of tracking the
+		// provider's actual balance.
+		fmt.Printf("  %sChecking line → statement membership...%s\n", Fmt.Dim, Fmt.Reset)
+		if reassign, rerr := planLineStatementReassignment(creds, uid, journalID); rerr != nil {
+			Warnf("  %s⚠ Could not check line membership: %v%s", Fmt.Yellow, rerr, Fmt.Reset)
+			misfiledLineCount = 0
+		} else {
+			misfiledLineCount = len(reassign)
+		}
+
+		// Stored balances that disagree with the actual line sums — caught even
+		// when the invariant check above (which trusts Odoo's own balance_end)
+		// reports valid.
+		balanceRewrites, berr := planStatementBalanceRewrites(creds, uid, journalID)
+		if berr != nil {
+			Warnf("  %s⚠ Could not check statement balances vs lines: %v%s", Fmt.Yellow, berr, Fmt.Reset)
+			staleBalanceCount = 0
+		} else {
+			staleBalanceCount = len(balanceRewrites)
+		}
+
+		// Pre-cutoff legacy lines: when the linked account defines
+		// odooSyncSince, any line dated before it double-counts the era the
+		// opening entry already represents, so flag them for removal.
+		preCutoff = nil
+		hasCutoff = false
+		if res.Account != nil {
+			if c, ok := res.Account.OdooSyncSinceTime(); ok {
+				cutoff, hasCutoff = c, true
+				fmt.Printf("  %sChecking lines before the %s cutoff...%s\n", Fmt.Dim, c.Format("2006-01-02"), Fmt.Reset)
+				pc, perr := detectPreCutoffJournalLines(creds, uid, journalID, c)
+				if perr != nil {
+					Warnf("  %s⚠ Could not check pre-cutoff lines: %v%s", Fmt.Yellow, perr, Fmt.Reset)
+				} else {
+					preCutoff = pc
+				}
+			}
+		}
+		return nil
 	}
 	if err := detect(); err != nil {
 		return err
@@ -1844,7 +2200,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		Warnf("  %s⚠ Could not check statement shape: %v%s", Fmt.Yellow, preErr, Fmt.Reset)
 	}
 
-	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && len(loosePlan.Assign) == 0 && len(loosePlan.Create) == 0 && len(issues) == 0 && !deletableUnowned && !openingMismatch && len(preEmpty) == 0 && !preAnchor {
+	if len(res.Repairs) == 0 && len(res.Duplicates) == 0 && len(res.Orphans) == 0 && len(res.PostLatestLocal) == 0 && len(res.Missing) == 0 && len(linePlan) == 0 && len(amountFixes) == 0 && feeFixes.empty() && len(loosePlan.Assign) == 0 && len(loosePlan.Create) == 0 && len(issues) == 0 && !deletableUnowned && !openingMismatch && len(preEmpty) == 0 && !preAnchor && len(preCutoff) == 0 && staleBalanceCount == 0 && misfiledLineCount == 0 && len(accountReclass) == 0 && len(paymentRefFixes) == 0 && len(feeAccountFixes) == 0 {
 		if diagOK && diag.hasGap {
 			printJournalBalanceDiagnostic(diag, res)
 			fmt.Printf("  %s✓ No structural issues to fix — see the balance diagnostic above for how to close the %s gap.%s\n",
@@ -1860,6 +2216,76 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 
 	if diagOK && diag.hasGap {
 		printJournalBalanceDiagnostic(diag, res)
+	}
+
+	// Pre-cutoff legacy lines come first: removing them changes the orphan,
+	// balance and statement-chain picture, so the steps below re-plan against
+	// the journal as it stands after the deletion.
+	if len(preCutoff) > 0 && hasCutoff {
+		printPreCutoffLines(preCutoff, cutoff, accCurrency(res.Account))
+		// For an Odoo-source-of-truth journal nothing pushes an opening entry,
+		// so the pre-cutoff balance must be carried into a starting-balance
+		// entry at the cutoff before these lines are removed — otherwise their
+		// balance is lost. (For other journals the windowed push already owns
+		// the opening entry, so this is a no-op.)
+		sourceOfTruth := res.Account != nil && res.Account.IsOdooSourceOfTruth()
+		if sourceOfTruth {
+			fmt.Printf("  %sOdoo is the source of truth: their %s balance is carried into a starting-balance entry at %s before removal.%s\n",
+				Fmt.Dim, fmtEURSigned(preCutoffBalance(preCutoff)), cutoff.Format("2006-01-02"), Fmt.Reset)
+		}
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			note := "The opening entry already carries the pre-cutoff balance."
+			if sourceOfTruth {
+				note = "A starting-balance entry at the cutoff is created first to carry their balance."
+			}
+			fmt.Printf("  %sDelete %s dated before %s? %s This cannot be undone.%s [y/N] ",
+				Fmt.Bold, Pluralize(len(preCutoff), "pre-cutoff line", ""), cutoff.Format("2006-01-02"), note, Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			if sourceOfTruth {
+				if _, err := ensureStartingBalanceBeforeCutoff(creds, uid, journalID, res.Account, cutoff, preCutoff, true); err != nil {
+					Warnf("  %s⚠ Could not plan starting-balance entry: %v%s", Fmt.Yellow, err, Fmt.Reset)
+				}
+			}
+			fmt.Printf("  %s(dry-run) would delete %s dated before %s%s\n\n",
+				Fmt.Dim, Pluralize(len(preCutoff), "line", ""), cutoff.Format("2006-01-02"), Fmt.Reset)
+		case proceed:
+			// Carry the balance forward FIRST. If it fails, do not delete — the
+			// balance would be lost with no entry to hold it.
+			if sourceOfTruth {
+				if _, err := ensureStartingBalanceBeforeCutoff(creds, uid, journalID, res.Account, cutoff, preCutoff, false); err != nil {
+					Warnf("  %s⚠ Starting-balance entry not created (%v); skipping pre-cutoff removal to avoid losing the balance.%s\n", Fmt.Red, err, Fmt.Reset)
+					break
+				}
+			}
+			ids := make([]int, len(preCutoff))
+			for i, l := range preCutoff {
+				ids[i] = l.ID
+			}
+			status := newStatusLine()
+			deleted, derr := deleteStatementLinesChunked(creds, uid, ids, status)
+			status.Clear()
+			if derr != nil {
+				Warnf("  %s⚠ Deleted %d of %d before failing: %v%s", Fmt.Red, deleted, len(ids), derr, Fmt.Reset)
+			} else {
+				fmt.Printf("  %s✓ Deleted %s dated before %s%s\n\n",
+					Fmt.Green, Pluralize(deleted, "line", ""), cutoff.Format("2006-01-02"), Fmt.Reset)
+			}
+			// Re-detect so the remaining steps plan against the cleaned journal.
+			if err := detect(); err != nil {
+				return err
+			}
+			if d, ok := computeJournalBalanceDiagnostic(res); ok {
+				diag, diagOK = d, true
+			}
+		default:
+			fmt.Printf("  %sPre-cutoff removal skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
 	}
 
 	if len(res.Missing) > 0 {
@@ -2004,6 +2430,146 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 	}
 
+	// Aggregate Stripe fee lines: correct over/under-charged amounts (the
+	// rolling open-statement fee line drifts when a re-push double-adds) and
+	// delete stale fee lines. Recomputed from local; corrections change
+	// statement balances, so re-detect afterwards.
+	if !feeFixes.empty() {
+		printOdooJournalFeeFixes(feeFixes)
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			fmt.Printf("  %sRepair %s? Wrong amounts are rewritten in place; stale lines are deleted. This cannot be undone.%s [y/N] ",
+				Fmt.Bold, Pluralize(len(feeFixes.Corrections)+len(feeFixes.Spurious), "fee line", ""), Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			fmt.Printf("  %s(dry-run) would repair %s%s\n\n",
+				Fmt.Dim, Pluralize(len(feeFixes.Corrections)+len(feeFixes.Spurious), "fee line", ""), Fmt.Reset)
+		case proceed:
+			if len(feeFixes.Corrections) > 0 {
+				reconciledN := countReconciledAmountFixes(feeFixes.Corrections)
+				ok, failed := applyOdooJournalAmountFixes(creds, uid, journalID, feeFixes.Corrections)
+				printOdooJournalAmountFixResult(journalID, len(feeFixes.Corrections), ok, failed, reconciledN)
+			}
+			if len(feeFixes.Spurious) > 0 {
+				ids := make([]int, len(feeFixes.Spurious))
+				for i, f := range feeFixes.Spurious {
+					ids[i] = f.LineID
+				}
+				if err := deleteStatementLines(creds, uid, ids); err != nil {
+					Warnf("  %s⚠ Failed to delete stale fee lines: %v%s", Fmt.Red, err, Fmt.Reset)
+				} else {
+					fmt.Printf("  %s✓ Deleted %s%s\n\n", Fmt.Green, Pluralize(len(ids), "stale fee line", ""), Fmt.Reset)
+				}
+			}
+			// Re-detect so the statement-chain repair below plans against the
+			// corrected fee amounts.
+			if err := detect(); err != nil {
+				return err
+			}
+			if d, ok := computeJournalBalanceDiagnostic(res); ok {
+				diag, diagOK = d, true
+			}
+		default:
+			fmt.Printf("  %sFee repair skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
+	}
+
+	// Account re-classification: a line whose category now maps to a different
+	// account (e.g. membership 700000 → 730000 after editing odoo_mapping.json).
+	if len(accountReclass) > 0 {
+		printOdooJournalAccountReclassification(accountReclass)
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			fmt.Printf("  %sMove %s onto the account their category maps to?%s [y/N] ",
+				Fmt.Bold, Pluralize(len(accountReclass), "line", ""), Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			fmt.Printf("  %s(dry-run) would re-account %s%s\n\n", Fmt.Dim, Pluralize(len(accountReclass), "line", ""), Fmt.Reset)
+		case proceed:
+			status := newStatusLine()
+			done := applyOdooJournalAccountReclassification(creds, uid, accountReclass, status)
+			status.Clear()
+			fmt.Printf("  %s✓ Re-accounted %s%s\n\n", Fmt.Green, Pluralize(done, "line", ""), Fmt.Reset)
+			if err := detect(); err != nil {
+				return err
+			}
+		default:
+			fmt.Printf("  %sAccount re-classification skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
+	}
+
+	// Stripe fees must all sit on the Stripe-fees account (657020) — including
+	// fee credits (direction:in) and per-charge :fee lines the generic pass misses.
+	if len(feeAccountFixes) > 0 {
+		printStripeFeeAccountFixes(feeAccountFixes, feeAccountCode)
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			fmt.Printf("  %sMove %s onto the Stripe-fees account %s?%s [y/N] ",
+				Fmt.Bold, Pluralize(len(feeAccountFixes), "fee line", ""), feeAccountCode, Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			fmt.Printf("  %s(dry-run) would move %s to %s%s\n\n", Fmt.Dim, Pluralize(len(feeAccountFixes), "fee line", ""), feeAccountCode, Fmt.Reset)
+		case proceed:
+			ids := make([]int, 0, len(feeAccountFixes))
+			for _, f := range feeAccountFixes {
+				ids = append(ids, f.LineID)
+			}
+			status := newStatusLine()
+			err := applyOdooMappingAccount(creds, uid, ids, feeAccountCode, status)
+			status.Clear()
+			if err != nil {
+				Warnf("  %s⚠ Could not move fee lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			} else {
+				fmt.Printf("  %s✓ Moved %s to %s%s\n\n", Fmt.Green, Pluralize(len(ids), "fee line", ""), feeAccountCode, Fmt.Reset)
+			}
+			if err := detect(); err != nil {
+				return err
+			}
+		default:
+			fmt.Printf("  %sFee-account fix skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
+	}
+
+	// Stale labels: a line whose payment_ref no longer matches its (re)resolved
+	// classification — e.g. a donation whose collective changed commonshub →
+	// openletter. Refreshed via draft → update → repost; invoice-matched lines
+	// are left untouched.
+	if len(paymentRefFixes) > 0 {
+		printStripePaymentRefFixes(paymentRefFixes)
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			fmt.Printf("  %sRefresh the label on %s? (drafts → updates → reposts)%s [y/N] ",
+				Fmt.Bold, Pluralize(len(paymentRefFixes), "line", ""), Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			fmt.Printf("  %s(dry-run) would refresh %s%s\n\n", Fmt.Dim, Pluralize(len(paymentRefFixes), "line", ""), Fmt.Reset)
+		case proceed:
+			done := applyStripePaymentRefFixes(creds, uid, paymentRefFixes)
+			fmt.Printf("  %s✓ Refreshed %s%s\n\n", Fmt.Green, Pluralize(done, "line", ""), Fmt.Reset)
+			if err := detect(); err != nil {
+				return err
+			}
+		default:
+			fmt.Printf("  %sLabel refresh skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
+	}
+
 	if len(res.Orphans) > 0 {
 		printOrphanStatementLines(res.Orphans)
 		proceed := assumeYes
@@ -2109,10 +2675,55 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 	}
 
+	// Line → statement membership: move each line into the statement whose
+	// period covers its date, so payouts stop pooling in one statement and each
+	// statement's running balance tracks the provider's actual balance. Runs
+	// before the statement-chain/balance repairs below, which then re-derive
+	// the (now correct) balances and clean up the statements it emptied.
+	if reassign, rerr := planLineStatementReassignment(creds, uid, journalID); rerr != nil {
+		Warnf("  %s⚠ Could not plan line membership repair: %v%s", Fmt.Yellow, rerr, Fmt.Reset)
+	} else if len(reassign) > 0 {
+		targets := map[int]bool{}
+		for _, r := range reassign {
+			targets[r.To] = true
+		}
+		fmt.Printf("\n  %s%s in the wrong statement → re-filing into %s by date%s\n",
+			Fmt.Yellow, Pluralize(len(reassign), "line", ""), Pluralize(len(targets), "statement", ""), Fmt.Reset)
+		proceed := assumeYes
+		if !assumeYes && !dryRun {
+			fmt.Printf("  %sRe-file %s into the statement covering each line's date?%s [y/N] ",
+				Fmt.Bold, Pluralize(len(reassign), "line", ""), Fmt.Reset)
+			var resp string
+			fmt.Scanln(&resp)
+			proceed = resp == "y" || resp == "Y" || resp == "yes"
+		}
+		switch {
+		case dryRun:
+			fmt.Printf("  %s(dry-run) would re-file %s%s\n\n", Fmt.Dim, Pluralize(len(reassign), "line", ""), Fmt.Reset)
+		case proceed:
+			status := newStatusLine()
+			moved, merr := applyLineStatementReassignment(creds, uid, reassign, status)
+			status.Clear()
+			if merr != nil {
+				Warnf("  %s⚠ Re-filed %d of %d before failing: %v%s", Fmt.Red, moved, len(reassign), merr, Fmt.Reset)
+			} else {
+				fmt.Printf("  %s✓ Re-filed %s%s\n\n", Fmt.Green, Pluralize(moved, "line", ""), Fmt.Reset)
+			}
+			if err := detect(); err != nil {
+				return err
+			}
+			if d, ok := computeJournalBalanceDiagnostic(res); ok {
+				diag, diagOK = d, true
+			}
+		default:
+			fmt.Printf("  %sMembership repair skipped.%s\n\n", Fmt.Dim, Fmt.Reset)
+		}
+	}
+
 	// Balance invariants are checked LAST: every mutation above (orphan
 	// deletes, duplicate consolidation, import_id repair, loose-line
-	// attachment) can shift line totals or move lines between statements,
-	// so the balance_start/balance_end_real walk has to come after them.
+	// attachment, line re-filing) can shift line totals or move lines between
+	// statements, so the balance_start/balance_end_real walk has to come after.
 	if !dryRun && (len(res.Repairs) > 0 || len(res.Duplicates) > 0 || len(res.Orphans) > 0 || len(loosePlan.Assign) > 0 || len(loosePlan.Create) > 0 || deletedUnowned > 0) {
 		if rechecked, err := CheckOdooJournalStatements(creds, uid, journalID); err == nil {
 			issues = rechecked
@@ -2125,6 +2736,18 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 	// the anchor repair.
 	if err := repairJournalStatementChain(creds, uid, journalID, res.Account, issues, assumeYes, dryRun); err != nil {
 		return err
+	}
+
+	// Re-derive every statement's start/end balance from its actual lines and
+	// rewrite any that disagree. Re-planned fresh (the repairs above may have
+	// already corrected some) and run unconditionally — this clears stale
+	// stored balances even when the invariant check reported the journal valid.
+	if fresh, perr := planStatementBalanceRewrites(creds, uid, journalID); perr != nil {
+		Warnf("  %s⚠ Could not recompute statement balances: %v%s", Fmt.Yellow, perr, Fmt.Reset)
+	} else if len(fresh) > 0 {
+		fmt.Printf("\n  %sRecomputing %s from their lines…%s\n",
+			Fmt.Bold, Pluralize(len(fresh), "statement balance", ""), Fmt.Reset)
+		applyStatementBalanceRewrites(creds, uid, fresh, dryRun)
 	}
 
 	// Final verdict: the three balances side by side, so the operator sees
@@ -2164,7 +2787,6 @@ func repairJournalStatementChain(creds *OdooCredentials, uid int, journalID int,
 			fmt.Printf("    %s#%d%s  %s  %s  start %s  end %s\n",
 				Fmt.Dim, s.ID, Fmt.Reset, date, s.Name, fmtEURSigned(s.BalanceStart), fmtEURSigned(s.BalanceEndReal))
 		}
-		fmt.Println()
 	}
 	if anchorRepair {
 		fmt.Printf("  %s⚠ Journal lines match local exactly, but the statement chain doesn't open at 0.00 — every statement balance is shifted by the same offset. The walk below re-anchors the first statement at 0.00.%s\n\n",
@@ -2344,6 +2966,258 @@ func repairJournalStatementChain(creds *OdooCredentials, uid int, journalID int,
 	return nil
 }
 
+// statementDate is a statement's id + date, used to decide which statement a
+// line belongs to.
+type statementDate struct {
+	ID   int
+	Date string // YYYY-MM-DD
+}
+
+// lineReassignment moves one statement line from its current statement to the
+// one whose period covers its date.
+type lineReassignment struct {
+	LineID int
+	From   int
+	To     int
+}
+
+// pickStatementForDate returns the id of the statement that should own a line
+// dated lineDate: the earliest statement whose date is >= lineDate (the
+// statement that closes the line's period). Lines dated after every statement
+// fall to the last (open/trailing) statement. stmts MUST be sorted by
+// (date asc, id asc).
+func pickStatementForDate(stmts []statementDate, lineDate string) int {
+	for _, s := range stmts {
+		if s.Date >= lineDate {
+			return s.ID
+		}
+	}
+	if len(stmts) > 0 {
+		return stmts[len(stmts)-1].ID
+	}
+	return 0
+}
+
+// planLineStatementReassignment computes, for every statement line, the
+// statement it should belong to based on its date, and returns the lines whose
+// current statement_id differs. This repairs the membership defect where lines
+// (notably payouts) end up pooled in the wrong statement — once each line sits
+// in its date's statement, each statement's running balance tracks the
+// provider's actual balance instead of ballooning. Read-only.
+func planLineStatementReassignment(creds *OdooCredentials, uid int, journalID int) ([]lineReassignment, error) {
+	sres, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement", "search_read",
+		[]interface{}{[]interface{}{[]interface{}{"journal_id", "=", journalID}}},
+		map[string]interface{}{"fields": []string{"id", "date"}, "order": "date asc, id asc"})
+	if err != nil {
+		return nil, fmt.Errorf("fetch statements: %v", err)
+	}
+	var srows []struct {
+		ID   int     `json:"id"`
+		Date odooStr `json:"date"`
+	}
+	if err := json.Unmarshal(sres, &srows); err != nil {
+		return nil, fmt.Errorf("parse statements: %v", err)
+	}
+	if len(srows) == 0 {
+		return nil, nil
+	}
+	stmts := make([]statementDate, len(srows))
+	for i, s := range srows {
+		stmts[i] = statementDate{ID: s.ID, Date: string(s.Date)}
+	}
+
+	lrows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
+		[]string{"id", "date", "statement_id"},
+		"date asc, id asc")
+	if err != nil {
+		return nil, err
+	}
+	var out []lineReassignment
+	for _, r := range lrows {
+		lineID := odooInt(r["id"])
+		target := pickStatementForDate(stmts, odooString(r["date"]))
+		cur := odooFieldID(r["statement_id"])
+		if target > 0 && target != cur {
+			out = append(out, lineReassignment{LineID: lineID, From: cur, To: target})
+		}
+	}
+	return out, nil
+}
+
+// applyLineStatementReassignment writes each line's corrected statement_id,
+// grouped per target statement and chunked. Returns the number of lines moved.
+func applyLineStatementReassignment(creds *OdooCredentials, uid int, reassign []lineReassignment, status *statusLine) (int, error) {
+	byTarget := map[int][]int{}
+	for _, r := range reassign {
+		byTarget[r.To] = append(byTarget[r.To], r.LineID)
+	}
+	targets := make([]int, 0, len(byTarget))
+	for t := range byTarget {
+		targets = append(targets, t)
+	}
+	sort.Ints(targets)
+	moved := 0
+	const chunk = 100
+	for _, target := range targets {
+		ids := byTarget[target]
+		for start := 0; start < len(ids); start += chunk {
+			end := start + chunk
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if status != nil {
+				status.Update("Reassigning lines to their statements %d/%d…", moved, len(reassign))
+			}
+			if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.bank.statement.line", "write",
+				[]interface{}{intsToInterfaces(ids[start:end]), map[string]interface{}{"statement_id": target}}, nil); err != nil {
+				return moved, fmt.Errorf("write statement_id (→ #%d): %v", target, err)
+			}
+			moved += end - start
+		}
+	}
+	return moved, nil
+}
+
+// statementBalanceRewrite is one statement whose stored balances disagree with
+// what its actual lines imply.
+type statementBalanceRewrite struct {
+	ID           int
+	Name         string
+	OldStart     float64
+	NewStart     float64
+	StartChanged bool
+	OldEnd       float64
+	NewEnd       float64
+	EndChanged   bool
+}
+
+// planStatementBalanceRewrites reads every statement (chronological) and the
+// live per-statement line sums, then computes the balances they SHOULD carry:
+// balance_start chains from the previous statement's recomputed end (the first
+// statement keeps its stored start as the chain anchor), and balance_end_real =
+// balance_start + Σ(line amounts). Returns only the statements whose stored
+// values disagree. Read-only. Unlike CheckOdooJournalStatements — which trusts
+// Odoo's own (sometimes stale) balance_end field — this derives from the actual
+// line sums, so it catches stale stored balances the invariant check misses.
+func planStatementBalanceRewrites(creds *OdooCredentials, uid int, journalID int) ([]statementBalanceRewrite, error) {
+	res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement", "search_read",
+		[]interface{}{[]interface{}{[]interface{}{"journal_id", "=", journalID}}},
+		map[string]interface{}{
+			"fields": []string{"id", "name", "balance_start", "balance_end_real"},
+			"order":  "date asc, id asc",
+		})
+	if err != nil {
+		return nil, fmt.Errorf("fetch statements: %v", err)
+	}
+	var stmts []struct {
+		ID             int           `json:"id"`
+		Name           odooStr       `json:"name"`
+		BalanceStart   odooJSONFloat `json:"balance_start"`
+		BalanceEndReal odooJSONFloat `json:"balance_end_real"`
+	}
+	if err := json.Unmarshal(res, &stmts); err != nil {
+		return nil, fmt.Errorf("parse statements: %v", err)
+	}
+	if len(stmts) == 0 {
+		return nil, nil
+	}
+	lineSums, _, err := odooLineSumsByStatement(creds, uid, journalID)
+	if err != nil {
+		return nil, err
+	}
+	in := make([]statementBalanceInput, len(stmts))
+	for i, s := range stmts {
+		in[i] = statementBalanceInput{
+			ID: s.ID, Name: string(s.Name),
+			Start: s.BalanceStart.Float64(), End: s.BalanceEndReal.Float64(),
+			LineSum: lineSums[s.ID],
+		}
+	}
+	return computeStatementBalanceRewrites(in), nil
+}
+
+// statementBalanceInput is one statement's stored balances + actual line sum,
+// in chronological order, fed to computeStatementBalanceRewrites.
+type statementBalanceInput struct {
+	ID      int
+	Name    string
+	Start   float64
+	End     float64
+	LineSum float64
+}
+
+// computeStatementBalanceRewrites is the pure chain walk: balance_start chains
+// from the previous statement's recomputed end (first keeps its anchor), and
+// balance_end_real = balance_start + line sum. Returns only the disagreeing
+// statements.
+func computeStatementBalanceRewrites(stmts []statementBalanceInput) []statementBalanceRewrite {
+	var out []statementBalanceRewrite
+	var prevEnd float64
+	hasPrev := false
+	for i, s := range stmts {
+		// The first statement is the chain anchor — and on a cutoff journal it
+		// carries the opening balance as a line, which Odoo drops from its own
+		// running balance (the "opening_in_line" case). Recomputing its
+		// balance_end_real here as balance_start + Σlines would double-count the
+		// opening and fight repairJournalStatementChain's opening_in_line fix,
+		// so leave the first statement to that step and just chain from its
+		// stored end.
+		if i == 0 {
+			prevEnd = s.End
+			hasPrev = true
+			continue
+		}
+		bs := s.Start
+		rw := statementBalanceRewrite{ID: s.ID, Name: s.Name, OldStart: bs, OldEnd: s.End, NewStart: bs}
+		if hasPrev && math.Abs(bs-prevEnd) > 0.005 {
+			bs = prevEnd
+			rw.NewStart = prevEnd
+			rw.StartChanged = true
+		}
+		end := roundCents(bs + s.LineSum)
+		rw.NewEnd = end
+		if math.Abs(end-s.End) > 0.005 {
+			rw.EndChanged = true
+		}
+		if rw.StartChanged || rw.EndChanged {
+			out = append(out, rw)
+		}
+		prevEnd = end
+		hasPrev = true
+	}
+	return out
+}
+
+// applyStatementBalanceRewrites writes the recomputed balances (or previews them
+// in dry-run) and returns the number of statements touched.
+func applyStatementBalanceRewrites(creds *OdooCredentials, uid int, rewrites []statementBalanceRewrite, dryRun bool) int {
+	for _, rw := range rewrites {
+		if rw.StartChanged {
+			if dryRun {
+				fmt.Printf("  %s(dry-run)%s #%d %s  balance_start %s → %s\n", Fmt.Dim, Fmt.Reset, rw.ID, rw.Name, fmtEURSigned(rw.OldStart), fmtEURSigned(rw.NewStart))
+			} else if err := setStatementBalanceStart(creds, uid, rw.ID, rw.NewStart); err != nil {
+				Warnf("  %s✗ #%d %s: balance_start: %v%s", Fmt.Red, rw.ID, rw.Name, err, Fmt.Reset)
+			} else {
+				fmt.Printf("  %s✓%s #%d %s  balance_start %s → %s\n", Fmt.Green, Fmt.Reset, rw.ID, rw.Name, fmtEURSigned(rw.OldStart), fmtEURSigned(rw.NewStart))
+			}
+		}
+		if rw.EndChanged {
+			if dryRun {
+				fmt.Printf("  %s(dry-run)%s #%d %s  balance_end_real %s → %s\n", Fmt.Dim, Fmt.Reset, rw.ID, rw.Name, fmtEURSigned(rw.OldEnd), fmtEURSigned(rw.NewEnd))
+			} else if err := setStatementBalanceEndReal(creds, uid, rw.ID, rw.NewEnd); err != nil {
+				Warnf("  %s✗ #%d %s: balance_end_real: %v%s", Fmt.Red, rw.ID, rw.Name, err, Fmt.Reset)
+			} else {
+				fmt.Printf("  %s✓%s #%d %s  balance_end_real %s → %s\n", Fmt.Green, Fmt.Reset, rw.ID, rw.Name, fmtEURSigned(rw.OldEnd), fmtEURSigned(rw.NewEnd))
+			}
+		}
+	}
+	return len(rewrites)
+}
+
 // odooOrphanLine is an account.bank.statement.line in Odoo whose
 // unique_import_id has no matching local transaction — typically a stale
 // artifact from an earlier sync (a local tx that was deleted or rebuilt).
@@ -2463,6 +3337,13 @@ func findOdooOrphanStatementLines(creds *OdooCredentials, uid int, journalID int
 			latest = t
 		}
 	}
+	// Stripe is pushed straight from the raw balance-transaction archive, which
+	// can be ahead of the generated transaction view (e.g. a fee credit pushed
+	// before `chb generate` ran). Supplement localIDs with the import-ids the
+	// push actually creates so those lines aren't mistaken for orphans.
+	for id := range stripeLocalImportIDs(acc) {
+		localIDs[id] = true
+	}
 	res.LatestLocal = latest
 
 	// Fetch ALL lines (no unique_import_id filter) so we can partition the
@@ -2535,7 +3416,7 @@ func findOdooOrphanStatementLines(creds *OdooCredentials, uid int, journalID int
 			}
 			continue
 		}
-		if isStripeAggregateFeeImportID(importID) {
+		if isStripeFeeLineImportID(importID) {
 			continue
 		}
 		line := odooOrphanLine{
@@ -2598,13 +3479,16 @@ func findOdooOrphanStatementLines(creds *OdooCredentials, uid int, journalID int
 	return res, nil
 }
 
-// isStripeAggregateFeeImportID matches both the canonical
-// stripe:<acc>:open:<stmtID>:fees and the per-payout
-// stripe:<acc>:<payoutID>:fees aggregate-fee import IDs created in
-// stripe_odoo_sync.go. These lines summarize hundreds of Stripe balance
-// transactions, so no individual local tx will ever map to them.
-func isStripeAggregateFeeImportID(id string) bool {
-	return strings.HasPrefix(id, "stripe:") && strings.HasSuffix(id, ":fees")
+// isStripeFeeLineImportID matches CHB-generated Stripe fee lines: the
+// per-charge stripe:<acc>:<txn>:fee line, and the deprecated aggregate
+// stripe:<acc>:<payoutID>:fees / stripe:<acc>:open:<stmtID>:fees lines. None of
+// these map to a standalone local balance transaction (a per-charge fee shares
+// its parent charge's id with a ":fee" suffix; aggregates summarize many), so
+// the orphan check must not flag them — their lifecycle is owned by the
+// fee-repair step (detectOdooJournalFeeFixes).
+func isStripeFeeLineImportID(id string) bool {
+	return strings.HasPrefix(id, "stripe:") &&
+		(strings.HasSuffix(id, ":fee") || strings.HasSuffix(id, ":fees"))
 }
 
 type orphanMonthSummary struct {
@@ -3604,6 +4488,218 @@ func deleteStatementLines(creds *OdooCredentials, uid int, ids []int) error {
 		}
 	}
 	return nil
+}
+
+// deleteStatementLinesChunked deletes statement lines in batches so a large
+// removal (e.g. thousands of pre-cutoff legacy lines) doesn't issue one
+// oversized RPC. Returns the number of lines deleted before any error.
+func deleteStatementLinesChunked(creds *OdooCredentials, uid int, ids []int, status *statusLine) (int, error) {
+	const chunk = 200
+	done := 0
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if status != nil {
+			status.Update("Deleting pre-cutoff lines %d/%d...", end, len(ids))
+		}
+		if err := deleteStatementLines(creds, uid, ids[start:end]); err != nil {
+			return done, err
+		}
+		done = end
+	}
+	return done, nil
+}
+
+// preCutoffLine is a journal statement line dated before the linked account's
+// odooSyncSince cutoff — a legacy line from before the cutoff was adopted.
+type preCutoffLine struct {
+	ID         int
+	Date       string
+	Amount     float64
+	PaymentRef string
+	ImportID   string
+}
+
+// detectPreCutoffJournalLines returns the journal's statement lines dated
+// strictly before the cutoff, oldest first. Under the cutoff model the
+// pre-cutoff era is represented solely by the manual opening entry (dated AT
+// the cutoff, so it is never matched here); any older lines double-count and
+// must be removed.
+func detectPreCutoffJournalLines(creds *OdooCredentials, uid int, journalID int, cutoff time.Time) ([]preCutoffLine, error) {
+	res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+			[]interface{}{"date", "<", cutoff.Format("2006-01-02")},
+		}},
+		map[string]interface{}{
+			"fields": []string{"id", "date", "amount", "payment_ref", "unique_import_id"},
+			"order":  "date asc, id asc",
+			"limit":  0,
+		})
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		ID         int         `json:"id"`
+		Date       string      `json:"date"`
+		Amount     float64     `json:"amount"`
+		PaymentRef string      `json:"payment_ref"`
+		ImportID   interface{} `json:"unique_import_id"`
+	}
+	if err := json.Unmarshal(res, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]preCutoffLine, 0, len(rows))
+	for _, r := range rows {
+		imp, _ := r.ImportID.(string)
+		out = append(out, preCutoffLine{ID: r.ID, Date: r.Date, Amount: r.Amount, PaymentRef: r.PaymentRef, ImportID: imp})
+	}
+	return out, nil
+}
+
+// preCutoffBalance is the signed sum of the pre-cutoff lines — the balance the
+// journal carries into the cutoff, which a starting-balance entry must hold once
+// these lines are removed.
+func preCutoffBalance(lines []preCutoffLine) float64 {
+	var sum float64
+	for _, l := range lines {
+		sum += l.Amount
+	}
+	return roundCents(sum)
+}
+
+type openingBalanceLine struct {
+	ID           int
+	Amount       float64
+	MoveID       int
+	IsReconciled bool
+	Found        bool
+}
+
+// findOpeningBalanceLine returns an existing starting-balance entry dated at the
+// cutoff — a manual line (no unique_import_id) — or Found=false when none
+// exists. Used to avoid creating a second opening entry and to correct a wrong
+// one.
+func findOpeningBalanceLine(creds *OdooCredentials, uid int, journalID int, cutoff time.Time) (openingBalanceLine, error) {
+	res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{[]interface{}{
+			[]interface{}{"journal_id", "=", journalID},
+			[]interface{}{"date", "=", cutoff.Format("2006-01-02")},
+			[]interface{}{"unique_import_id", "=", false},
+		}},
+		map[string]interface{}{"fields": []string{"id", "amount", "move_id", "is_reconciled"}, "limit": 1})
+	if err != nil {
+		return openingBalanceLine{}, err
+	}
+	var rows []map[string]interface{}
+	if err := json.Unmarshal(res, &rows); err != nil {
+		return openingBalanceLine{}, err
+	}
+	if len(rows) == 0 {
+		return openingBalanceLine{}, nil
+	}
+	r := rows[0]
+	return openingBalanceLine{
+		ID:           odooInt(r["id"]),
+		Amount:       roundCents(odooFloat(r["amount"])),
+		MoveID:       odooFieldID(r["move_id"]),
+		IsReconciled: odooBool(r["is_reconciled"]),
+		Found:        true,
+	}, nil
+}
+
+// ensureStartingBalanceBeforeCutoff guarantees an Odoo-source-of-truth journal
+// has a correct starting-balance entry at the cutoff carrying the balance of its
+// pre-cutoff lines BEFORE those lines are deleted — otherwise removing them
+// would drop the balance they represent. The opening amount is the signed sum
+// of the pre-cutoff lines themselves (Odoo is authoritative; there is no local
+// history to derive it from). Creates the entry when absent, corrects its amount
+// when present but wrong, and is a no-op when it already matches. Returns whether
+// it wrote anything.
+func ensureStartingBalanceBeforeCutoff(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig, cutoff time.Time, preCutoff []preCutoffLine, dryRun bool) (bool, error) {
+	if len(preCutoff) == 0 {
+		return false, nil
+	}
+	opening := preCutoffBalance(preCutoff)
+	date := cutoff.Format("2006-01-02")
+	existing, err := findOpeningBalanceLine(creds, uid, journalID, cutoff)
+	if err != nil {
+		return false, fmt.Errorf("check for existing opening entry: %v", err)
+	}
+
+	if existing.Found {
+		if math.Abs(existing.Amount-opening) <= 0.005 {
+			fmt.Printf("  %s✓ Starting-balance entry at %s already carries %s%s\n", Fmt.Dim, date, fmtEURSigned(opening), Fmt.Reset)
+			return false, nil
+		}
+		if dryRun {
+			fmt.Printf("  %s(dry-run) would correct starting-balance entry #%d: %s → %s%s\n",
+				Fmt.Dim, existing.ID, fmtEURSigned(existing.Amount), fmtEURSigned(opening), Fmt.Reset)
+			return false, nil
+		}
+		if existing.IsReconciled {
+			return false, fmt.Errorf("opening entry #%d is reconciled (%s, expected %s) — unreconcile it before fixing the cutoff",
+				existing.ID, fmtEURSigned(existing.Amount), fmtEURSigned(opening))
+		}
+		if err := updateStatementLineFieldsForMetadata(creds, uid, existing.ID, existing.MoveID, map[string]interface{}{"amount": opening}); err != nil {
+			return false, fmt.Errorf("correct opening entry #%d: %v", existing.ID, err)
+		}
+		fmt.Printf("  %s✓ Corrected starting-balance entry #%d to %s%s\n", Fmt.Green, existing.ID, fmtEURSigned(opening), Fmt.Reset)
+		return true, nil
+	}
+
+	if opening == 0 {
+		return false, nil // nothing to carry forward
+	}
+	if dryRun {
+		fmt.Printf("  %s(dry-run) would create starting-balance entry %s: %s (sum of %s before the cutoff)%s\n",
+			Fmt.Dim, date, fmtEURSigned(opening), Pluralize(len(preCutoff), "line", ""), Fmt.Reset)
+		return false, nil
+	}
+	vals := map[string]interface{}{
+		"journal_id":  journalID,
+		"date":        date,
+		"payment_ref": fmt.Sprintf("Solde de départ %s", date),
+		"amount":      opening,
+		"narration": fmt.Sprintf(
+			"Starting balance at %s: signed sum of the %d journal lines dated before the cutoff (Odoo is the source of truth for %s).",
+			date, len(preCutoff), acc.Slug),
+	}
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "create", []interface{}{vals}, nil); err != nil {
+		return false, fmt.Errorf("create starting-balance entry: %v", err)
+	}
+	fmt.Printf("  %s✓ Created starting-balance entry %s: %s%s\n", Fmt.Green, date, fmtEURSigned(opening), Fmt.Reset)
+	return true, nil
+}
+
+// printPreCutoffLines previews the pre-cutoff lines and their total, explaining
+// why they double-count.
+func printPreCutoffLines(lines []preCutoffLine, cutoff time.Time, currency string) {
+	var sum float64
+	for _, l := range lines {
+		sum += l.Amount
+	}
+	fmt.Printf("\n  %s%d statement line%s dated before the %s cutoff (total %s)%s\n",
+		Fmt.Yellow, len(lines), plural(len(lines)), cutoff.Format("2006-01-02"), formatBalance(sum, currency), Fmt.Reset)
+	fmt.Printf("  %sodooSyncSince=%s carries the pre-cutoff balance in the opening entry, so these legacy lines double-count.%s\n",
+		Fmt.Dim, cutoff.Format("2006-01-02"), Fmt.Reset)
+	const preview = 8
+	for i, l := range lines {
+		if i >= preview {
+			fmt.Printf("    %s… and %d more%s\n", Fmt.Dim, len(lines)-preview, Fmt.Reset)
+			break
+		}
+		ref := l.PaymentRef
+		if len(ref) > 44 {
+			ref = ref[:43] + "…"
+		}
+		fmt.Printf("    %s%s  %14s  %s%s\n", Fmt.Dim, l.Date, formatBalance(l.Amount, currency), ref, Fmt.Reset)
+	}
 }
 
 // setStatementBalanceStart overwrites the balance_start of an existing statement.

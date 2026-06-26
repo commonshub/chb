@@ -5139,7 +5139,7 @@ func fetchOdooStatementLinesByImportID(creds *OdooCredentials, uid int, importID
 		}
 		rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
 			[]interface{}{[]interface{}{"unique_import_id", "in", values}},
-			[]string{"id", "date", "payment_ref", "narration", "partner_id", "partner_bank_id", "amount", "unique_import_id", "journal_id", "move_id", "statement_id", "create_date", "write_date"},
+			[]string{"id", "date", "payment_ref", "narration", "partner_id", "partner_bank_id", "amount", "unique_import_id", "journal_id", "move_id", "statement_id", "is_reconciled", "create_date", "write_date"},
 			"date desc, id desc",
 		)
 		if err != nil {

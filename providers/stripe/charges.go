@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +36,14 @@ type Charge struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 	CustomFields    map[string]string `json:"customFields,omitempty"`
 	PaymentLink     string            `json:"paymentLink,omitempty"`
+	ProductID       string            `json:"productId,omitempty"`
+	ProductName     string            `json:"productName,omitempty"`
+	// Enriched is true once the checkout session and its line items were
+	// fetched successfully (or there was no session to fetch). The backfill
+	// re-fetches any charge that isn't enriched yet, so a charge whose session
+	// data was lost (e.g. a failed/incomplete earlier fetch) is recovered, and
+	// the pass still converges once everything succeeds.
+	Enriched bool `json:"enriched,omitempty"`
 }
 
 var KnownApps = map[string]string{
@@ -63,7 +72,10 @@ func FetchChargesWithProgress(apiKey, accountID string, chargeIDs []string, prog
 	}
 
 	for i, chargeID := range unique {
-		if progress != nil && (i == 0 || (i+1)%10 == 0 || i+1 == len(unique)) {
+		// Report every charge: this loop can run for hundreds of charges
+		// (especially the product backfill), so a per-charge counter is what
+		// keeps the user from thinking it has hung.
+		if progress != nil {
 			progress(providers.ProgressEvent{
 				Source:  Source,
 				Step:    "fetch_charges",
@@ -72,7 +84,18 @@ func FetchChargesWithProgress(apiKey, accountID string, chargeIDs []string, prog
 				Total:   len(unique),
 			})
 		}
-		charge, err := fetchSingleCharge(apiKey, accountID, chargeID)
+		// Retry transient failures (rate limits, network blips) instead of
+		// silently dropping the charge — a dropped charge loses the customer /
+		// metadata / paymentLink the classifier needs, so the tx falls back to
+		// a default category. FillMissingCharges catches anything still absent.
+		var charge *Charge
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			if charge, err = fetchSingleCharge(apiKey, accountID, chargeID); err == nil {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+		}
 		if err != nil {
 			continue
 		}
@@ -81,6 +104,124 @@ func FetchChargesWithProgress(apiKey, accountID string, chargeIDs []string, prog
 	}
 
 	return result, nil
+}
+
+// FillMissingCharges scans every archived balance transaction, finds the
+// charge-kind ones whose charge object is not in the local archive, fetches the
+// missing charges, and saves them back into their month files. This makes
+// `chb accounts stripe pull` self-healing: a charge dropped by a transient
+// fetch error on an earlier run is recovered, so classification always has the
+// customer / metadata / paymentLink it needs. Returns the number recovered.
+func FillMissingCharges(dataDir, apiKey, accountID string, progress providers.ProgressFunc) (int, error) {
+	// Collect every charge id referenced by a BT, grouped by the BT's month,
+	// and the set of charge ids already on disk.
+	chargeMonth := map[string]string{} // chargeID -> "YYYY-MM"
+	have := map[string]bool{}
+	needEnrich := map[string]bool{} // present locally but session/product not yet fetched
+	years, err := os.ReadDir(dataDir)
+	if err != nil {
+		return 0, err
+	}
+	for _, y := range years {
+		if !y.IsDir() {
+			continue
+		}
+		months, err := os.ReadDir(filepath.Join(dataDir, y.Name()))
+		if err != nil {
+			continue
+		}
+		for _, m := range months {
+			if !m.IsDir() {
+				continue
+			}
+			ym := y.Name() + "-" + m.Name()
+			localCharges, _ := LoadChargeData(dataDir, y.Name(), m.Name())
+			for id, ch := range localCharges {
+				have[id] = true
+				// A charge whose checkout session / product hasn't been
+				// successfully fetched yet (predates product fetching, or an
+				// earlier fetch failed) is re-fetched once to backfill the
+				// session (payment link, metadata) and product. The Enriched
+				// flag makes this converge — once fetched, it's left alone.
+				if ch != nil && !ch.Enriched {
+					needEnrich[id] = true
+					if _, seen := chargeMonth[id]; !seen {
+						chargeMonth[id] = ym
+					}
+				}
+			}
+			path := TransactionCachePath(dataDir, y.Name(), m.Name())
+			data, rerr := os.ReadFile(path)
+			if rerr != nil {
+				continue
+			}
+			var cache CacheFile
+			if json.Unmarshal(data, &cache) != nil {
+				continue
+			}
+			for _, tx := range cache.Transactions {
+				if cid := ExtractChargeID(tx.Source); cid != "" {
+					if _, seen := chargeMonth[cid]; !seen {
+						chargeMonth[cid] = ym
+					}
+				}
+			}
+		}
+	}
+
+	var missing []string
+	for cid := range chargeMonth {
+		if !have[cid] || needEnrich[cid] {
+			missing = append(missing, cid)
+		}
+	}
+	if len(missing) == 0 {
+		return 0, nil
+	}
+
+	// Announce the count up front — the scan above is silent and the fetch
+	// below can take minutes, so tell the caller how much work is queued.
+	if progress != nil {
+		progress(providers.ProgressEvent{
+			Source: Source,
+			Step:   "fetch_charges",
+			Detail: "charge_backfill_begin",
+			Total:  len(missing),
+		})
+	}
+
+	charges, err := FetchChargesWithProgress(apiKey, accountID, missing, progress)
+	if err != nil {
+		return 0, err
+	}
+	// Group recovered charges by their BT's month and merge into each file.
+	byMonth := map[string]map[string]*Charge{}
+	for cid, ch := range charges {
+		ym := chargeMonth[cid]
+		if byMonth[ym] == nil {
+			byMonth[ym] = map[string]*Charge{}
+		}
+		byMonth[ym][cid] = ch
+	}
+	recovered := 0
+	for ym, monthCharges := range byMonth {
+		parts := strings.Split(ym, "-")
+		if len(parts) != 2 {
+			continue
+		}
+		existing, refunds := LoadChargeData(dataDir, parts[0], parts[1])
+		if existing == nil {
+			existing = map[string]*Charge{}
+		}
+		for id, ch := range monthCharges {
+			existing[id] = ch
+			recovered++
+		}
+		if err := SaveChargeData(dataDir, parts[0], parts[1], existing, refunds); err != nil {
+			return recovered, err
+		}
+	}
+	return recovered, nil
 }
 
 func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
@@ -153,9 +294,20 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
 		piID = piStr
 	}
 
+	// enriched stays true unless a session/line-items fetch we attempt fails
+	// transiently — then the charge is left un-enriched so the backfill retries.
+	enriched := true
 	if piID != "" {
+		// NOTE: line_items is NOT expandable on the checkout-sessions *list*
+		// endpoint — passing expand[]=data.line_items there makes Stripe reject
+		// the whole request, dropping payment_link/metadata too. So list the
+		// session plainly here, then fetch its line items (with the product)
+		// from the dedicated per-session endpoint below.
 		sessionURL := fmt.Sprintf("https://api.stripe.com/v1/checkout/sessions?payment_intent=%s", piID)
 		sessionRaw, err := get(apiKey, accountID, sessionURL)
+		if err != nil {
+			enriched = false
+		}
 		if err == nil {
 			var sessionResp struct {
 				Data []struct {
@@ -202,10 +354,41 @@ func fetchSingleCharge(apiKey, accountID, chargeID string) (*Charge, error) {
 					}
 				}
 				charge.PaymentLink = session.PaymentLink
+				// Line items (and the product behind them) ARE expandable on the
+				// per-session endpoint — fetch what was actually bought.
+				if session.ID != "" {
+					liURL := fmt.Sprintf("https://api.stripe.com/v1/checkout/sessions/%s/line_items?limit=1&expand[]=data.price.product", session.ID)
+					liRaw, lerr := get(apiKey, accountID, liURL)
+					if lerr != nil {
+						enriched = false
+					}
+					if lerr == nil {
+						var liResp struct {
+							Data []struct {
+								Description string `json:"description"`
+								Price       struct {
+									Product struct {
+										ID   string `json:"id"`
+										Name string `json:"name"`
+									} `json:"product"`
+								} `json:"price"`
+							} `json:"data"`
+						}
+						if json.Unmarshal(liRaw, &liResp) == nil && len(liResp.Data) > 0 {
+							li := liResp.Data[0]
+							charge.ProductID = li.Price.Product.ID
+							charge.ProductName = li.Price.Product.Name
+							if charge.ProductName == "" {
+								charge.ProductName = li.Description
+							}
+						}
+					}
+				}
 			}
 		}
 	}
 
+	charge.Enriched = enriched
 	return charge, nil
 }
 
@@ -325,7 +508,10 @@ func ExtractSourceID(source json.RawMessage) string {
 
 func ExtractChargeID(source json.RawMessage) string {
 	id := ExtractSourceID(source)
-	if strings.HasPrefix(id, "ch_") {
+	// ch_ is a card charge; py_ is the charge object Stripe issues for
+	// non-card payments (SEPA, Bancontact, etc.). Both are fetchable via
+	// /v1/charges/<id> and carry the customer / checkout-session / product.
+	if strings.HasPrefix(id, "ch_") || strings.HasPrefix(id, "py_") {
 		return id
 	}
 	return ""

@@ -27,6 +27,37 @@ type EtherscanResponse struct {
 type TokenTransfer = etherscansource.TokenTransfer
 type TransactionsCacheFile = etherscansource.CacheFile
 
+// mergeFetchedChargesIntoMonth loads the month's existing charges + refund map
+// from disk and overlays this run's freshly-fetched ones, returning the merged
+// sets and the count of newly-seen charges. This is what makes incremental
+// pulls non-destructive: building the month's charges only from the current
+// run would drop every charge fetched earlier (an incremental pull fetches just
+// the NEW balance transactions), silently shrinking charges.json — which is how
+// Emily Carey's charge (and most of June) got wiped.
+func mergeFetchedChargesIntoMonth(dataDir, year, month string, fetched map[string]*stripesource.Charge, refunds map[string]string) (map[string]*stripesource.Charge, map[string]string, int) {
+	merged, mergedRefunds := stripesource.LoadChargeData(dataDir, year, month)
+	if merged == nil {
+		merged = map[string]*stripesource.Charge{}
+	}
+	if mergedRefunds == nil {
+		mergedRefunds = map[string]string{}
+	}
+	added := 0
+	for id, ch := range fetched {
+		if ch == nil {
+			continue
+		}
+		if _, had := merged[id]; !had {
+			added++
+		}
+		merged[id] = ch
+	}
+	for k, v := range refunds {
+		mergedRefunds[k] = v
+	}
+	return merged, mergedRefunds, added
+}
+
 func TransactionsSync(args []string) (int, error) {
 	startedAt := time.Now()
 	if HasFlag(args, "--help", "-h", "help") {
@@ -491,6 +522,20 @@ func TransactionsSync(args []string) (int, error) {
 						totalProcessed += len(monthTxs)
 					}
 
+					// Self-heal: recover any charge whose object is missing locally
+					// (dropped by a transient fetch error on an earlier run), so
+					// classification always has the customer / metadata / paymentLink
+					// it needs. Runs every pull, regardless of monthsToUpdate.
+					status.Update("Scanning local Stripe archive for missing / product-less charges...")
+					if n, ferr := stripesource.FillMissingCharges(DataDir(), stripeKey, acc.AccountID, stripeChargeProgress(status)); ferr != nil {
+						status.Clear()
+						Warnf("  %s⚠ Could not recover missing charges: %v%s", Fmt.Yellow, ferr, Fmt.Reset)
+					} else if n > 0 {
+						status.Clear()
+						fmt.Printf("  %s✓ Backfilled %s (customer/product details)%s\n", Fmt.Green, Pluralize(n, "Stripe charge", ""), Fmt.Reset)
+					}
+					status.Clear()
+
 					// Fetch Stripe charge details (customer name, app, metadata) only for months being updated.
 					if len(monthsToUpdate) == 0 {
 						continue
@@ -544,26 +589,32 @@ func TransactionsSync(args []string) (int, error) {
 						status.Clear()
 						Errorf("  %s✗ %v%s", Fmt.Red, err, Fmt.Reset)
 					} else {
-						// Save per month
+						// Save per month — MERGE into the existing file. An incremental
+						// pull only fetches NEW balance transactions, so building the
+						// month's charges solely from this run's `charges` would drop
+						// every charge fetched on an earlier run (and silently undo the
+						// FillMissingCharges backfill). Load what's on disk first, then
+						// overlay this run's freshly-fetched charges.
 						for _, ym := range updatedMonths {
-							monthTxs := byMonth[ym]
-							monthCharges := map[string]*stripesource.Charge{}
-							for _, tx := range monthTxs {
+							parts := strings.Split(ym, "-")
+							if len(parts) != 2 {
+								continue
+							}
+							fetched := map[string]*stripesource.Charge{}
+							for _, tx := range byMonth[ym] {
 								chID := chargeByTxn[tx.ID]
 								if ch, ok := charges[chID]; ok {
-									monthCharges[chID] = ch
+									fetched[chID] = ch
 								}
 							}
+							monthCharges, monthRefunds, added := mergeFetchedChargesIntoMonth(DataDir(), parts[0], parts[1], fetched, refundToCharge)
 							if len(monthCharges) > 0 {
-								parts := strings.Split(ym, "-")
-								if len(parts) == 2 {
-									relPath := stripesource.RelPath(stripesource.ChargesFile)
-									status.Update("Writing %s...", displayMonthRelPath(parts[0], parts[1], relPath))
-									_ = stripesource.SaveChargeData(DataDir(), parts[0], parts[1], monthCharges, refundToCharge)
-									status.Clear()
-									printMonthHeadingOnce(ym, printedMonths)
-									fmt.Printf("  %s✓%s %s (%d charges)\n", Fmt.Green, Fmt.Reset, filepath.ToSlash(relPath), len(monthCharges))
-								}
+								relPath := stripesource.RelPath(stripesource.ChargesFile)
+								status.Update("Writing %s...", displayMonthRelPath(parts[0], parts[1], relPath))
+								_ = stripesource.SaveChargeData(DataDir(), parts[0], parts[1], monthCharges, monthRefunds)
+								status.Clear()
+								printMonthHeadingOnce(ym, printedMonths)
+								fmt.Printf("  %s✓%s %s (%d charges, +%d new)\n", Fmt.Green, Fmt.Reset, filepath.ToSlash(relPath), len(monthCharges), added)
 							}
 						}
 
@@ -1168,7 +1219,18 @@ func stripeTransactionProgress(status *statusLine) providers.ProgressFunc {
 
 func stripeChargeProgress(status *statusLine) providers.ProgressFunc {
 	return func(ev providers.ProgressEvent) {
-		if ev.Source == "stripe" && ev.Step == "fetch_charges" && ev.Detail == "charge_session" {
+		if ev.Source != "stripe" || ev.Step != "fetch_charges" {
+			return
+		}
+		switch ev.Detail {
+		case "charge_backfill_begin":
+			// Persistent header (survives the in-place status updates) so the
+			// user sees how many charges are queued and roughly how long.
+			status.Clear()
+			mins := (ev.Total + 199) / 200 // ~200 charges/min at ~0.3s each
+			fmt.Printf("  %s↻ Backfilling %s with customer/product details (~%d min)...%s\n",
+				Fmt.Dim, Pluralize(ev.Total, "Stripe charge", ""), mins, Fmt.Reset)
+		case "charge_session":
 			status.Update("Fetching Stripe charge records... %d/%d", ev.Current, ev.Total)
 		}
 	}

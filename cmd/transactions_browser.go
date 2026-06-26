@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	stickertable "github.com/76creates/stickers/table"
@@ -711,6 +712,7 @@ func txSearchableText(tx TransactionEntry) string {
 		tx.Collective,
 		tx.Event,
 		tx.Application,
+		txAccountCode(tx), // so `--search 740040` / the interactive search filters by GL account
 	}
 	if desc := stringMetadata(tx.Metadata, "description"); desc != "" {
 		parts = append(parts, desc)
@@ -788,7 +790,9 @@ func buildStickerRows(txs []TransactionEntry) [][]string {
 
 var columnHeaders = []string{"Date", "Source", "Collective", "Category", "Counterparty", "Description", "Amount"}
 
-const amountColumnIndex = 6
+// Index of the Amount column in legacyTransactionTableColumns():
+// Date, Account, Collective, Category, Account #, Counterparty, Description, Amount, Reconciled.
+const amountColumnIndex = 7
 
 type txTableColumnKind string
 
@@ -798,11 +802,36 @@ const (
 	txColumnSource       txTableColumnKind = "source"
 	txColumnCollective   txTableColumnKind = "collective"
 	txColumnCategory     txTableColumnKind = "category"
+	txColumnAccountCode  txTableColumnKind = "accountCode"
 	txColumnCounterparty txTableColumnKind = "counterparty"
 	txColumnDescription  txTableColumnKind = "description"
 	txColumnAmount       txTableColumnKind = "amount"
 	txColumnReconciled   txTableColumnKind = "reconciled"
 )
+
+var (
+	browserOdooMappingsOnce sync.Once
+	browserOdooMappings     []OdooMapping
+)
+
+// txAccountCode resolves the Odoo GL account code (e.g. 740040) a transaction
+// maps to, from its (effective) category via odoo_mapping.json. Mappings are
+// loaded once per process. Empty when the category has no mapping.
+func txAccountCode(tx TransactionEntry) string {
+	cat := txDisplayCategory(tx)
+	if cat == "" {
+		return ""
+	}
+	browserOdooMappingsOnce.Do(func() {
+		browserOdooMappings, _ = LoadOdooMappings()
+	})
+	probe := tx
+	probe.Category = cat
+	if m := LookupOdooMapping(browserOdooMappings, probe); m != nil {
+		return m.Set.AccountCode
+	}
+	return ""
+}
 
 type txTableColumn struct {
 	Header   string
@@ -828,6 +857,7 @@ func transactionTableColumns(showAccount bool, includeSelection bool) []txTableC
 	cols = append(cols,
 		txTableColumn{Header: "Collective", Kind: txColumnCollective, Ratio: 4, MinWidth: 12},
 		txTableColumn{Header: "Category", Kind: txColumnCategory, Ratio: 4, MinWidth: 10},
+		txTableColumn{Header: "Account #", Kind: txColumnAccountCode, Ratio: 2, MinWidth: 9},
 		txTableColumn{Header: "Counterparty", Kind: txColumnCounterparty, Ratio: 5, MinWidth: 12},
 		txTableColumn{Header: "Description", Kind: txColumnDescription, Ratio: 8, MinWidth: 12},
 		txTableColumn{Header: "Amount", Kind: txColumnAmount, Ratio: 4, MinWidth: 9},
@@ -900,6 +930,8 @@ func transactionCellValue(tx TransactionEntry, kind txTableColumnKind, selected 
 		return txDisplayCollective(tx)
 	case txColumnCategory:
 		return txDisplayCategory(tx)
+	case txColumnAccountCode:
+		return txAccountCode(tx)
 	case txColumnCounterparty:
 		return txDisplayCounterparty(tx)
 	case txColumnDescription:
@@ -1100,6 +1132,8 @@ func transactionSortValueForKind(tx TransactionEntry, kind txTableColumnKind) st
 		return strings.ToLower(txDisplayCollective(tx))
 	case txColumnCategory:
 		return strings.ToLower(txDisplayCategory(tx))
+	case txColumnAccountCode:
+		return txAccountCode(tx)
 	case txColumnCounterparty:
 		return strings.ToLower(txDisplayCounterparty(tx))
 	case txColumnDescription:
@@ -2458,6 +2492,12 @@ func (m txBrowserModel) renderDetailBox() string {
 	add("Description", txDisplayDescription(*tx))
 	add("Category", txDisplayCategory(*tx))
 	add("Collective", txDisplayCollective(*tx))
+	if prod := firstNonEmptyStripeMetadata(tx.Metadata, "product", "productName"); prod != "" {
+		add("Product", prod)
+	}
+	if pl := stringMetadata(tx.Metadata, "paymentLink"); pl != "" {
+		add("Payment Link", pl)
+	}
 	if tx.Event != "" {
 		add("Event", tx.Event)
 	}

@@ -60,7 +60,11 @@ type odooLineReconcileResult struct {
 }
 
 func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose bool) error {
-	return odooJournalReconcileInteractive(creds, uid, journalID, assumeYes, dryRun, verbose, false)
+	// Auto-reconcile after a push: do NOT run the partner-linking pass. It's a
+	// deliberate, journal-wide "create partners" operation that scans every
+	// no-partner line (thousands on a Stripe journal) and belongs in the
+	// explicit `chb odoo journals <id> reconcile` command, not on every push.
+	return odooJournalReconcileInteractive(creds, uid, journalID, assumeYes, dryRun, verbose, false, false)
 }
 
 // odooJournalReconcileInteractive is the variant that surfaces the
@@ -72,7 +76,7 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 // so the summary you see before confirming is what gets applied. Live mode adds
 // a counterpart-reset pre-pass (only run after confirmation) and an apply phase
 // that actually calls account.move.line.reconcile via XML-RPC.
-func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose, interactive bool) error {
+func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose, interactive, linkPartners bool) error {
 	header := "Reconcile preview for journal #%d (local-only)"
 	if !dryRun {
 		// Show the write target up front — before the confirm prompt, so
@@ -81,6 +85,26 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 		header = "Reconciling journal #%d"
 	}
 	fmt.Printf("\n  %s"+header+"%s\n\n", Fmt.Bold, journalID, Fmt.Reset)
+
+	// Ensure every line is linked to a partner before matching invoices —
+	// reconciliation keys off the partner, and a freshly-linked partner lets
+	// the matcher below find that counterparty's open invoices/bills. Only on
+	// the explicit reconcile command (linkPartners); the post-push auto-pass
+	// skips it to stay fast.
+	if linkPartners {
+		if err := linkStatementLinePartners(creds, uid, journalID, assumeYes, dryRun); err != nil {
+			Warnf("  %s⚠ Partner linking skipped: %v%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+		// Durably link every Stripe customer to its partner by attaching the
+		// customer id as a bank account (so future lines match on the id).
+		if !dryRun {
+			if acc := linkedAccountForJournal(journalID); acc != nil && acc.Provider == "stripe" {
+				if err := attachStripeCustomerIDs(creds, uid, journalID, acc); err != nil {
+					Warnf("  %s⚠ Stripe customer-id attach skipped: %v%s", Fmt.Yellow, err, Fmt.Reset)
+				}
+			}
+		}
+	}
 
 	Progress("computing reconcile matches")
 	set, _, err := computeReconcileMatches(journalID, interactive)

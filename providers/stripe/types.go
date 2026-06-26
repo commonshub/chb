@@ -9,6 +9,7 @@ const (
 	CustomersFile           = "customers.json"
 	SubscriptionsFile       = "subscriptions.json"
 	PayoutsFile             = "payouts.json"
+	ProductsFile            = "products.json"
 )
 
 // Transaction represents a Stripe balance transaction archived by the source.

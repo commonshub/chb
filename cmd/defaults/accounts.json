@@ -137,6 +137,7 @@
     "provider": "kbcbrussels",
     "iban": "BE46734072238636",
     "currency": "EUR",
+    "odooSyncSince": "2025-01-01",
     "odooSourceOfTruth": true
   },
   {
