@@ -324,11 +324,11 @@ func printAttachmentsSyncHelp() {
   With %s--history%s, processes all historical months with Odoo provider data.
 
   Reads:
-    data/YYYY/MM/providers/odoo/private/invoices.json
-    data/YYYY/MM/providers/odoo/private/bills.json
+    data/YYYY/MM/providers/odoo/<db>/private/invoices.json
+    data/YYYY/MM/providers/odoo/<db>/private/bills.json
 
   Downloads listed attachment binaries or URL attachments and stores them under:
-    data/YYYY/MM/providers/odoo/private/attachments/{invoices|bills}/{documentId}/{attachmentId}.{ext}
+    data/YYYY/MM/providers/odoo/<db>/private/attachments/{invoices|bills}/{documentId}/{attachmentId}.{ext}
 
   Existing files are skipped unless --force is used.
 

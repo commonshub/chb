@@ -93,7 +93,7 @@ func attachTxToInvoiceCandidate(line OdooCacheLine, journalID int, cand reconcil
 		PartnerName:    cand.PartnerName,
 		AmountResidual: cand.Residual,
 	}
-	if err := reconcileStatementLineWithMove(creds, uid, stmtLine, moveCand); err != nil {
+	if err := reconcileStatementLineWithMove(creds, uid, stmtLine, moveCand, true); err != nil {
 		return err
 	}
 	if cached, ok := loadLatestOdooJournalLinesCache(journalID); ok {

@@ -97,6 +97,11 @@ type OdooOutgoingInvoicePublic struct {
 	UntaxedAmount         float64                    `json:"untaxedAmount"`
 	VATAmount             float64                    `json:"vatAmount"`
 	TotalAmount           float64                    `json:"totalAmount"`
+	// AmountResidual is the still-owed balance (0 when fully paid). For a
+	// partially-paid move it's the remaining amount — what reconcile should match
+	// the next bank line against. omitempty + a re-pull populates it; older
+	// caches without it fall back to TotalAmount.
+	AmountResidual        float64                    `json:"amountResidual,omitempty"`
 	Currency              string                     `json:"currency,omitempty"`
 	Journal               OdooInvoiceJournal         `json:"journal"`
 	LineItems             []OdooInvoiceLineItem      `json:"lineItems"`
@@ -1533,7 +1538,10 @@ func isInvoiceMonthCacheUnchanged(dataDir, year, month string, nextPublic OdooOu
 		currentPublic.Count == nextPublic.Count &&
 		currentPrivate.Count == nextPrivate.Count &&
 		currentPublic.MaxWriteDate == nextPublic.MaxWriteDate &&
-		currentPrivate.MaxWriteDate == nextPrivate.MaxWriteDate
+		currentPrivate.MaxWriteDate == nextPrivate.MaxWriteDate &&
+		// Payment reconciliation doesn't bump write_date — compare payment_state
+		// / state explicitly so a now-paid invoice is actually rewritten.
+		publicMoveStatusUnchanged(currentPublic.Invoices, nextPublic.Invoices)
 }
 
 func maxInvoiceWriteDate(invoices []OdooOutgoingInvoice) string {
@@ -1561,6 +1569,7 @@ func buildPublicInvoices(invoices []OdooOutgoingInvoice) []OdooOutgoingInvoicePu
 			UntaxedAmount:         inv.UntaxedAmount,
 			VATAmount:             inv.VATAmount,
 			TotalAmount:           inv.TotalAmount,
+			AmountResidual:        inv.ResidualAmount,
 			Currency:              inv.Currency,
 			Journal:               inv.Journal,
 			LineItems:             inv.LineItems,
@@ -2016,8 +2025,8 @@ func printInvoicesSyncHelp() {
 
 %sDATA%s
   Saves monthly invoice snapshots to:
-    DATA_DIR/YYYY/MM/providers/odoo/invoices.json
-    DATA_DIR/YYYY/MM/providers/odoo/private/invoices.json
+    DATA_DIR/YYYY/MM/providers/odoo/<db>/invoices.json
+    DATA_DIR/YYYY/MM/providers/odoo/<db>/private/invoices.json
 
   Each invoice includes:
   • public: date, status, payment status, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction

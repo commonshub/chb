@@ -291,7 +291,8 @@ func PrintSyncAllHelp() {
 
 %sProviders:%s calendars (room bookings and public events), transactions (Gnosis/Stripe/Monerium),
 invoices/bills/attachments (Odoo), messages (Discord), members (Stripe/Odoo), images (Discord/Luma).
-For the full loop (pull + push), use: chb sync.
+After fetching, runs an incremental generate — only the months/sections whose source data
+changed are rebuilt (use --no-generate to skip). For the full loop (pull + push), use: chb sync.
 
 %sUSAGE%s
   %schb pull%s [year[/month]] [options]
@@ -312,6 +313,7 @@ For the full loop (pull + push), use: chb sync.
 
 %sOPTIONS%s
   %s--force%s              Re-fetch even if cached data exists
+  %s--no-generate%s        Pull only; skip the incremental generate afterwards
   %s--verbose, -v%s        Show per-step progress instead of the compact view
   %s--help, -h%s           Show this help
 
@@ -348,6 +350,7 @@ For the full loop (pull + push), use: chb sync.
 		f.Yellow, f.Reset,
 		f.Bold, f.Reset, // OPTIONS
 		f.Yellow, f.Reset, // --force
+		f.Yellow, f.Reset, // --no-generate
 		f.Yellow, f.Reset, // --verbose
 		f.Yellow, f.Reset, // --help
 		f.Bold, f.Reset, // EXAMPLES

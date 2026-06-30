@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/providers/odoo"
 )
 
 // SyncCursor is the per-target / per-provider state we track so a
@@ -60,8 +62,13 @@ func syncCursorDir() string {
 }
 
 // SyncCursorKeyForOdooJournal returns the canonical key for an Odoo
-// journal's push cursor. Keeps the naming consistent across callers.
+// journal's push cursor, scoped to the active database so the same journal id
+// on a different Odoo database keeps a separate cursor. Keeps the naming
+// consistent across callers.
 func SyncCursorKeyForOdooJournal(journalID int) string {
+	if ns := odoosource.PathNamespace(); ns != "" {
+		return "odoo." + ns + ".journal." + intToString(journalID)
+	}
 	return "odoo.journal." + intToString(journalID)
 }
 

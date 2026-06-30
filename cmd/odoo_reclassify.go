@@ -46,11 +46,18 @@ func detectStripePaymentRefFixes(creds *OdooCredentials, uid, journalID int, acc
 		if hasCutoff && bt.Created < cutoffUnix {
 			continue
 		}
-		// Payout lines are labelled specially by the push (payoutStatementLabels,
-		// "Manual payout <date>"), not by stripeOdooPaymentRef — so re-deriving a
-		// label for them would propose a bogus change. Leave them alone.
+		// Payout lines are labelled by btPaymentRef (the payout's description),
+		// not by the category-driven stripeOdooPaymentRef. Re-derive that label
+		// directly so stale auto-generated labels (e.g. "Manual payout
+		// 1970-01-01") get repaired to the payout's memo, then skip the
+		// category logic below. payout_cancel has no meaningful label to fix.
 		switch strings.ToLower(bt.Type) {
-		case "payout", "payout_cancel":
+		case "payout_cancel":
+			continue
+		case "payout":
+			if importID := stripeBTImportID(acc, bt); importID != "" {
+				expectedRef[importID] = btPaymentRef(bt)
+			}
 			continue
 		}
 		importID := stripeBTImportID(acc, bt)
@@ -109,11 +116,10 @@ func detectStripePaymentRefFixes(creds *OdooCredentials, uid, journalID int, acc
 	}
 	var out []stripePaymentRefFix
 	for _, c := range cands {
-		if c.Recon {
-			switch counterpart[c.MoveID].AccountType {
-			case "asset_receivable", "liability_payable":
-				continue // truly invoice-matched — preserve
-			}
+		// Truly invoice-matched lines (reconciled A/R or A/P counterpart) are
+		// preserved; a categorized or over-categorized line is safe to relabel.
+		if c.Recon && stripeCounterpartIsInvoiceMatched(counterpart[c.MoveID]) {
+			continue
 		}
 		out = append(out, stripePaymentRefFix{LineID: c.LineID, MoveID: c.MoveID, ImportID: c.ImportID, Old: c.Old, New: c.New})
 	}
@@ -208,7 +214,13 @@ func detectStripeFeeAccountFixes(creds *OdooCredentials, uid, journalID int, acc
 	}
 	var out []stripeFeeAccountFix
 	for _, l := range lines {
-		cur := codeByID[counterpart[l.MoveID].AccountID]
+		cp := counterpart[l.MoveID]
+		// Never re-account a fee line that's reconciled against an invoice/bill —
+		// that match takes precedence (and drafting it would break it).
+		if stripeCounterpartIsInvoiceMatched(cp) {
+			continue
+		}
+		cur := codeByID[cp.AccountID]
 		if cur != feeCode {
 			out = append(out, stripeFeeAccountFix{LineID: l.ID, ImportID: l.ImportID, OldCode: cur})
 		}
@@ -313,7 +325,7 @@ func fetchAccountCodesByID(creds *OdooCredentials, uid int, ids []int) (map[int]
 // Only lines whose category resolves to a mapped account are considered — lines
 // with no mapping keep whatever account they have (no clobbering of manual or
 // default-revenue postings).
-func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journalID int, acc *AccountConfig) ([]odooLineAccountFix, error) {
+func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journalID int, acc *AccountConfig, remap bool) ([]odooLineAccountFix, error) {
 	if acc == nil {
 		return nil, nil
 	}
@@ -347,16 +359,32 @@ func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journ
 			expected[importID] = code
 		}
 	}
+
+	// Fetch payment_ref + amount too: for an Odoo-source-of-truth journal (KBC),
+	// the entries originate in Odoo, not the local mirror, so the local tx may
+	// carry no category. Categorise the Odoo line's own narration via the rules
+	// — that's how a freshly-added `cp-order-…` drink line resolves to 700003.
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
+		[]string{"id", "unique_import_id", "move_id", "payment_ref", "amount"}, "id asc")
+	if err != nil {
+		return nil, err
+	}
+	if cz := newCategorizerOrNil(); cz != nil {
+		for _, r := range rows {
+			importID := odooString(r["unique_import_id"])
+			if importID == "" || expected[importID] != "" {
+				continue
+			}
+			if code := proposeAccountFromOdooNarration(cz, mappings, acc.Provider, odooString(r["payment_ref"]), odooFloat(r["amount"])); code != "" {
+				expected[importID] = code
+			}
+		}
+	}
 	if len(expected) == 0 {
 		return nil, nil
 	}
 
-	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
-		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
-		[]string{"id", "unique_import_id", "move_id"}, "id asc")
-	if err != nil {
-		return nil, err
-	}
 	type lineRow struct {
 		ID, MoveID int
 		ImportID   string
@@ -390,13 +418,56 @@ func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journ
 	}
 	var out []odooLineAccountFix
 	for _, l := range lines {
-		want := expected[l.ImportID]
-		cur := codeByID[counterpart[l.MoveID].AccountID]
-		if want != "" && want != cur {
-			out = append(out, odooLineAccountFix{LineID: l.ID, ImportID: l.ImportID, OldCode: cur, NewCode: want})
+		cp := counterpart[l.MoveID]
+		// A line reconciled against an invoice/bill (receivable/payable
+		// counterpart) is left alone — that match always takes precedence over
+		// category→account reclassification, and re-accounting it would draft
+		// and break the reconciliation.
+		if stripeCounterpartIsInvoiceMatched(cp) {
+			continue
 		}
+		want := expected[l.ImportID]
+		cur := codeByID[cp.AccountID]
+		if want == "" || want == cur {
+			continue
+		}
+		// Default: only assign an account to a still-uncategorised (suspense)
+		// line — never silently revert a counterpart someone set by hand. `remap`
+		// opts into re-accounting already-assigned (chb-owned) lines too, e.g. to
+		// apply a changed mapping like 612011→612300 across history.
+		if !remap && !isSuspenseAccountCode(cur) {
+			continue
+		}
+		out = append(out, odooLineAccountFix{LineID: l.ID, ImportID: l.ImportID, OldCode: cur, NewCode: want})
 	}
 	return out, nil
+}
+
+// isSuspenseAccountCode reports whether a counterpart account code means the line
+// is still uncategorised — the bank suspense / "comptes d'attente" holding
+// account (499000), or no account at all. Such lines are fair game for automatic
+// categorisation; any other (real) account is treated as a deliberate assignment
+// and left alone unless --remap is passed.
+func isSuspenseAccountCode(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "", "499000":
+		return true
+	}
+	return false
+}
+
+// stripeCounterpartIsInvoiceMatched reports whether a move's counterpart is
+// actually reconciled against an invoice (receivable) or bill (payable) — in
+// which case its account must never be rewritten by `fix`. Requires BOTH an
+// A/R/A/P account type AND the counterpart line being reconciled: an A/R/A/P
+// line left unreconciled by a catch-all mapping rule is over-categorization, not
+// a real match, and is fair game for reset/reclassification.
+func stripeCounterpartIsInvoiceMatched(cp counterpartMoveLineInfo) bool {
+	switch cp.AccountType {
+	case "asset_receivable", "liability_payable":
+		return cp.Reconciled
+	}
+	return false
 }
 
 func printOdooJournalAccountReclassification(fixes []odooLineAccountFix) {

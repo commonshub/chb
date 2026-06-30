@@ -350,16 +350,22 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 	}
 
 	if m.Description != "" {
-		// Match against metadata.description, then metadata.memo (Monerium
-		// SEPA reference, etc.). Does NOT fall back to counterparty — use
-		// the `counterparty` field above for that. Keeping the two
-		// concerns separate so "match by description" and "match by other
-		// party" stay distinguishable in rules.json.
-		description := stringMetadata(tx.Metadata, "description")
-		if description == "" {
-			description = stringMetadata(tx.Metadata, "memo")
+		// Match against any of metadata.description, metadata.memo (Monerium
+		// SEPA reference, etc.), and metadata.fullDescription (KBC's
+		// human-readable counterparty/communication line — the bank's
+		// structured `description` is just a reference number, so the vendor
+		// name like "Hetzner"/"Electrabel" only appears in fullDescription).
+		// Does NOT fall back to counterparty — use the `counterparty` field
+		// above for that. A rule matches if its glob hits ANY of these.
+		pat := strings.ToLower(m.Description)
+		matched := false
+		for _, key := range []string{"description", "memo", "fullDescription"} {
+			if v := stringMetadata(tx.Metadata, key); v != "" && globMatch(pat, strings.ToLower(v)) {
+				matched = true
+				break
+			}
 		}
-		if !globMatch(strings.ToLower(m.Description), strings.ToLower(description)) {
+		if !matched {
 			return false
 		}
 	}

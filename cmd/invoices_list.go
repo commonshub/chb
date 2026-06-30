@@ -249,6 +249,13 @@ func moveIsOpen(m OdooOutgoingInvoicePublic) bool {
 	case "cancel", "draft":
 		return false
 	}
+	// Partially paid → still open: it already has a payment reconciled but a
+	// balance remains, so it must keep showing up (with the remaining amount) so
+	// the operator can link the missing payment(s). Don't let the
+	// ReconciledTransaction shortcut hide it.
+	if strings.EqualFold(strings.TrimSpace(m.PaymentState), "partial") {
+		return true
+	}
 	if m.ReconciledTransaction != nil && m.ReconciledTransaction.ID != "" {
 		return false
 	}
@@ -257,6 +264,17 @@ func moveIsOpen(m OdooOutgoingInvoicePublic) bool {
 		return false
 	}
 	return true
+}
+
+// moveReconcileAmount is the amount the next bank line should be matched against:
+// the still-owed residual for a partially-paid move, else the full total.
+// AmountResidual is 0 in caches written before the field existed, so fall back
+// to TotalAmount there.
+func moveReconcileAmount(m OdooOutgoingInvoicePublic) float64 {
+	if m.AmountResidual > 0.01 {
+		return m.AmountResidual
+	}
+	return m.TotalAmount
 }
 
 // moveRow wraps an OdooOutgoingInvoicePublic with location info (year,

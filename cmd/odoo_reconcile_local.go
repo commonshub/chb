@@ -144,6 +144,49 @@ func (c reconcileCandidate) label() string {
 //     label clearly matches.
 //  4. amount-only with exactly one open candidate → likely.
 //  5. multiple amount-only candidates → flagged ambiguous.
+// reconcileMatcherSkipsLine reports whether the reconcile matcher should ignore a
+// cached bank line. Synthetic and zero-amount lines are always skipped. A
+// reconciled line is skipped ONLY when it's truly matched to an invoice/bill (its
+// counterpart is on A/R or A/P) — re-proposing those churns against Odoo's
+// "already reconciled" error. A line merely categorized to an income/expense
+// account is still offered: attaching it to an invoice/bill is always preferred
+// over a bare category, and the apply phase rewrites its counterpart to the
+// receivable/payable account. Lines whose counterpart type is unknown (a cache
+// written before the field existed) keep the old conservative behaviour — skip
+// when reconciled — until the next `chb odoo pull` populates the type.
+func reconcileMatcherSkipsLine(ln OdooCacheLine) bool {
+	if isOdooSyntheticLine(ln) || ln.Amount == 0 {
+		return true
+	}
+	return ln.IsReconciled && !reconcileCounterpartIsCategorized(ln.CounterpartType)
+}
+
+// reconcileCounterpartIsCategorized reports whether a reconciled bank line's
+// counterpart sits on an income/expense account — i.e. the line was merely
+// categorized, not matched to an invoice/bill. Such lines are still offered to
+// the reconcile matcher (invoice attachment is always preferred). Receivable /
+// payable counterparts (real matches) and unknown types (old cache) return false
+// so they keep being skipped.
+func reconcileCounterpartIsCategorized(accountType string) bool {
+	switch accountType {
+	case "income", "income_other", "expense", "expense_direct_cost", "expense_depreciation":
+		return true
+	}
+	return false
+}
+
+// bankLineMatchedToDocument reports whether a bank line is genuinely matched to
+// an invoice/bill — its counterpart sits on a receivable/payable account — as
+// opposed to merely categorized to a GL income/expense account. Only a real
+// document match should trigger the "already attached" warning + reattach flow:
+// a categorized line is the normal input to invoice/bill reconciliation, so
+// attaching it must NOT warn. A reconciled line whose counterpart type is
+// unknown (cache written before the field existed) is treated conservatively as
+// a match until the next `chb odoo pull` populates the type.
+func bankLineMatchedToDocument(ln OdooCacheLine) bool {
+	return ln.IsReconciled && !reconcileCounterpartIsCategorized(ln.CounterpartType)
+}
+
 func computeReconcileMatches(journalID int, interactive bool) (*reconcileMatchSet, *odooPartnerIndex, error) {
 	Progress("loading journal-lines cache")
 	lines, ok := loadLatestOdooJournalLinesCache(journalID)
@@ -187,13 +230,7 @@ func computeReconcileMatches(journalID int, interactive bool) (*reconcileMatchSe
 		len(lines), len(candidates), len(allCandidates)))
 	results := make([]reconcileLineMatch, 0, len(lines))
 	for _, ln := range lines {
-		// Already-reconciled lines are skipped. Without this the matcher
-		// keeps proposing them every run: their payment_ref still matches
-		// the invoice (now partial/paid) and we'd churn against Odoo's
-		// "already reconciled" error indefinitely. The flag is populated
-		// from account.bank.statement.line.is_reconciled when the journal
-		// cache is written.
-		if ln.IsReconciled || isOdooSyntheticLine(ln) || ln.Amount == 0 {
+		if reconcileMatcherSkipsLine(ln) {
 			continue
 		}
 		hits := matchLineToCandidates(ln, candidates, refMatchable, byPartner, byAmount)

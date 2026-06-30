@@ -15,11 +15,13 @@ import (
 
 // buildReconciledMoveIndex scans the local invoice + bill caches and maps each
 // reconciled bank-line uniqueImportId to a human label for the move it is
-// reconciled to ("CHB/2025/00163 — Partner"). Best-effort and offline: the
-// public caches only carry the link for some moves, so a miss is common and the
-// caller should fall back to the line's own memo/counterparty.
-func buildReconciledMoveIndex() map[string]string {
-	out := map[string]string{}
+// reconciled to ("CHB/2025/00163 — Partner") and to that move's Odoo id (so the
+// caller can build a clickable inspect URL). Best-effort and offline: the public
+// caches only carry the link for some moves, so a miss is common and the caller
+// should fall back to the line's own memo/counterparty.
+func buildReconciledMoveIndex() (labels map[string]string, moveIDs map[string]int) {
+	labels = map[string]string{}
+	moveIDs = map[string]int{}
 	dataDir := DataDir()
 	for _, kind := range []moveKind{moveKindInvoice, moveKindBill} {
 		_ = walkMoveMonths(dataDir, kind, func(year, month string) error {
@@ -37,12 +39,13 @@ func buildReconciledMoveIndex() map[string]string {
 				if p := partners[mv.ID]; p != "" {
 					label += " — " + p
 				}
-				out[rt.ID] = label
+				labels[rt.ID] = label
+				moveIDs[rt.ID] = mv.ID
 			}
 			return nil
 		})
 	}
-	return out
+	return labels, moveIDs
 }
 
 // Scoring weights for matching a bank line to an invoice/bill. Memo naming the
@@ -213,7 +216,9 @@ func scoredBankLine(ln OdooCacheLine, jid int, journalName string, idx moneriumO
 		JournalName:     journalName,
 		PartnerMatch:    partner,
 		DaysDelta:       dateDeltaDaysAbs(ln.Date, moveDate),
-		AlreadyAttached: ln.IsReconciled,
+		// "Already attached" means matched to *another invoice/bill* — not merely
+		// categorized to a GL account, which is the normal input to reconciliation.
+		AlreadyAttached: bankLineMatchedToDocument(ln),
 		MatchScore:      score,
 		MatchReason:     strings.Join(reasons, " · "),
 		MemoConfirmed:   memoConfirmed,
@@ -230,7 +235,15 @@ func scoredBankLine(ln OdooCacheLine, jid int, journalName string, idx moneriumO
 // a partner match within ~200 days. Sorted by score desc, then unreconciled
 // before already-attached, then date proximity.
 func SuggestBankLinesForMove(row moveRow, kind moveKind) []Suggestion {
-	amount := row.Move.TotalAmount
+	// Match against the still-owed residual (so a partially-paid move suggests
+	// bank lines for the REMAINING balance, not the full total).
+	return suggestBankLinesForAmount(row, kind, moveReconcileAmount(row.Move))
+}
+
+// suggestBankLinesForAmount ranks bank-line candidates against an explicit
+// target amount — used both for the full total and, after a partial attach, for
+// the shrinking remaining balance.
+func suggestBankLinesForAmount(row moveRow, kind moveKind, amount float64) []Suggestion {
 	if amount <= 0 {
 		return nil
 	}

@@ -12,6 +12,26 @@ import (
 	odoosource "github.com/CommonsHub/chb/providers/odoo"
 )
 
+// odooDataNamespace returns the filesystem-safe database name used to scope
+// Odoo data on disk (providers/odoo/<namespace>/…, plus the sync-cursor key), so
+// switching ODOO databases never mixes mirrors. Derived from ODOO_DATABASE, or
+// the host portion of ODOO_URL when only the URL is set. Empty when no Odoo is
+// configured — callers then fall back to the legacy un-namespaced layout.
+func odooDataNamespace() string {
+	db := strings.TrimSpace(os.Getenv("ODOO_DATABASE"))
+	if db == "" {
+		db = odooDBFromURL(strings.TrimSpace(os.Getenv("ODOO_URL")))
+	}
+	return safeCursorKeyPart(db)
+}
+
+// InitOdooDataNamespace wires the resolved database namespace into the Odoo
+// provider path layer. Called once at startup, after global --url/--db flags and
+// config.env have settled the environment.
+func InitOdooDataNamespace() {
+	odoosource.SetPathNamespace(odooDataNamespace())
+}
+
 // OdooCredentials holds resolved Odoo connection info.
 type OdooCredentials struct {
 	URL      string
@@ -596,7 +616,7 @@ func OdooJournals(args []string) error {
 			return odooJournalCheck(creds, uid, journalID)
 		}
 		if len(args) >= 2 && args[1] == "fix" {
-			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
+			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--remap"))
 		}
 		if len(args) >= 2 && (args[1] == "fix-amounts" || args[1] == "repair-amounts") {
 			return repairOdooJournalLineAmounts(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
@@ -1058,11 +1078,21 @@ missing from Odoo, and reports any balance gap from manual (non-chb) entries.
 Each repair is previewed and confirmed separately. See also '%sfix-amounts%s' to
 run only the amount step.
 
+Account assignment: lines still on the suspense account (499000) are
+categorised from the rules (on an odooSourceOfTruth journal like KBC, from the
+Odoo line's own narration — so a new 'cp-order-…' resolves to 700003). Lines
+already on a real account, and lines reconciled to an invoice/bill, are LEFT
+ALONE so manual work is never reverted — pass '%s--remap%s' to also re-apply a
+changed mapping (e.g. 612011→612300) across already-assigned history.
+
 %sOPTIONS%s
   %s--dry-run%s              Preview only; no writes to Odoo
+  %s--remap%s                Also re-account already-assigned (chb-owned) lines
   %s-y%s, %s--yes%s             Skip the interactive confirmation
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
+			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset, f.Yellow, f.Reset,
 		)
@@ -2021,7 +2051,7 @@ func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 // This is safe for the new chronological sync model because line amounts
 // are authoritative — the starting and ending balances are derived from
 // them, not asserted independently.
-func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun bool) error {
+func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, remap bool) error {
 	if !dryRun {
 		if err := RequireOdooWriteCapability(); err != nil {
 			return err
@@ -2083,7 +2113,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 
 		fmt.Printf("  %sChecking line accounts vs category mapping...%s\n", Fmt.Dim, Fmt.Reset)
-		if ar, arErr := detectOdooJournalAccountReclassification(creds, uid, journalID, res.Account); arErr != nil {
+		if ar, arErr := detectOdooJournalAccountReclassification(creds, uid, journalID, res.Account, remap); arErr != nil {
 			Warnf("  %s⚠ Could not check line accounts: %v%s", Fmt.Yellow, arErr, Fmt.Reset)
 			accountReclass = nil
 		} else {

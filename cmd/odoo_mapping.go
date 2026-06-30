@@ -13,7 +13,7 @@ import (
 // OdooMapping maps a semantic tag (category / collective + direction) to a
 // specific Odoo account.account code and/or res.partner id. Loaded from
 // odoo_mapping.json and applied during `chb generate` (the result lives in
-// providers/odoo/pending/ for Odoo push paths to consume).
+// providers/odoo/<db>/pending/ for Odoo push paths to consume).
 //
 // Note: this is a lookup table, not a rule engine. Pattern matching against
 // descriptions / IBANs / amounts happens earlier in rules.json (semantic
@@ -119,6 +119,14 @@ func applyOdooMapping(mappings []OdooMapping, tx *TransactionEntry) {
 func LookupOdooMapping(mappings []OdooMapping, tx TransactionEntry) *OdooMapping {
 	cat := txDisplayCategory(tx)
 	coll := txDisplayCollective(tx)
+	// An internal transfer (Type INTERNAL) IS category "internal_transfer" for
+	// accounting purposes even when generate didn't stamp the category — a payout
+	// between our own accounts, an on-chain transfer between two tracked wallets,
+	// etc. Resolve it to the internal-transfer account everywhere: the generated
+	// AccountCode, the push, and the `fix` reclassification all key off this.
+	if cat == "" && strings.EqualFold(strings.TrimSpace(tx.Type), "INTERNAL") {
+		cat = "internal_transfer"
+	}
 	for i, r := range mappings {
 		if r.Match.Category != "" && !strings.EqualFold(r.Match.Category, cat) {
 			continue
@@ -643,7 +651,7 @@ func printOdooMappingHelp() {
 
 %sBEHAVIOUR%s
   Mappings are applied during %schb generate%s, which writes the resolved
-  partner_id and account_code into providers/odoo/pending/ alongside
+  partner_id and account_code into providers/odoo/<db>/pending/ alongside
   each transaction. Odoo push paths read those pre-resolved values; they
   never run the lookup chain themselves.
 

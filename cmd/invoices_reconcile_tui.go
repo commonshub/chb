@@ -25,6 +25,9 @@ func runReconcileReviewTUI(kind moveKind, scope string, rows []moveRow) {
 	search.Width = 48
 
 	m := reconcileReviewModel{kind: kind, scope: scope, rows: rows, search: search}
+	if creds, err := ResolveOdooCredentials(); err == nil {
+		m.odooBaseURL = creds.URL
+	}
 	m = m.loadCands()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -62,6 +65,10 @@ type reconcileReviewModel struct {
 
 	cands      []Suggestion
 	candCursor int
+	// remaining is the balance still to reconcile on the current move. It starts
+	// at the move's residual/total and shrinks as partial payments are attached;
+	// while it's > 0 the same move is re-shown so more bank lines can be linked.
+	remaining float64
 
 	mode         reconcileReviewMode
 	search       textinput.Model
@@ -72,11 +79,22 @@ type reconcileReviewModel struct {
 
 	confirmReattach bool
 	pending         *Suggestion // candidate awaiting [y] confirmation
+	// The invoice/bill the pending candidate is currently matched to, resolved
+	// when the confirm is armed (local cache first, then a live Odoo lookup) so
+	// the panel can link straight to it.
+	pendingMatchMoveID int
+	pendingMatchName   string
 
 	// reconciledIdx maps a reconciled bank-line uniqueImportId -> the move it
-	// is reconciled to ("CHB/2025/00163 — Partner"). Built lazily on the first
-	// reattach confirm so the prompt can say what would be overridden.
-	reconciledIdx map[string]string
+	// is reconciled to ("CHB/2025/00163 — Partner"); reconciledMoveID maps it to
+	// that move's Odoo id (for a clickable inspect URL). Built lazily on the
+	// first reattach confirm so the prompt can say what would be overridden.
+	reconciledIdx    map[string]string
+	reconciledMoveID map[string]int
+
+	// odooBaseURL is resolved once at startup so the reattach panel can render
+	// clickable Odoo links without an auth round-trip.
+	odooBaseURL string
 
 	creds *OdooCredentials
 	uid   int
@@ -92,13 +110,31 @@ func (m reconcileReviewModel) Init() tea.Cmd { return nil }
 
 func (m reconcileReviewModel) loadCands() reconcileReviewModel {
 	if m.idx >= 0 && m.idx < len(m.rows) {
-		m.cands = SuggestBankLinesForMove(m.rows[m.idx], m.kind)
+		m.remaining = moveReconcileAmount(m.rows[m.idx].Move)
+		m.cands = suggestBankLinesForAmount(m.rows[m.idx], m.kind, m.remaining)
 	} else {
 		m.cands = nil
+		m.remaining = 0
 	}
 	m.candCursor = 0
 	m.confirmReattach = false
 	m.pending = nil
+	m.pendingMatchMoveID = 0
+	m.pendingMatchName = ""
+	return m
+}
+
+// reloadForRemaining re-ranks candidates for the SAME move against its shrunken
+// remaining balance after a partial payment, without advancing.
+func (m reconcileReviewModel) reloadForRemaining() reconcileReviewModel {
+	if m.idx >= 0 && m.idx < len(m.rows) {
+		m.cands = suggestBankLinesForAmount(m.rows[m.idx], m.kind, m.remaining)
+	}
+	m.candCursor = 0
+	m.confirmReattach = false
+	m.pending = nil
+	m.pendingMatchMoveID = 0
+	m.pendingMatchName = ""
 	return m
 }
 
@@ -136,44 +172,83 @@ func (m reconcileReviewModel) ensureAuth() (reconcileReviewModel, error) {
 func (m reconcileReviewModel) requestAccept(cand Suggestion) reconcileReviewModel {
 	if cand.AlreadyAttached && !m.confirmReattach {
 		if m.reconciledIdx == nil {
-			m.reconciledIdx = buildReconciledMoveIndex()
+			m.reconciledIdx, m.reconciledMoveID = buildReconciledMoveIndex()
 		}
 		m.confirmReattach = true
 		c := cand
 		m.pending = &c
-		target := firstNonEmptyStr(m.rows[m.idx].Move.Title, fmt.Sprintf("#%d", m.rows[m.idx].Move.ID))
-		m.status = fmt.Sprintf("↻ line #%d (%s · %s · %s) is already reconciled%s — [y] unreconcile & attach to %s, [esc] cancel",
-			cand.Line.ID, firstNonEmptyStr(cand.JournalName, "?"), cand.Date,
-			fmtAmountCurrency(cand.Amount, "EUR"), m.describeAttached(cand), target)
+		// Resolve the invoice/bill this line is currently matched to so the panel
+		// can link straight to it. Local cache first (offline); fall back to a
+		// live lookup via the bank line's reconciled counterpart.
+		m.pendingMatchMoveID = m.reconciledMoveID[cand.Line.UniqueImportID]
+		m.pendingMatchName = m.reconciledIdx[cand.Line.UniqueImportID]
+		if m.pendingMatchMoveID == 0 && cand.Line.CounterpartID > 0 {
+			if mm, err := m.ensureAuth(); err == nil {
+				m = mm
+				if st, err := reconciledLineMatches(m.creds, m.uid, cand.Line.CounterpartID); err == nil && len(st.matches) > 0 {
+					m.pendingMatchMoveID = st.matches[0].moveID
+					m.pendingMatchName = firstNonEmptyStr(st.matchNames(), m.pendingMatchName)
+				}
+			}
+		}
+		// The full detail (what it's matched to, full memo, inspect URL, the
+		// [y]/[esc] prompt) renders as a multi-line panel in View — a single
+		// status line overflowed the terminal and hid the memo/URL.
+		m.status = ""
 		m.statusErr = false
 		return m
 	}
 	return m.applyAccept(cand)
 }
 
-// describeAttached explains WHAT a candidate bank line is currently reconciled
-// to, so the operator can judge whether overriding is worth it. Prefers the
-// resolved move (from the local cache); falls back to the line's own memo and
-// counterparty, which usually name what the payment was for.
-func (m reconcileReviewModel) describeAttached(cand Suggestion) string {
-	if lbl, ok := m.reconciledIdx[cand.Line.UniqueImportID]; ok && lbl != "" {
-		return " to " + lbl
+// renderReattachConfirm is the multi-line panel shown when the operator picks an
+// already-reconciled bank line. It lays the detail out over several lines —
+// what the line is currently matched to, its full (untruncated) memo, the
+// counterparty, and a clickable Odoo URL to inspect the existing match — so
+// nothing is lost to terminal truncation, then prompts for [y]/[esc].
+func (m reconcileReviewModel) renderReattachConfirm() string {
+	cand := *m.pending
+	target := firstNonEmptyStr(m.rows[m.idx].Move.Title, fmt.Sprintf("#%d", m.rows[m.idx].Move.ID))
+
+	var b strings.Builder
+	b.WriteString("  ")
+	b.WriteString(cpTUIErrStyle.Render(fmt.Sprintf("↻ bank line #%d is already matched to another invoice/bill", cand.Line.ID)))
+	b.WriteString("\n     ")
+	b.WriteString(cpTUIDimStyle.Render(fmt.Sprintf("%s · %s · %s",
+		firstNonEmptyStr(cand.JournalName, "?"), cand.Date, fmtAmountCurrency(cand.Amount, "EUR"))))
+
+	// What it's currently matched to — name + a direct link to that invoice/bill.
+	if m.pendingMatchName != "" {
+		b.WriteString("\n     ")
+		b.WriteString(cpTUIDimStyle.Render("currently matched to: "))
+		b.WriteString(m.pendingMatchName)
 	}
-	var parts []string
+	if m.odooBaseURL != "" && m.pendingMatchMoveID > 0 {
+		b.WriteString("\n     ")
+		b.WriteString(cpTUIDimStyle.Render("matched invoice/bill: "))
+		b.WriteString(OdooWebURL(m.odooBaseURL, "account.move", m.pendingMatchMoveID))
+	}
 	if memo := strings.TrimSpace(firstNonEmptyStr(cand.Reference, cand.Line.Narration)); memo != "" {
-		parts = append(parts, "memo: \""+Truncate(memo, 50)+"\"")
+		b.WriteString("\n     ")
+		b.WriteString(cpTUIDimStyle.Render("memo: "))
+		b.WriteString(memo) // full — no truncation
 	}
-	cp := strings.TrimSpace(cand.Partner)
-	if cp == "" {
-		cp = strings.TrimSpace(cand.IBAN)
+	if cp := strings.TrimSpace(firstNonEmptyStr(cand.Partner, cand.IBAN)); cp != "" {
+		b.WriteString("\n     ")
+		b.WriteString(cpTUIDimStyle.Render("counterparty: "))
+		b.WriteString(cp)
 	}
-	if cp != "" {
-		parts = append(parts, "counterparty: "+cp)
+	// Only when the matched invoice/bill couldn't be resolved, fall back to the
+	// bank entry so the operator still has something to open.
+	if m.odooBaseURL != "" && m.pendingMatchMoveID == 0 && cand.Line.MoveID > 0 {
+		b.WriteString("\n     ")
+		b.WriteString(cpTUIDimStyle.Render("bank entry: "))
+		b.WriteString(OdooWebURL(m.odooBaseURL, "account.move", cand.Line.MoveID))
 	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return " (" + strings.Join(parts, ", ") + ")"
+
+	b.WriteString("\n  ")
+	b.WriteString(cpTUIOKStyle.Render(fmt.Sprintf("[y] unreconcile & re-attach to %s     [esc] cancel", target)))
+	return b.String()
 }
 
 func (m reconcileReviewModel) applyAccept(cand Suggestion) reconcileReviewModel {
@@ -198,11 +273,24 @@ func (m reconcileReviewModel) applyAccept(cand Suggestion) reconcileReviewModel 
 	if cand.AlreadyAttached {
 		verb = "reattached"
 	}
+	m.mode = reviewCard
+	m.search.Blur()
+
+	// Reduce the outstanding balance by the amount we just reconciled. If a
+	// balance remains, the payment didn't cover the move — re-show the SAME move
+	// with the new remaining so the operator can link more bank lines until it's
+	// fully paid. Otherwise advance to the next move.
+	m.remaining = roundCents(m.remaining - cand.Amount)
+	if m.remaining > 0.01 {
+		m.status = fmt.Sprintf("✓ %s line #%d (%s) — %s still to reconcile on %s #%d, pick more",
+			verb, cand.Line.ID, fmtAmountCurrency(cand.Amount, "EUR"),
+			fmtAmountCurrency(m.remaining, "EUR"), m.kind.label, row.Move.ID)
+		m.statusErr = false
+		return m.reloadForRemaining()
+	}
 	m.status = fmt.Sprintf("✓ %s line #%d (%s, %s) → %s #%d",
 		verb, cand.Line.ID, cand.JournalName, cand.Line.Date, m.kind.label, row.Move.ID)
 	m.statusErr = false
-	m.mode = reviewCard
-	m.search.Blur()
 	return m.advance()
 }
 
@@ -379,7 +467,19 @@ func (m reconcileReviewModel) View() string {
 	if isMoveCreditNote(mv) {
 		flags += "  [credit note]"
 	}
-	b.WriteString(cpTUIDimStyle.Render(fmt.Sprintf("%s  %s  %s", fmtAmountCurrency(mv.TotalAmount, cur), mv.Date, flags)))
+	amountLabel := fmtAmountCurrency(mv.TotalAmount, cur)
+	// When only part of the total is still owed (a partial payment is already
+	// reconciled, or we just attached one), show the remaining balance — that's
+	// what the next bank line should cover.
+	if m.remaining > 0.01 && m.remaining < roundCents(mv.TotalAmount)-0.01 {
+		amountLabel = fmt.Sprintf("%s remaining of %s", fmtAmountCurrency(m.remaining, cur), fmtAmountCurrency(mv.TotalAmount, cur))
+	}
+	b.WriteString(cpTUIDimStyle.Render(fmt.Sprintf("%s  %s  %s", amountLabel, mv.Date, flags)))
+	// Direct link to the invoice/bill being processed.
+	if m.odooBaseURL != "" && mv.ID > 0 {
+		b.WriteString("\n  ")
+		b.WriteString(cpTUIDimStyle.Render(OdooWebURL(m.odooBaseURL, "account.move", mv.ID)))
+	}
 	// Structured communication (+++…+++) / payment reference. Odoo often puts
 	// it in the move name, so it's already the title above — only show this
 	// line when it carries something the title doesn't already display.
@@ -400,7 +500,11 @@ func (m reconcileReviewModel) View() string {
 		b.WriteString(m.renderCandidates())
 	}
 
-	if m.status != "" {
+	if m.confirmReattach && m.pending != nil {
+		b.WriteString("\n")
+		b.WriteString(m.renderReattachConfirm())
+		b.WriteString("\n")
+	} else if m.status != "" {
 		b.WriteString("\n  ")
 		if m.statusErr {
 			b.WriteString(cpTUIErrStyle.Render(m.status))

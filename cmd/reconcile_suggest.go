@@ -76,7 +76,7 @@ type Suggestion struct {
 	// Scoring + status.
 	PartnerMatch    bool // partner match against the query side
 	DaysDelta       int  // absolute days between candidate and query date
-	AlreadyAttached bool // bank line: IsReconciled; move: paymentState ∈ {paid,in_payment,partial}
+	AlreadyAttached bool // bank line: matched to another invoice/bill (NOT merely GL-categorized); move: paymentState ∈ {paid,in_payment,partial}
 
 	// Rich match metadata (populated by SuggestBankLinesForMove and the
 	// reconcile search pool). MatchScore ranks the candidate; MemoConfirmed
@@ -177,14 +177,17 @@ func SuggestForMove(row moveRow, kind moveKind) []Suggestion {
 				JournalName:     journalName,
 				PartnerMatch:    bankLineMatchesPartner(ln, invoicePartnerID, partnerTokens, partnerIdx),
 				DaysDelta:       dateDeltaDaysAbs(ln.Date, moveDate),
-				AlreadyAttached: ln.IsReconciled,
+				AlreadyAttached: bankLineMatchedToDocument(ln),
 			}
 			if partnerIdx != nil && ln.PartnerID > 0 {
 				if p, ok := partnerIdx.byID[ln.PartnerID]; ok {
 					s.Partner = p.Name
 				}
 			}
-			if ln.IsReconciled {
+			// Only lines genuinely matched to another invoice/bill sink to the
+			// bottom. A line merely categorized to a GL account is freely
+			// attachable — treat it as open.
+			if bankLineMatchedToDocument(ln) {
 				attached = append(attached, s)
 			} else {
 				open = append(open, s)

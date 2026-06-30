@@ -369,11 +369,12 @@ type TxFilter struct {
 	// narrower companion to SearchAny when counterparty/category noise is
 	// triggering false matches. Repeated --description flags accumulate.
 	DescriptionAny []string
-	// Amount filters by absolute gross magnitude with an optional operator
-	// (==, >, <, >=, <=). nil = no filter. Magnitude not signed amount —
-	// operators think "€100 transactions", not "+€100 vs -€100"; direction
-	// is what --direction is for.
-	Amount *AmountFilter
+	// Amounts filters by absolute gross magnitude with optional operators
+	// (==, >, <, >=, <=). Empty = no filter. Multiple constraints are ANDed,
+	// so `--amount ">710" --amount "<=800"` keeps txs with 710 < |amount| <= 800.
+	// Magnitude not signed amount — operators think "€100 transactions", not
+	// "+€100 vs -€100"; direction is what --direction is for.
+	Amounts []AmountFilter
 	// Direction filters by sign of the signed amount: "in" (positive) or
 	// "out" (negative). Empty = no filter. Zero-amount txs match neither.
 	Direction string
@@ -634,33 +635,33 @@ func (f TxFilter) matches(tx TransactionEntry) bool {
 			return false
 		}
 	}
-	if f.Amount != nil {
+	if len(f.Amounts) > 0 {
 		abs := roundCents(math.Abs(txAmount(tx)))
-		v := roundCents(f.Amount.Value)
-		switch f.Amount.Op {
-		case "==", "":
-			if abs != v {
-				return false
-			}
-		case ">":
-			if abs <= v {
-				return false
-			}
-		case ">=":
-			if abs < v {
-				return false
-			}
-		case "<":
-			if abs >= v {
-				return false
-			}
-		case "<=":
-			if abs > v {
+		for _, af := range f.Amounts {
+			if !af.matches(abs) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// matches reports whether an absolute magnitude satisfies this single
+// constraint. abs is expected to be already cent-rounded.
+func (af AmountFilter) matches(abs float64) bool {
+	v := roundCents(af.Value)
+	switch af.Op {
+	case ">":
+		return abs > v
+	case ">=":
+		return abs >= v
+	case "<":
+		return abs < v
+	case "<=":
+		return abs <= v
+	default: // "==" / ""
+		return abs == v
+	}
 }
 
 // parseAmountFilter accepts "100", "=100", "==100", ">10", ">=10", "<5",
@@ -3255,12 +3256,16 @@ func parseTxListFlags(args []string) (TxFilter, int, int, error) {
 		}
 	}
 
-	if s := GetOption(args, "--amount"); s != "" {
+	// Repeated --amount flags accumulate and are ANDed, so a range reads as
+	// `--amount ">710" --amount "<=800"`.
+	for _, s := range GetOptions(args, "--amount") {
 		af, err := parseAmountFilter(s)
 		if err != nil {
 			return f, 0, 0, err
 		}
-		f.Amount = af
+		if af != nil {
+			f.Amounts = append(f.Amounts, *af)
+		}
 	}
 	if s := strings.ToLower(strings.TrimSpace(GetOption(args, "--direction"))); s != "" {
 		switch s {
@@ -3438,7 +3443,9 @@ func printTransactionsBrowserHelp() {
                        (case-insensitive, repeatable → any-of)
   %s--amount <expr>%s     Filter by absolute gross magnitude. Supports
                        "100", ">10", "<1000.40", ">=50", "<=200"
-                       (quote the operator to escape shell redirection)
+                       (quote the operator to escape shell redirection).
+                       Repeatable → ANDed, e.g. --amount ">710" --amount "<=800"
+                       keeps 710 < |amount| <= 800
   %s--direction <in|out>%s Match only incoming (positive) or outgoing
                        (negative) transactions
   %s--no-category%s       Match only transactions with no category set

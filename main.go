@@ -46,6 +46,11 @@ func main() {
 	// ResolveOdooCredentials reads.
 	args := applyGlobalOdooFlags(os.Args[1:])
 
+	// Scope all Odoo data on disk to the resolved database (providers/odoo/<db>/…)
+	// so working against multiple Odoo databases never mixes mirrors. Must run
+	// after applyGlobalOdooFlags, which finalises ODOO_URL/ODOO_DATABASE.
+	cmd.InitOdooDataNamespace()
+
 	if len(args) == 0 {
 		cmd.PrintHelp(cmd.Version)
 		return
@@ -351,6 +356,20 @@ func main() {
 			}
 		case "invoices":
 			invArgs := args[2:]
+			// `chb odoo invoices reconcile …` must reconcile, not silently sync.
+			// The `odoo` namespace is online, so pull fresh first, then reconcile
+			// against current payment/reconcile state (a stale local cache is the
+			// usual reason an already-paid invoice still shows as open).
+			if len(invArgs) > 0 && invArgs[0] == "reconcile" {
+				rest := invArgs[1:]
+				if _, err := cmd.InvoicesSync(rest); err != nil {
+					exitWithError(err)
+				}
+				if err := cmd.MovesReconcileCommandInvoices(rest); err != nil {
+					exitWithError(err)
+				}
+				break
+			}
 			if len(invArgs) > 0 && invArgs[0] == "sync" {
 				invArgs = invArgs[1:]
 			}
@@ -359,6 +378,16 @@ func main() {
 			}
 		case "bills":
 			billArgs := args[2:]
+			if len(billArgs) > 0 && billArgs[0] == "reconcile" {
+				rest := billArgs[1:]
+				if _, err := cmd.BillsSync(rest); err != nil {
+					exitWithError(err)
+				}
+				if err := cmd.MovesReconcileCommandBills(rest); err != nil {
+					exitWithError(err)
+				}
+				break
+			}
 			if len(billArgs) > 0 && billArgs[0] == "sync" {
 				billArgs = billArgs[1:]
 			}
@@ -447,6 +476,16 @@ func main() {
 		}
 	case "accounts":
 		cmd.AccountsCommand(args[1:])
+	case "wise":
+		// `chb wise sync [slug] [--apply]` — import Wise statement CSVs into
+		// their linked Odoo journals (the CSV-only analogue of kbcbrussels).
+		if len(args) >= 2 && args[1] == "sync" {
+			if err := cmd.WiseSync(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		} else {
+			exitWithUsage("%sUsage: chb wise sync [slug] [--apply]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
+		}
 	case "search":
 		if err := cmd.Search(args[1:]); err != nil {
 			exitWithError(err)
@@ -477,6 +516,8 @@ func main() {
 		// our APP_DATA_DIR. Falls through to the provider-driven
 		// path when CHB_SYNC_SOURCE is unset.
 		if cmd.MirrorEnabled(args[1:]) {
+			// Mirror mode rsyncs already-generated data from the trusted host,
+			// so no local generate is needed (or wanted).
 			if err := cmd.MirrorPull(args[1:]); err != nil {
 				exitWithError(err)
 			}
@@ -484,6 +525,16 @@ func main() {
 		}
 		if err := cmd.ProvidersCommand(append([]string{"*", "pull"}, args[1:]...)); err != nil {
 			exitWithError(err)
+		}
+		// Generate the derived outputs for whatever the pull changed. Generate
+		// is incremental: it skips months whose source files didn't move since
+		// the last generate (and picks up any older month a back-fill touched),
+		// so this only rebuilds what actually changed. Opt out with
+		// --no-generate for a pure download.
+		if !cmd.HasFlag(args[1:], "--no-generate", "--help", "-h", "help") {
+			if err := cmd.Generate(args[1:]); err != nil {
+				exitWithError(err)
+			}
 		}
 	case "push":
 		// Push to every target (Odoo journals + Nostr outbox).

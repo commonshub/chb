@@ -113,6 +113,7 @@ func AccountsBalance(args []string) error {
 	verbose := HasFlag(args, "--verbose", "-v")
 
 	type balanceRow struct {
+		code     string
 		slug     string
 		currency string
 		balance  float64
@@ -123,15 +124,23 @@ func AccountsBalance(args []string) error {
 	rows := make([]balanceRow, 0, len(configs))
 	totals := map[string]float64{}
 	labelWidth := 0
+	codeWidth := 0
 
 	for i := range configs {
 		acc := &configs[i]
 		balance, counted, _, latest := accountBalanceAtCutoff(acc, cutoff)
 		currency := accCurrency(acc)
-		rows = append(rows, balanceRow{acc.Slug, currency, balance, counted, latest})
+		code := acc.OdooGlAccountCode
+		if code == "" {
+			code = "-"
+		}
+		rows = append(rows, balanceRow{code, acc.Slug, currency, balance, counted, latest})
 		totals[currency] += balance
 		if len(acc.Slug) > labelWidth {
 			labelWidth = len(acc.Slug)
+		}
+		if len(code) > codeWidth {
+			codeWidth = len(code)
 		}
 	}
 
@@ -165,22 +174,27 @@ func AccountsBalance(args []string) error {
 		}
 	}
 
-	printRow := func(label string, v float64, currency string) {
+	// Rows lead with the GL account number (dim), then the slug, then the
+	// right-aligned balance: "<number> <slug> <balance>". Total rows pass an
+	// empty code so they align under the slug column.
+	printRow := func(code, label string, v float64, currency string) {
 		plain := plainAmount(v, currency)
 		pad := strings.Repeat(" ", amtWidth-len(plain))
 		colour := Fmt.Green
 		if v < 0 {
 			colour = Fmt.Red
 		}
-		fmt.Printf("  %s%-*s%s  %s%s%s%s\n",
-			Fmt.Bold, labelWidth, label, Fmt.Reset, pad, colour, plain, Fmt.Reset)
+		fmt.Printf("  %s%-*s%s  %s%-*s%s  %s%s%s%s\n",
+			Fmt.Dim, codeWidth, code, Fmt.Reset,
+			Fmt.Bold, labelWidth, label, Fmt.Reset,
+			pad, colour, plain, Fmt.Reset)
 	}
 
 	fmt.Printf("\n%s💰 Balances at end of %s%s  %s(%s)%s\n\n",
 		Fmt.Bold, scope, Fmt.Reset, Fmt.Dim, Pluralize(len(configs), "account", ""), Fmt.Reset)
 
 	for _, r := range rows {
-		printRow(r.slug, r.balance, r.currency)
+		printRow(r.code, r.slug, r.balance, r.currency)
 		if verbose {
 			detail := fmt.Sprintf("%s based on %s", Fmt.Dim, Pluralize(r.counted, "local transaction", ""))
 			if !r.latest.IsZero() {
@@ -198,7 +212,7 @@ func AccountsBalance(args []string) error {
 		if multiCurrency {
 			label = "Total " + c
 		}
-		printRow(label, totals[c], c)
+		printRow("", label, totals[c], c)
 	}
 	fmt.Printf("\n  %sBased on locally-cached transactions. Run %schb accounts <slug> balance %s%s%s for per-account detail.%s\n\n",
 		Fmt.Dim, Fmt.Reset+Fmt.Cyan, scope, Fmt.Reset, Fmt.Dim, Fmt.Reset)

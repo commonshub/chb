@@ -1,0 +1,379 @@
+[
+  {
+    "match": {
+      "category": "internet",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "616030",
+      "account_name": "Telecommunications"
+    }
+  },
+  {
+    "match": {
+      "category": "donation"
+    },
+    "set": {
+      "account_code": "740040",
+      "account_name": "Donations"
+    }
+  },
+  {
+    "match": {
+      "category": "donations",
+      "direction": "in"
+    },
+    "set": {
+      "account_code": "740040",
+      "account_name": "Donations"
+    }
+  },
+  {
+    "match": {
+      "category": "grants"
+    },
+    "set": {
+      "account_code": "740041",
+      "account_name": "Grants"
+    }
+  },
+  {
+    "match": {
+      "category": "grant"
+    },
+    "set": {
+      "account_code": "740041",
+      "account_name": "Grants"
+    }
+  },
+  {
+    "match": {
+      "category": "membership"
+    },
+    "set": {
+      "account_code": "730000",
+      "account_name": "Membership"
+    }
+  },
+  {
+    "match": {
+      "category": "coworking"
+    },
+    "set": {
+      "account_code": "700003",
+      "account_name": "Coworking"
+    }
+  },
+  {
+    "match": {
+      "category": "rental"
+    },
+    "set": {
+      "account_code": "700003",
+      "account_name": "Rental"
+    }
+  },
+  {
+    "match": {
+      "category": "rentals"
+    },
+    "set": {
+      "account_code": "700003",
+      "account_name": "Rental"
+    }
+  },
+  {
+    "match": {
+      "category": "catering",
+      "direction": "in"
+    },
+    "set": {
+      "account_code": "700002",
+      "account_name": "Catering"
+    }
+  },
+  {
+    "match": {
+      "category": "drinks",
+      "direction": "in"
+    },
+    "set": {
+      "account_code": "700003",
+      "account_name": "Drinks"
+    }
+  },
+  {
+    "match": {
+      "category": "ticket"
+    },
+    "set": {
+      "account_code": "700150",
+      "account_name": "Event tickets"
+    }
+  },
+  {
+    "match": {
+      "category": "event_tickets"
+    },
+    "set": {
+      "account_code": "700150",
+      "account_name": "Event tickets"
+    }
+  },
+  {
+    "match": {
+      "category": "sponsoring"
+    },
+    "set": {
+      "account_code": "700110",
+      "account_name": "Sponsoring"
+    }
+  },
+  {
+    "match": {
+      "category": "coworking_refund",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "700003",
+      "account_name": "Coworking refund"
+    }
+  },
+  {
+    "match": {
+      "category": "consultants",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "613105",
+      "account_name": "Consultants"
+    }
+  },
+  {
+    "match": {
+      "category": "consulting",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "613105",
+      "account_name": "Consultants"
+    }
+  },
+  {
+    "match": {
+      "category": "rent",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "610100",
+      "account_name": "Rent"
+    }
+  },
+  {
+    "match": {
+      "category": "catering",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "604200",
+      "account_name": "Catering purchase"
+    }
+  },
+  {
+    "match": {
+      "category": "drinks",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "604200",
+      "account_name": "Drinks purchase"
+    }
+  },
+  {
+    "match": {
+      "category": "coffee_purchase",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "604200",
+      "account_name": "Coffee purchase"
+    }
+  },
+  {
+    "match": {
+      "category": "fridge",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "604200",
+      "account_name": "Fridge purchase"
+    }
+  },
+  {
+    "match": {
+      "category": "furniture",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "611700",
+      "account_name": "Furniture"
+    }
+  },
+  {
+    "match": {
+      "category": "water_gas_electricity",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612300",
+      "account_name": "Water, gas, electricity"
+    }
+  },
+  {
+    "match": {
+      "category": "small_materials",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612500",
+      "account_name": "Small materials"
+    }
+  },
+  {
+    "match": {
+      "category": "equipment",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612150",
+      "account_name": "Equipment"
+    }
+  },
+  {
+    "match": {
+      "category": "marketing",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "615000",
+      "account_name": "Marketing"
+    }
+  },
+  {
+    "match": {
+      "category": "it_equipment",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612150",
+      "account_name": "IT equipment"
+    }
+  },
+  {
+    "match": {
+      "category": "office_supplies",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612100",
+      "account_name": "Office supplies"
+    }
+  },
+  {
+    "match": {
+      "category": "consumables",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612500",
+      "account_name": "Consumables"
+    }
+  },
+  {
+    "match": {
+      "category": "accounting",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "613200",
+      "account_name": "Accounting"
+    }
+  },
+  {
+    "match": {
+      "category": "webservice",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "616040",
+      "account_name": "Internet services"
+    }
+  },
+  {
+    "match": {
+      "category": "utilities",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "612300",
+      "account_name": "Water, gas, electricity"
+    }
+  },
+  {
+    "match": {
+      "category": "communication",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "616030",
+      "account_name": "Communication"
+    }
+  },
+  {
+    "match": {
+      "category": "card_payment",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "580200",
+      "account_name": "Electronic payment - bank card"
+    }
+  },
+  {
+    "match": {
+      "category": "internal_transfer"
+    },
+    "set": {
+      "account_code": "580000",
+      "account_name": "Internal transfer"
+    }
+  },
+  {
+    "match": {
+      "category": "debt"
+    },
+    "set": {
+      "account_code": "460001",
+      "account_name": "Multi-purpose voucher (EURb/Zinne)"
+    }
+  },
+  {
+    "match": {
+      "category": "stripe_fee"
+    },
+    "set": {
+      "account_code": "657020",
+      "account_name": "Stripe fees"
+    }
+  },
+  {
+    "match": {
+      "category": "HR",
+      "direction": "out"
+    },
+    "set": {
+      "account_code": "620000",
+      "account_name": "Rémunérations"
+    }
+  }
+]

@@ -38,14 +38,49 @@ func (SourceProvider) Files() []providers.File {
 	}
 }
 
+// pathNamespace, when set, scopes every Odoo file under
+// providers/odoo/<namespace>/… so data from different Odoo databases never
+// shares a directory. It is the sanitised database name, set once at startup by
+// the cmd layer via SetPathNamespace (empty → legacy un-namespaced layout, so
+// installs with no Odoo configured are unaffected).
+var pathNamespace string
+
+// SetPathNamespace scopes all subsequent Odoo paths to the given database
+// namespace. Pass "" to use the legacy un-namespaced layout.
+func SetPathNamespace(ns string) {
+	pathNamespace = ns
+}
+
+// PathNamespace returns the currently active database namespace ("" if none).
+func PathNamespace() string {
+	return pathNamespace
+}
+
 func RelPath(elems ...string) string {
-	parts := append([]string{"providers", Source}, elems...)
+	parts := []string{"providers", Source}
+	if pathNamespace != "" {
+		parts = append(parts, pathNamespace)
+	}
+	parts = append(parts, elems...)
 	return filepath.Join(parts...)
 }
 
 func PrivateRelPath(elems ...string) string {
 	parts := append([]string{"private"}, elems...)
 	return RelPath(parts...)
+}
+
+// LegacyRelPath / LegacyPrivateRelPath return the pre-namespacing path (no
+// per-database segment). Readers use these to fall back to data synced before
+// per-database namespacing was introduced; writers always use the namespaced
+// RelPath so a re-sync moves the data forward.
+func LegacyRelPath(elems ...string) string {
+	parts := append([]string{"providers", Source}, elems...)
+	return filepath.Join(parts...)
+}
+
+func LegacyPrivateRelPath(elems ...string) string {
+	return LegacyRelPath(append([]string{"private"}, elems...)...)
 }
 
 func Path(dataDir, year, month string, elems ...string) string {

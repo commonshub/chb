@@ -767,6 +767,16 @@ func AccountsCommand(args []string) {
 		return
 	}
 
+	// `chb accounts internal` → audit internal-transfer legs across all local
+	// accounts; they must net to zero. Checked before the slug loop so it isn't
+	// mistaken for an account named "internal".
+	if len(args) >= 1 && args[0] == "internal" {
+		if err := AccountsInternal(args[1:]); err != nil {
+			Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
+		}
+		return
+	}
+
 	if HasFlag(args, "--help", "-h", "help") {
 		printAccountsHelp()
 		return
@@ -953,6 +963,9 @@ func printAccountDetailSummary(acc *AccountConfig, args []string) {
 	if acc.OdooJournalID > 0 {
 		printAccountField("  ", "Journal balance", journalBalanceDetail(acc, currency, refresh))
 	}
+	if acc.OdooGlAccountCode != "" {
+		printAccountField("  ", "GL balance", glBalanceDetail(acc))
+	}
 
 	// Last sync + last full sync on one line.
 	fmt.Println()
@@ -1043,6 +1056,33 @@ func journalBalanceDetail(acc *AccountConfig, currency string, refresh bool) str
 	}
 	return fmt.Sprintf("%s  %s(%s · %s)%s",
 		formatAccountDataBalance(snap.Balance, snap.Currency), Fmt.Dim, Pluralize(snap.TxCount, "tx", ""), label, Fmt.Reset)
+}
+
+// glBalanceDetail renders the linked GL account's live balance, in the form
+// "<balance> EUR (<n> txs - account <code>)". The figure comes from posted
+// account.move.line entries in Odoo (company currency = EUR), so it needs one
+// live query; it degrades to "account <code>" when Odoo isn't reachable.
+func glBalanceDetail(acc *AccountConfig) string {
+	code := acc.OdooGlAccountCode
+	fallback := Fmt.Dim + "account " + code + Fmt.Reset
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return fallback + Fmt.Dim + " — Odoo not configured" + Fmt.Reset
+	}
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
+	if err != nil || uid == 0 {
+		return fallback + Fmt.Dim + " — Odoo auth failed" + Fmt.Reset
+	}
+	gl, ok, err := fetchOdooAccountByCode(creds, uid, code)
+	if err != nil || !ok {
+		return fallback + Fmt.Dim + " — not found in Odoo" + Fmt.Reset
+	}
+	balance, count, _, err := fetchOdooAccountBalanceAt(creds, uid, gl.ID, "")
+	if err != nil {
+		return fallback + Fmt.Dim + " — " + err.Error() + Fmt.Reset
+	}
+	return fmt.Sprintf("%s  %s(%s - account %s)%s",
+		formatAccountDataBalance(balance, "EUR"), Fmt.Dim, Pluralize(count, "tx", ""), code, Fmt.Reset)
 }
 
 // accountJournalSnapshot returns the linked journal's balance/tx snapshot.
@@ -1408,10 +1448,11 @@ type AccountJSON struct {
 	LastTxAt        string   `json:"lastTxAt,omitempty"`
 	LastSyncAt      string   `json:"lastSyncAt,omitempty"`
 	LastFullSyncAt  string   `json:"lastFullSyncAt,omitempty"`
-	OdooJournalID   int      `json:"odooJournalId,omitempty"`
-	OdooJournalName string   `json:"odooJournalName,omitempty"`
-	OdooMissing     *int     `json:"odooMissing,omitempty"`
-	OdooLastTxDate  string   `json:"odooLastTxDate,omitempty"`
+	OdooJournalID     int    `json:"odooJournalId,omitempty"`
+	OdooJournalName   string `json:"odooJournalName,omitempty"`
+	OdooGlAccountCode string `json:"odooGlAccountCode,omitempty"`
+	OdooMissing       *int   `json:"odooMissing,omitempty"`
+	OdooLastTxDate    string `json:"odooLastTxDate,omitempty"`
 }
 
 // AccountsJSON is the top-level payload for `chb accounts --json`.
@@ -1459,6 +1500,29 @@ func Accounts(args []string) {
 
 	// Track totals per currency
 	totals := map[string]float64{}
+
+	// Per-account alignment: does each account's latest balance agree with its
+	// linked Odoo journal AND GL account? Cached (local vs journal) by default;
+	// --live adds the GL-account leg (one Odoo query per account).
+	var alignCreds *OdooCredentials
+	var alignUID int
+	if live {
+		if c, err := ResolveOdooCredentials(); err == nil {
+			if u, err := odooAuth(c.URL, c.DB, c.Login, c.Password); err == nil && u != 0 {
+				alignCreds, alignUID = c, u
+			}
+		}
+	}
+	aligns := map[string]accountAlignment{}
+	for i := range configs {
+		acc := &configs[i]
+		if acc.OdooJournalID == 0 && acc.OdooGlAccountCode == "" {
+			continue
+		}
+		s := summaries[accountKey(faAccounts[i])]
+		bal, _, has := resolveAccountBalance(acc, liveBalances, s)
+		aligns[acc.Slug] = computeAccountAlignment(acc, accountCurrency(acc), bal, has, live, "", alignCreds, alignUID)
+	}
 
 	if details {
 		fmt.Printf("\n%s💰 Configured Accounts%s (%d)", Fmt.Bold, Fmt.Reset, len(configs))
@@ -1518,9 +1582,16 @@ func Accounts(args []string) {
 			if acc.OdooJournalID > 0 {
 				printAccountField("    ", "Odoo", formatAccountOdooStatus(acc.OdooJournalID, odooStatuses[acc.OdooJournalID]))
 			}
+			if acc.OdooGlAccountCode != "" {
+				printAccountField("    ", "GL account", acc.OdooGlAccountCode)
+			}
+			if al, ok := aligns[acc.Slug]; ok {
+				printAccountAlignmentDetail("    ", al)
+			}
 
 			fmt.Println()
 		}
+		printAlignmentSummary(aligns, live)
 	} else {
 		// Default: one compact line per account — slug on the left, balance
 		// right-aligned, ordered by balance DESC. Run with --details for the
@@ -1592,7 +1663,7 @@ func Accounts(args []string) {
 				plain = formatBalancePlain(r.balance, r.currency)
 				colored = formatBalance(r.balance, r.currency)
 			}
-			fmt.Printf("  %s%-*s%s  %s\n", Fmt.Bold, labelWidth, r.slug, Fmt.Reset, rightAlignAmount(plain, colored, amountWidth))
+			fmt.Printf("  %s%-*s%s  %s%s\n", Fmt.Bold, labelWidth, r.slug, Fmt.Reset, rightAlignAmount(plain, colored, amountWidth), alignmentMarker(aligns[r.slug]))
 		}
 
 		if len(totals) > 0 {
@@ -1614,6 +1685,8 @@ func Accounts(args []string) {
 				fmt.Printf("  %sas of %s%s\n", Fmt.Dim, asOf.In(BrusselsTZ()).Format("2006-01-02"), Fmt.Reset)
 			}
 		}
+		fmt.Println()
+		printAlignmentSummary(aligns, live)
 		fmt.Println()
 		return
 	}
@@ -2104,6 +2177,57 @@ func AccountFetch(slug string, args []string) error {
 	}
 	printAccountFetchSummary(acc, newTxs, time.Since(startedAt), verbose)
 	return nil
+}
+
+// reconcileAfterPushSummary appends a concise "x new · y reconciled" note to the
+// push summary and, when some new items went unreconciled, prints them so the
+// operator can resolve them (the rest are auto-matched to invoices/bills). x is
+// the number of lines this push created; y is what the silent reconcile pass
+// matched (lastReconcileApplied).
+func reconcileAfterPushSummary(creds *OdooCredentials, uid, journalID, newItems int) string {
+	reconciled := lastReconcileApplied
+	if newItems <= 0 {
+		return "reconcile pass complete"
+	}
+	unmatched := newItems - reconciled
+	if unmatched < 0 {
+		unmatched = 0
+	}
+	if unmatched > 0 {
+		printUnreconciledNewItems(creds, uid, journalID, newItems)
+	}
+	return fmt.Sprintf("%d new item%s · %d reconciled", newItems, plural(newItems), reconciled)
+}
+
+// printUnreconciledNewItems lists the most-recently-created statement lines on
+// the journal (≈ the ones this push added) that are still unreconciled, so the
+// operator sees exactly what needs attention. Best-effort: any query error is
+// silently skipped (the summary line still prints).
+func printUnreconciledNewItems(creds *OdooCredentials, uid, journalID, newItems int) {
+	res, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "search_read",
+		[]interface{}{
+			[]interface{}{[]interface{}{"journal_id", "=", journalID}, []interface{}{"is_reconciled", "=", false}},
+			[]string{"date", "payment_ref", "amount"},
+		},
+		map[string]interface{}{"limit": newItems, "order": "id desc"})
+	if err != nil {
+		return
+	}
+	var lines []struct {
+		Date       string  `json:"date"`
+		PaymentRef string  `json:"payment_ref"`
+		Amount     float64 `json:"amount"`
+	}
+	if json.Unmarshal(res, &lines) != nil || len(lines) == 0 {
+		return
+	}
+	fmt.Printf("  %s%d new item%s left unreconciled — review with `chb odoo journals %d reconcile -i`:%s\n",
+		Fmt.Yellow, len(lines), plural(len(lines)), journalID, Fmt.Reset)
+	for _, l := range lines {
+		fmt.Printf("    %s%s  %s%9s  %s%s\n",
+			Fmt.Dim, l.Date, Fmt.Reset, fmtNumber(l.Amount), Truncate(l.PaymentRef, 50), Fmt.Reset)
+	}
 }
 
 // reconcileAutoThreshold caps the auto-reconcile-after-push behaviour. At
@@ -3050,7 +3174,7 @@ func AccountOdooPush(slug string, args []string) error {
 			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, true, dryRun, false); err != nil {
 				syncErr = err
 			} else {
-				summary += ", reconcile pass complete"
+				summary += ", " + reconcileAfterPushSummary(creds, uid, acc.OdooJournalID, syncedCount)
 			}
 		}
 	} else if acc.Provider == "kbcbrussels" {
@@ -3095,7 +3219,7 @@ func AccountOdooPush(slug string, args []string) error {
 			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, true, dryRun, false); err != nil {
 				syncErr = err
 			} else {
-				summary += ", reconcile pass complete"
+				summary += ", " + reconcileAfterPushSummary(creds, uid, acc.OdooJournalID, syncedCount)
 			}
 		}
 	} else {
@@ -3130,7 +3254,7 @@ func AccountOdooPush(slug string, args []string) error {
 			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, true, dryRun, false); err != nil {
 				syncErr = err
 			} else {
-				summary += ", reconcile pass complete"
+				summary += ", " + reconcileAfterPushSummary(creds, uid, acc.OdooJournalID, syncedCount)
 			}
 		}
 	}
@@ -3479,13 +3603,54 @@ func createOpeningBalanceLine(creds *OdooCredentials, uid int, acc *AccountConfi
 		"narration": fmt.Sprintf(
 			"Opening balance computed by CHB from the full local history of %s: signed sum of every transaction before %s.", acc.Slug, date),
 	}
-	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-		"account.bank.statement.line", "create", []interface{}{vals}, nil); err != nil {
+	created, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "create", []interface{}{vals}, nil)
+	if err != nil {
 		return fmt.Errorf("create opening balance line: %v", err)
+	}
+	// A freshly created statement line's move is in draft; an unposted opening
+	// is invisible to the GL balance (Odoo sums only posted lines), so post it.
+	if ids := parseOdooCreatedIDs(created); len(ids) > 0 {
+		if err := postStatementLineMoves(creds, uid, ids); err != nil {
+			Warnf("  %s⚠ Created opening entry but could not post it (post it manually in Odoo): %v%s", Fmt.Yellow, err, Fmt.Reset)
+		}
 	}
 	odooLog("  %s✓ Created opening entry %s: %s%s\n",
 		Fmt.Green, date, formatBalance(opening, accCurrency(acc)), Fmt.Reset)
 	return nil
+}
+
+// postStatementLineMoves posts the account.move behind each given bank
+// statement line, so the opening (or any freshly created line) actually lands
+// in the posted GL rather than sitting in draft.
+func postStatementLineMoves(creds *OdooCredentials, uid int, stmtLineIDs []int) error {
+	if len(stmtLineIDs) == 0 {
+		return nil
+	}
+	args := make([]interface{}, len(stmtLineIDs))
+	for i, id := range stmtLineIDs {
+		args[i] = id
+	}
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
+		[]interface{}{[]interface{}{"id", "in", args}},
+		[]string{"id", "move_id"}, "")
+	if err != nil {
+		return err
+	}
+	moveSet := map[int]bool{}
+	moveIDs := []interface{}{}
+	for _, r := range rows {
+		if mid := odooFieldID(r["move_id"]); mid > 0 && !moveSet[mid] {
+			moveSet[mid] = true
+			moveIDs = append(moveIDs, mid)
+		}
+	}
+	if len(moveIDs) == 0 {
+		return nil
+	}
+	_, err = odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.move", "action_post", []interface{}{moveIDs}, nil)
+	return err
 }
 
 // accountLocalBalanceBefore returns the account balance at the cutoff,
@@ -6004,9 +6169,18 @@ func buildMoneriumLineSyncUpdate(acc *AccountConfig, tx TransactionEntry, row ma
 	//   - the counterparty name verbatim — legacy upload where the
 	//     Monerium order memo wasn't yet enriched at upload time, so
 	//     buildOdooPaymentRef fell back to tx.Counterparty
+	//   - the bare type fallback ("burn EURe", "mint EURe" = lowercase
+	//     type + currency) — a redeem/issue line uploaded before its
+	//     Monerium order (memo + IBAN) existed locally, so buildOdooPaymentRef
+	//     hit its final fallback. Now that the memo is enriched, refresh it.
+	typeFallbackRef := strings.TrimSpace(strings.ToLower(tx.Type))
+	if tx.Currency != "" {
+		typeFallbackRef = strings.TrimSpace(typeFallbackRef + " " + tx.Currency)
+	}
 	safeToReplace := currentRef == "" ||
 		isZeroAddressPaymentRef(currentRef) ||
-		strings.EqualFold(currentRef, strings.TrimSpace(tx.Counterparty))
+		strings.EqualFold(currentRef, strings.TrimSpace(tx.Counterparty)) ||
+		(typeFallbackRef != "" && strings.EqualFold(currentRef, typeFallbackRef))
 	if !safeToReplace {
 		return nil
 	}
@@ -7201,6 +7375,7 @@ func printAccountsHelp() {
   %schb accounts balance [YYYY[/MM[/DD]]]%s          All accounts + total at end of period
   %schb accounts <slug> balance [YYYY[/MM[/DD]]]%s   Historical balance at end of period
   %schb accounts <slug> payouts%s           List Stripe payouts
+  %schb accounts internal%s                 Audit internal-transfer legs (must net to zero)
 
   %sNote%s: for the full loop across all accounts + targets, use 'chb sync'.
 
@@ -7214,7 +7389,7 @@ func printAccountsHelp() {
 		// 14 USAGE rows
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
-		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
+		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Bold, f.Reset, // Note word
 		f.Bold, f.Reset, // ENVIRONMENT
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

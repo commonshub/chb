@@ -2917,6 +2917,13 @@ func btPaymentRef(bt stripesource.Transaction) string {
 		}
 		return "Refund"
 	case "payout":
+		// A payout's description is the operator's memo ("2024-12 Memberships",
+		// "CHB/2025/00099", …) — far more useful than a bare date, and it avoids
+		// the epoch-date label ("Manual payout 1970-01-01") when both the arrival
+		// date and created stamp are missing. Prefer it.
+		if d := strings.TrimSpace(bt.Description); d != "" {
+			return d
+		}
 		payoutDate := bt.PayoutArrivalDate
 		if payoutDate == 0 {
 			payoutDate = bt.Created
@@ -3190,6 +3197,11 @@ func payoutStatementLabels(bt stripesource.Transaction) (string, string) {
 		name = fmt.Sprintf("%s Stripe → ****%s (%.2f %s)", arrival, bt.PayoutBankLast4, amount, currency)
 	} else {
 		name = fmt.Sprintf("%s Stripe payout (%.2f %s)", arrival, amount, currency)
+	}
+	// Lead with the operator's memo when present ("2024-12 Memberships — <date>
+	// Stripe payout (X EUR)") so the closed statement is identifiable at a glance.
+	if d := strings.TrimSpace(bt.Description); d != "" {
+		name = fmt.Sprintf("%s — %s", d, name)
 	}
 	return name, bt.PayoutID
 }
@@ -3487,11 +3499,7 @@ func stripeLineIsInvoiceMatched(creds *OdooCredentials, uid, moveID int) bool {
 	if err != nil {
 		return true
 	}
-	switch info[moveID].AccountType {
-	case "asset_receivable", "liability_payable":
-		return true
-	}
-	return false
+	return stripeCounterpartIsInvoiceMatched(info[moveID])
 }
 
 func updateStatementLineFieldsForMetadata(creds *OdooCredentials, uid int, lineID, moveID int, vals map[string]interface{}) error {
@@ -3545,6 +3553,7 @@ type counterpartMoveLineInfo struct {
 	LineID      int
 	AccountID   int
 	AccountType string // "asset_receivable", "liability_payable", "income", "expense", …
+	Reconciled  bool   // counterpart A/R or A/P line reconciled with an invoice/bill
 }
 
 func fetchCounterpartAccountIDsByMoveID(creds *OdooCredentials, uid int, moveIDs []int) (map[int]int, error) {
@@ -3564,7 +3573,7 @@ func fetchCounterpartMoveLinesByMoveID(creds *OdooCredentials, uid int, moveIDs 
 	}
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
 		[]interface{}{[]interface{}{"move_id", "in", intsToInterfaces(moveIDs)}},
-		[]string{"id", "move_id", "account_id", "account_type"},
+		[]string{"id", "move_id", "account_id", "account_type", "reconciled"},
 		"id asc")
 	if err != nil {
 		return result, err
@@ -3582,6 +3591,7 @@ func fetchCounterpartMoveLinesByMoveID(creds *OdooCredentials, uid int, moveIDs 
 			LineID:      odooInt(row["id"]),
 			AccountID:   odooFieldID(row["account_id"]),
 			AccountType: t,
+			Reconciled:  odooBool(row["reconciled"]),
 		}
 	}
 	return result, nil
@@ -3593,6 +3603,13 @@ func applyOdooMappingAccountBatch(creds *OdooCredentials, uid int, moveIDs, coun
 	if len(moveIDs) == 0 || len(counterpartIDs) == 0 || accountID <= 0 {
 		return nil
 	}
+	// NB: the invoice/bill-match guard lives in the DETECT functions
+	// (detectOdooJournalAccountReclassification, detectStripeFeeAccountFixes) —
+	// not here. This batch helper is also the engine for
+	// resetOverCategorizedToSuspense, which legitimately rewrites the counterpart
+	// of UNreconciled A/R/A/P lines; a guard here would use the "first counterpart
+	// wins" heuristic and could wrongly protect a partially-reconciled move,
+	// breaking that reset.
 	// Only POSTED moves can (and must) be reset to draft before rewriting a
 	// non-bank line, then reposted. A move that is already DRAFT is written
 	// directly: Odoo rejects button_draft on a draft move with "Seules les

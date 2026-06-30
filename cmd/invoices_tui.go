@@ -261,7 +261,7 @@ func (m movesTUIModel) updateAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// override a previous reconciliation by reflex.
 		if cand.AlreadyAttached && !m.attachConfirmReattach {
 			m.attachConfirmReattach = true
-			m.status = fmt.Sprintf("↻ Line #%d is already reconciled. Press [y] to UNRECONCILE its existing match and reattach to %s #%d, or [esc] to back out.",
+			m.status = fmt.Sprintf("↻ Line #%d is already matched to another invoice/bill. Press [y] to DETACH that match and re-attach to %s #%d, or [esc] to back out.",
 				cand.Line.ID, m.kind.label, row.Move.ID)
 			m.statusError = false
 			return m, nil
@@ -620,7 +620,7 @@ func (m movesTUIModel) renderAttach() string {
 	subtitle := fmt.Sprintf("  %d candidate(s) — %d partner-match, then by date proximity",
 		len(m.attachCands), partnerHits)
 	if attachedHits > 0 {
-		subtitle += fmt.Sprintf("  ·  %d already reconciled (pick to unreconcile+reattach)", attachedHits)
+		subtitle += fmt.Sprintf("  ·  %d matched to another invoice/bill (pick to detach+re-attach)", attachedHits)
 	}
 	b.WriteString(cpTUIDimStyle.Render(subtitle))
 	b.WriteString("\n\n")

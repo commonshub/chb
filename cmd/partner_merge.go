@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/providers/odoo"
 )
 
 // PartnerMerge is one recorded "these contacts are the same" decision. It's
@@ -31,7 +33,7 @@ type partnerMergeFile struct {
 // partnerMergesPath is the local pending-merges store. Lives under the data
 // dir's odoo pending tree (timeless), alongside the other "to push" state.
 func partnerMergesPath() string {
-	return filepath.Join(DataDir(), "latest", "providers", "odoo", "pending", "partner-merges.json")
+	return odoosource.Path(DataDir(), "latest", "", "pending", "partner-merges.json")
 }
 
 func loadPartnerMerges() []PartnerMerge {

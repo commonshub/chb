@@ -296,7 +296,32 @@ func isBillMonthCacheUnchanged(dataDir, year, month string, nextPublic OdooVendo
 		currentPublic.Count == nextPublic.Count &&
 		currentPrivate.Count == nextPrivate.Count &&
 		currentPublic.MaxWriteDate == nextPublic.MaxWriteDate &&
-		currentPrivate.MaxWriteDate == nextPrivate.MaxWriteDate
+		currentPrivate.MaxWriteDate == nextPrivate.MaxWriteDate &&
+		// write_date doesn't advance when a payment is reconciled against a move,
+		// so MaxWriteDate alone misses payment_state / state flips (not_paid →
+		// paid). Compare them explicitly, else a now-paid bill is never rewritten
+		// and reconcile keeps showing it as open.
+		publicMoveStatusUnchanged(currentPublic.Bills, nextPublic.Bills)
+}
+
+// publicMoveStatusUnchanged reports whether every move's payment_state and state
+// match between the cached and freshly-fetched public slices (same ids assumed —
+// Count is checked separately). Used so the cache-skip optimisation doesn't hide
+// a reconciliation that left write_date untouched.
+func publicMoveStatusUnchanged(prev, next []OdooOutgoingInvoicePublic) bool {
+	if len(prev) != len(next) {
+		return false
+	}
+	byID := make(map[int]string, len(prev))
+	for _, p := range prev {
+		byID[p.ID] = p.PaymentState + "|" + p.State
+	}
+	for _, n := range next {
+		if v, ok := byID[n.ID]; !ok || v != n.PaymentState+"|"+n.State {
+			return false
+		}
+	}
+	return true
 }
 
 func loadCachedBillMonth(dataDir, year, month string) []OdooOutgoingInvoice {
@@ -405,8 +430,8 @@ func printBillsSyncHelp() {
 
 %sDATA%s
   Saves monthly vendor bill snapshots to:
-    DATA_DIR/YYYY/MM/providers/odoo/bills.json
-    DATA_DIR/YYYY/MM/providers/odoo/private/bills.json
+    DATA_DIR/YYYY/MM/providers/odoo/<db>/bills.json
+    DATA_DIR/YYYY/MM/providers/odoo/<db>/private/bills.json
 
   Each bill includes:
   • public: date, status, payment status, amounts, title, line items, VAT, categories, tags, journal, reconciled transaction

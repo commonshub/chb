@@ -20,7 +20,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "odooGlAccountCode": "550020"
   },
   {
     "name": "🏦 Monerium hacked Savings Account",
@@ -45,7 +46,8 @@
       }
     ],
     "odooSyncSince": "2025-01-01",
-    "archivedAt": "2026-05-26"
+    "archivedAt": "2026-05-26",
+    "odooGlAccountCode": "550013"
   },
   {
     "name": "💶 Monerium Checking Account",
@@ -68,7 +70,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "odooGlAccountCode": "550010"
   },
   {
     "name": "💶 Monerium CHB Safe",
@@ -91,7 +94,8 @@
         "symbol": "EURe",
         "decimals": 18
       }
-    ]
+    ],
+    "odooGlAccountCode": "550015"
   },
   {
     "name": "💳 Stripe Account",
@@ -99,7 +103,8 @@
     "provider": "stripe",
     "accountId": "acct_1Nn0FaFAhaWeDyow",
     "currency": "EUR",
-    "odooSyncSince": "2025-01-01"
+    "odooSyncSince": "2025-01-01",
+    "odooGlAccountCode": "550014"
   },
   {
     "name": "🍻 Fridge",
@@ -114,7 +119,8 @@
       "name": "EURb",
       "symbol": "EURb",
       "decimals": 6
-    }
+    },
+    "odooGlAccountCode": "550016"
   },
   {
     "name": "☕️ Coffee",
@@ -129,7 +135,8 @@
       "name": "EURb",
       "symbol": "EURb",
       "decimals": 6
-    }
+    },
+    "odooGlAccountCode": "550017"
   },
   {
     "name": "🏦 KBC",
@@ -138,7 +145,9 @@
     "iban": "BE46734072238636",
     "currency": "EUR",
     "odooSyncSince": "2025-01-01",
-    "odooSourceOfTruth": true
+    "odooSourceOfTruth": true,
+    "odooGlAccountCode": "550003",
+    "odooJournalId": 28
   },
   {
     "name": "🔑 EOA (Brussels Pay)",
@@ -162,7 +171,8 @@
         "decimals": 18
       }
     ],
-    "archivedAt": "2025-05-24"
+    "archivedAt": "2025-05-24",
+    "odooGlAccountCode": "550018"
   },
   {
     "name": "👛 Citizen Wallet",
@@ -186,7 +196,8 @@
         "decimals": 18
       }
     ],
-    "archivedAt": "2024-05-30"
+    "archivedAt": "2024-05-30",
+    "odooGlAccountCode": "550006"
   },
   {
     "name": "🔑 EOA (Brussels Pay) — Polygon",
@@ -235,5 +246,55 @@
       }
     ],
     "archivedAt": "2026-05-26"
+  },
+  {
+    "name": "🅆 WISE Main (BE57)",
+    "slug": "wise-main",
+    "provider": "wise",
+    "wiseBalanceId": "85390967",
+    "currency": "EUR",
+    "odooJournalId": 20,
+    "odooSyncSince": "2025-01-01",
+    "archivedAt": "2025-04-30"
+  },
+  {
+    "name": "🅆 WISE Commons Hub Brussels",
+    "slug": "wise-commonshub",
+    "provider": "wise",
+    "wiseBalanceId": "91390025",
+    "currency": "EUR",
+    "odooJournalId": 21,
+    "odooSyncSince": "2025-01-01",
+    "archivedAt": "2025-04-30"
+  },
+  {
+    "name": "🅆 WISE Openletter Earth",
+    "slug": "wise-openletter",
+    "provider": "wise",
+    "wiseBalanceId": "92133886",
+    "currency": "EUR",
+    "odooJournalId": 23,
+    "odooSyncSince": "2025-01-01",
+    "archivedAt": "2025-04-30"
+  },
+  {
+    "name": "🅆 WISE Regens Unite",
+    "slug": "wise-regens",
+    "provider": "wise",
+    "wiseBalanceId": "92197873",
+    "currency": "EUR",
+    "odooJournalId": 24,
+    "odooSyncSince": "2025-01-01",
+    "archivedAt": "2025-04-30"
+  },
+  {
+    "name": "🅆 WISE BrusselsPay",
+    "slug": "wise-brusselspay",
+    "provider": "wise",
+    "wiseBalanceId": "104984308",
+    "currency": "EUR",
+    "odooJournalId": 25,
+    "odooSyncSince": "2025-01-01",
+    "archivedAt": "2025-04-30"
   }
 ]

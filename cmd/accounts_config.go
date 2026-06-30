@@ -25,6 +25,8 @@ type AccountConfig struct {
 	Address           string `json:"address,omitempty"`           // wallet address
 	AccountID         string `json:"accountId,omitempty"`         // stripe account ID
 	IBAN              string `json:"iban,omitempty"`              // bank account IBAN (kbcbrussels, …)
+	WiseBalanceID     string `json:"wiseBalanceId,omitempty"`     // Wise balance/jar id (provider "wise"); maps the statement CSV to its Odoo journal
+	OdooGlAccountCode string `json:"odooGlAccountCode,omitempty"` // GL default account code of the linked Odoo journal (e.g. "550010"); stable chart-of-accounts reference, safe to commit
 	Currency          string `json:"currency,omitempty"`          // EUR, EURe, etc.
 	WalletType        string `json:"walletType,omitempty"`        // "eoa" or "safe"
 	OdooJournalID     int    `json:"odooJournalId,omitempty"`     // linked Odoo bank journal ID

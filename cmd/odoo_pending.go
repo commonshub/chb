@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	odoosource "github.com/CommonsHub/chb/providers/odoo"
 )
 
 // Odoo-pending files live at:
@@ -46,7 +48,7 @@ type OdooPendingFile struct {
 }
 
 func odooPendingRelPath() string {
-	return filepath.Join("providers", "odoo", "pending", "transactions.json")
+	return odoosource.RelPath("pending", "transactions.json")
 }
 
 func odooPendingMonthPath(dataDir, year, month string) string {

@@ -121,7 +121,8 @@
       "description": "*donation*"
     },
     "assign": {
-      "category": "donation"
+      "category": "donation",
+      "override": true
     }
   },
   {
@@ -199,149 +200,298 @@
     }
   },
   {
-    "match": {
-      "sender": "*BRUSSELS PAY ASBL*"
-    },
-    "assign": {
-      "type": "INTERNAL",
-      "description": "Payout"
-    }
-  },
-
-  {
     "target": "invoice",
-    "match": { "description": "Shifter*", "amount": 121 },
+    "match": {
+      "description": "Shifter*",
+      "amount": 121
+    },
     "assign": {
       "category": "coworking",
       "collective": "commonshub",
-      "tags": ["shifter", "vat:21%"]
+      "tags": [
+        "shifter",
+        "vat:21%"
+      ]
     }
   },
   {
     "target": "invoice",
-    "match": { "title": "*MEM/*" },
-    "assign": { "category": "membership", "collective": "commonshub" }
+    "match": {
+      "title": "*MEM/*"
+    },
+    "assign": {
+      "category": "membership",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "title": "*CHB/*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "title": "*CHB/*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "title": "*OSV/20*", "amount_min": 500 },
-    "assign": { "category": "sponsoring", "collective": "OSV" }
+    "match": {
+      "title": "*OSV/20*",
+      "amount_min": 500
+    },
+    "assign": {
+      "category": "sponsoring",
+      "collective": "OSV"
+    }
   },
   {
     "target": "invoice",
-    "match": { "title": "*OSV/20*" },
-    "assign": { "collective": "OSV" }
+    "match": {
+      "title": "*OSV/20*"
+    },
+    "assign": {
+      "collective": "OSV"
+    }
   },
   {
     "target": "invoice",
-    "match": { "title": "*EVENT/20*" },
-    "assign": { "category": "ticket" }
+    "match": {
+      "title": "*EVENT/20*"
+    },
+    "assign": {
+      "category": "ticket"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*room*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*room*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*down payment*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*down payment*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*downpayment*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*downpayment*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*aanbetaling*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*aanbetaling*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*second floor*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*second floor*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*deposit*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*deposit*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*huur*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*huur*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*advance payment*" },
-    "assign": { "category": "rental", "collective": "commonshub" }
+    "match": {
+      "description": "*advance payment*"
+    },
+    "assign": {
+      "category": "rental",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*membership*" },
-    "assign": { "category": "membership", "collective": "commonshub" }
+    "match": {
+      "description": "*membership*"
+    },
+    "assign": {
+      "category": "membership",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*cowork*" },
-    "assign": { "category": "coworking", "collective": "commonshub" }
+    "match": {
+      "description": "*cowork*"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*sponsor*" },
-    "assign": { "category": "sponsoring", "collective": "commonshub" }
+    "match": {
+      "description": "*sponsor*"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*Coffee*" },
-    "assign": { "category": "coffee", "collective": "commonshub" }
+    "match": {
+      "description": "*Coffee*"
+    },
+    "assign": {
+      "category": "coffee",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*drink*" },
-    "assign": { "category": "fridge", "collective": "commonshub" }
+    "match": {
+      "description": "*drink*"
+    },
+    "assign": {
+      "category": "fridge",
+      "collective": "commonshub"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*ticket*" },
-    "assign": { "category": "ticket" }
+    "match": {
+      "description": "*ticket*"
+    },
+    "assign": {
+      "category": "ticket"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*conference*" },
-    "assign": { "category": "ticket" }
+    "match": {
+      "description": "*conference*"
+    },
+    "assign": {
+      "category": "ticket"
+    }
   },
   {
     "target": "invoice",
-    "match": { "description": "*genesis*" },
-    "assign": { "collective": "genesis" }
+    "match": {
+      "description": "*genesis*"
+    },
+    "assign": {
+      "collective": "genesis"
+    }
   },
   {
     "target": "invoice",
     "match": {},
-    "assign": { "collective": "commonshub" }
-  },
-
-  {
-    "match": { "description": "*OSV/20*", "amount_min": 500, "direction": "in" },
-    "assign": { "category": "sponsoring", "collective": "OSV" }
+    "assign": {
+      "collective": "commonshub"
+    }
   },
   {
-    "match": { "description": "*OSV/20*" },
-    "assign": { "collective": "OSV" }
+    "match": {
+      "description": "*OSV/20*",
+      "amount_min": 500,
+      "direction": "in"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "collective": "OSV"
+    }
   },
   {
-    "match": { "description": "*EVENT/20*" },
-    "assign": { "category": "ticket" }
+    "match": {
+      "description": "*OSV/20*"
+    },
+    "assign": {
+      "collective": "OSV"
+    }
   },
   {
-    "match": { "sender": "*OpenCollective*", "amount_min": 1000 },
-    "assign": { "category": "sponsoring", "collective": "commonshub" }
+    "match": {
+      "description": "*EVENT/20*"
+    },
+    "assign": {
+      "category": "ticket"
+    }
+  },
+  {
+    "match": {
+      "sender": "*OpenCollective*",
+      "amount_min": 1000
+    },
+    "assign": {
+      "category": "sponsoring",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "kind": "payout_reversal"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    }
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "paymentLink": "plink_1PjHsBFAhaWeDyowZpk5qSQm"
+    },
+    "assign": {
+      "category": "coworking",
+      "collective": "commonshub",
+      "override": true
+    }
+  },
+  {
+    "match": {
+      "description": "*CP-ORDER-*"
+    },
+    "assign": {
+      "category": "drinks",
+      "collective": "commonshub"
+    }
   }
 ]

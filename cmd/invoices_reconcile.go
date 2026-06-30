@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // collectFlagValues returns every value passed to a repeatable `--flag value`
@@ -94,11 +95,11 @@ func applyReconcilePairs(kind moveKind, pairs []string, dryRun, assumeYes bool) 
 			Amount: absFloat(hit.ln.Amount), Currency: "EUR",
 			Reference: hit.ln.PaymentRef, Line: hit.ln,
 			JournalID: hit.jid, JournalName: hit.jname,
-			AlreadyAttached: hit.ln.IsReconciled,
+			AlreadyAttached: bankLineMatchedToDocument(hit.ln),
 		}
 		flag := ""
-		if hit.ln.IsReconciled {
-			flag = Fmt.Yellow + " [already reconciled — will unreconcile + reattach]" + Fmt.Reset
+		if bankLineMatchedToDocument(hit.ln) {
+			flag = Fmt.Yellow + " [already matched to another invoice/bill — will detach + re-attach]" + Fmt.Reset
 		}
 		fmt.Printf("  %s%s%s ← line #%d (%s, %s, %s) %s%s\n",
 			Fmt.Bold, firstNonEmptyStr(row.Move.Title, fmt.Sprintf("#%d", row.Move.ID)), Fmt.Reset,
@@ -274,7 +275,7 @@ func attachMoveToBankLine(creds *OdooCredentials, uid int, row *moveRow, sugg Su
 		PartnerName:    row.Partner,
 		AmountResidual: row.Move.TotalAmount,
 	}
-	if err := reconcileStatementLineWithMove(creds, uid, line, moveCand); err != nil {
+	if err := reconcileStatementLineWithMove(creds, uid, line, moveCand, true); err != nil {
 		return err
 	}
 
@@ -319,6 +320,47 @@ func MovesReconcileCommandInvoices(args []string) error {
 // MovesReconcileCommandBills is the `chb bills reconcile` entry point.
 func MovesReconcileCommandBills(args []string) error {
 	return MovesReconcileCommand(moveKindBill, args)
+}
+
+// printMoveCacheStaleness warns when the local moves cache backing the reconcile
+// view is old, read from the legacy non-namespaced path, or — most importantly —
+// when ANOTHER database has a more recently-pulled cache (the operator pulled one
+// database but is reconciling another). All three explain why an already-paid /
+// already-reconciled invoice/bill still appears as open.
+func printMoveCacheStaleness(kind moveKind, posYear, posMonth string) {
+	// Always anchor the operator: which database is this reconcile reading?
+	fmt.Printf("  %sdatabase: %s%s\n", Fmt.Dim, activeOdooDatabaseLabel(), Fmt.Reset)
+
+	// The big one: a different database was pulled more recently. This is the
+	// usual cause of "I just pulled, why is this paid bill still here?" — the
+	// pull and the reconcile targeted different databases.
+	if other, otherAt, activeAt := fresherMoveNamespace(kind, posYear, posMonth); other != "" {
+		fmt.Printf("  %s⚠ database '%s' has more recently-pulled %s (%s) than the one you're reconciling%s\n",
+			Fmt.Yellow, other, kind.labelPl, formatTimeAgo(otherAt), Fmt.Reset)
+		if !activeAt.IsZero() {
+			fmt.Printf("    %s(this database last pulled %s)%s\n", Fmt.Dim, formatTimeAgo(activeAt), Fmt.Reset)
+		}
+		fmt.Printf("    %sIf you meant to reconcile '%s', set ODOO_DATABASE or ODOO_URL to it and re-run.%s\n",
+			Fmt.Dim, other, Fmt.Reset)
+	}
+
+	oldest, fromLegacy, months := moveCacheFreshness(kind, posYear, posMonth)
+	if months == 0 || oldest.IsZero() {
+		return
+	}
+	stale := time.Since(oldest) > 24*time.Hour
+	if !stale && !fromLegacy {
+		return
+	}
+	fmt.Printf("  %s⚠ %s cache last pulled %s (%s) — %s paid/reconciled in Odoo since then still show as open.%s\n",
+		Fmt.Yellow, kind.labelPl, formatTimeAgo(oldest),
+		oldest.In(BrusselsTZ()).Format("2006-01-02"), kind.labelPl, Fmt.Reset)
+	if fromLegacy {
+		fmt.Printf("    %sReading the legacy pre-namespacing cache; the per-database cache isn't populated yet.%s\n",
+			Fmt.Dim, Fmt.Reset)
+	}
+	fmt.Printf("    %sRefresh with `chb odoo %s pull` for up-to-date payment/reconcile state.%s\n",
+		Fmt.Dim, kind.labelPl, Fmt.Reset)
 }
 
 // MovesReconcileCommand is the entry point for `chb invoices reconcile`
@@ -373,6 +415,12 @@ func MovesReconcileCommand(kind moveKind, args []string) error {
 	if scope == "" {
 		scope = "all time"
 	}
+
+	// Reconcile is offline-first — it reads the local moves cache. If that cache
+	// is stale (or served from the legacy pre-namespacing path), items paid or
+	// reconciled in Odoo since the last pull still show up as open. Surface the
+	// cache age so the operator isn't surprised by already-settled rows.
+	printMoveCacheStaleness(kind, posYear, posMonth)
 
 	if interactive {
 		if len(open) == 0 {
@@ -626,7 +674,7 @@ bank lines.
   Non-interactive (default): only %smemo-confirmed%s matches (exactly one
   unreconciled bank line whose memo names the invoice number) are
   eligible for write. Lines are pulled from
-  %s~/.chb/data/latest/providers/odoo/journals/*.json%s, so the result
+  %s~/.chb/data/latest/providers/odoo/<db>/journals/*.json%s, so the result
   mirrors what %schb odoo journals N reconcile%s would see.
 
   Interactive (-i): a guided review — one item at a time, with scored

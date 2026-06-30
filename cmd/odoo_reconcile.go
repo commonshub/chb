@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -76,7 +77,14 @@ func odooJournalReconcile(creds *OdooCredentials, uid int, journalID int, assume
 // so the summary you see before confirming is what gets applied. Live mode adds
 // a counterpart-reset pre-pass (only run after confirmation) and an apply phase
 // that actually calls account.move.line.reconcile via XML-RPC.
+// lastReconcileApplied holds the number of invoice/bill matches the most recent
+// odooJournalReconcileInteractive actually applied. Single-threaded CLI, so a
+// package var is enough — it lets the post-push summary report "y/x reconciled"
+// without threading a return value through every caller.
+var lastReconcileApplied int
+
 func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, verbose, interactive, linkPartners bool) error {
+	lastReconcileApplied = 0
 	header := "Reconcile preview for journal #%d (local-only)"
 	if !dryRun {
 		// Show the write target up front — before the confirm prompt, so
@@ -165,6 +173,7 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 	// candidate.ID + AmountResidual are the only fields it uses on `move`.
 	var reconciled, alreadyDone, failed int
 	touchedInvoiceMoveIDs := make([]int, 0, len(winners))
+	var needsOverride []reconcilePaidOverrideCase
 	for i, w := range winners {
 		Progress(fmt.Sprintf("reconciling %d/%d", i+1, len(winners)))
 		line := odooStatementLineForReconcile{
@@ -180,7 +189,17 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 			PartnerName:    cand.PartnerName,
 			AmountResidual: cand.Residual,
 		}
-		err := reconcileStatementLineWithMove(creds, uid, line, move)
+		// Auto/batch: never break an already-settled match. When the only way to
+		// attach would be unreconcile + reattach, collect it for the operator to
+		// resolve in interactive mode instead.
+		err := reconcileStatementLineWithMove(creds, uid, line, move, false)
+		if errors.Is(err, errReconcilePaidNeedsOverride) {
+			needsOverride = append(needsOverride, reconcilePaidOverrideCase{
+				LineID: line.ID, LineDate: w.Line.Date, Amount: line.Amount,
+				MoveID: cand.ID, MoveName: cand.label(), Kind: cand.Kind,
+			})
+			continue
+		}
 		if err == nil {
 			reconciled++
 			touchedInvoiceMoveIDs = append(touchedInvoiceMoveIDs, cand.ID)
@@ -228,6 +247,8 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 		fmt.Printf("  %sRe-run with --verbose to see per-line failures.%s\n", Fmt.Dim, Fmt.Reset)
 	}
 
+	printReconcilePaidOverrideCases(creds, needsOverride)
+
 	// Refresh local caches so they reflect the writes we just made:
 	//   - journal-lines cache: counterpart account_id + reconciled flags
 	//   - private invoice/bill caches: payment_state + residual
@@ -252,7 +273,57 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 		}
 	}
 	fmt.Println()
+	lastReconcileApplied = reconciled
 	return nil
+}
+
+// reconcilePaidOverrideCase is a memo/ref match the batch reconcile declined to
+// apply because the target invoice/bill is already fully settled — attaching this
+// line would require unreconciling an existing payment. Surfaced for the operator
+// to resolve (or reject) in interactive mode.
+type reconcilePaidOverrideCase struct {
+	LineID   int
+	LineDate string
+	Amount   float64
+	MoveID   int
+	MoveName string
+	Kind     string // "invoice" | "bill"
+}
+
+// printReconcilePaidOverrideCases lists the declined match-steals with a direct
+// Odoo link to each invoice/bill and points to the interactive command that can
+// resolve them safely.
+func printReconcilePaidOverrideCases(creds *OdooCredentials, cases []reconcilePaidOverrideCase) {
+	if len(cases) == 0 {
+		return
+	}
+	fmt.Printf("\n  %s%s reference an already-paid invoice/bill — left untouched%s\n",
+		Fmt.Yellow, Pluralize(len(cases), "line", ""), Fmt.Reset)
+	fmt.Printf("  %s(attaching them would unreconcile an existing payment, so the batch never does it automatically)%s\n",
+		Fmt.Dim, Fmt.Reset)
+	base := strings.TrimRight(creds.URL, "/")
+	sawInvoice, sawBill := false, false
+	for _, c := range cases {
+		switch strings.ToLower(c.Kind) {
+		case "bill":
+			sawBill = true
+		default:
+			sawInvoice = true
+		}
+		fmt.Printf("    %s%s  %10s  → %s%s\n",
+			Fmt.Dim, c.LineDate, formatBalancePlain(c.Amount, "EUR"), c.MoveName, Fmt.Reset)
+		fmt.Printf("      line #%d  %s%s/web#id=%d&model=account.move&view_type=form%s\n",
+			c.LineID, Fmt.Cyan, base, c.MoveID, Fmt.Reset)
+	}
+	cmds := []string{}
+	if sawInvoice {
+		cmds = append(cmds, "chb invoices reconcile -i")
+	}
+	if sawBill {
+		cmds = append(cmds, "chb bills reconcile -i")
+	}
+	fmt.Printf("\n  %sResolve in interactive mode (lets you confirm the re-match per item): %s%s%s\n",
+		Fmt.Dim, Fmt.Cyan, strings.Join(cmds, "  |  "), Fmt.Reset)
 }
 
 // reconcileStaleCacheError reports whether err is one of Odoo's
@@ -267,6 +338,9 @@ func reconcileStaleCacheError(err error) bool {
 	return strings.Contains(msg, "no open a/r or a/p line") ||
 		strings.Contains(msg, "écritures comptables qui le sont déjà") ||
 		strings.Contains(msg, "already reconciled") ||
+		// Odoo's account.move.line.reconcile raises this (often naming the
+		// target invoice) when a line in the set is already fully reconciled.
+		strings.Contains(msg, "trying to reconcile some entries") ||
 		strings.Contains(msg, "déjà lettré")
 }
 
@@ -396,7 +470,7 @@ func tryReconcileStatementLineWithReferenceCandidates(creds *OdooCredentials, ui
 				"account.bank.statement.line", "write",
 				[]interface{}{[]interface{}{line.ID}, map[string]interface{}{"partner_id": candidate.PartnerID}}, nil)
 		}
-		if err := reconcileStatementLineWithMove(creds, uid, line, candidate); err != nil {
+		if err := reconcileStatementLineWithMove(creds, uid, line, candidate, true); err != nil {
 			return odooLineReconcileResult{Err: err, Message: fmt.Sprintf("reconcile by reference with %s", candidateDisplayName(candidate))}
 		}
 		return odooLineReconcileResult{
@@ -436,7 +510,7 @@ func tryReconcileStatementLineWithReferenceCandidates(creds *OdooCredentials, ui
 			CandidateMoveName: candidateDisplayName(candidate),
 		}
 	}
-	if err := reconcileStatementLineWithMove(creds, uid, line, candidate); err != nil {
+	if err := reconcileStatementLineWithMove(creds, uid, line, candidate, true); err != nil {
 		return odooLineReconcileResult{Err: err, Message: fmt.Sprintf("reconcile with %s", candidateDisplayName(candidate))}
 	}
 	return odooLineReconcileResult{
@@ -1153,7 +1227,19 @@ func parseOdooMoveCandidates(rows []map[string]interface{}) []odooMoveCandidate 
 // transfers (it rewrites the counterpart to the internal-transfer
 // account instead of an A/R one) and what Odoo's bank reconciliation
 // widget does under the hood.
-func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooStatementLineForReconcile, move odooMoveCandidate) error {
+// errReconcilePaidNeedsOverride signals that the only way to attach this line to
+// the chosen invoice/bill would be to unreconcile an EXISTING, already-settled
+// match — a destructive "steal" that must never happen automatically. The batch
+// caller collects these and surfaces them for the operator to resolve in
+// interactive mode (where allowUnreconcileReattach is set).
+var errReconcilePaidNeedsOverride = errors.New("invoice/bill already reconciled — needs interactive override")
+
+// reconcileStatementLineWithMove attaches a bank line to an invoice/bill.
+// allowUnreconcileReattach gates the destructive "Fallback B" path that breaks an
+// existing reconciliation on an already-paid invoice to re-attach this line — it
+// must be true ONLY when the operator explicitly picked the target (interactive
+// mode), never in an auto/batch run.
+func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooStatementLineForReconcile, move odooMoveCandidate, allowUnreconcileReattach bool) error {
 	if line.MoveID == 0 {
 		return fmt.Errorf("statement line has no move")
 	}
@@ -1172,6 +1258,9 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 		if oLineID, oAccountID, found, ferr := findOutstandingPaymentLineForInvoice(creds, uid, move.ID); ferr == nil && found {
 			invoiceLineID = oLineID
 			arAccountID = oAccountID
+		} else if !allowUnreconcileReattach {
+			// Auto/batch run: refuse to break an already-settled match.
+			return errReconcilePaidNeedsOverride
 		} else if unrecLineID, unrecAccountID, unrecCount, uerr := unreconcileInvoiceAndGetOpenLine(creds, uid, move.ID); uerr == nil && unrecLineID > 0 {
 			// Fallback B — "paid" invoice: the operator explicitly picked
 			// it from the interactive prompt's top-5 list, signalling
@@ -1236,10 +1325,35 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 	}
 
 	// Now counterpart and invoice line are on the same A/R account.
-	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
-		"account.move.line", "reconcile",
-		[]interface{}{[]interface{}{counterpartID, invoiceLineID}}, nil); err != nil {
-		return fmt.Errorf("reconcile lines: %v", err)
+	reconcilePair := func() error {
+		_, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+			"account.move.line", "reconcile",
+			[]interface{}{[]interface{}{counterpartID, invoiceLineID}}, nil)
+		return err
+	}
+	if err := reconcilePair(); err != nil {
+		// Odoo's "you're reconciling entries that are already reconciled" is
+		// opaque — it names the *invoice* we're attaching to, not the line that's
+		// actually already matched (usually the bank counterpart, wrongly linked
+		// to another move). Diagnose which line is the offender, and in reattach
+		// mode break that stale match and retry once. Otherwise surface an
+		// actionable error with the conflicting move(s) + clickable Odoo URLs.
+		if !reconcileStaleCacheError(err) {
+			return fmt.Errorf("reconcile lines: %v", err)
+		}
+		states, offenders := diagnoseReconcileOffenders(creds, uid, counterpartID, invoiceLineID)
+		reattached := false
+		if allowUnreconcileReattach && len(offenders) > 0 {
+			if uerr := unreconcileLines(creds, uid, offenders); uerr == nil {
+				if rerr := reconcilePair(); rerr == nil {
+					printReattachNote(line, move, states)
+					reattached = true
+				}
+			}
+		}
+		if !reattached {
+			return alreadyReconciledAttachError(creds, moveKindLabelFromOdoo(creds, uid, move.ID), line, move, states)
+		}
 	}
 
 	// Attribute the bank line to the invoice's partner + register the

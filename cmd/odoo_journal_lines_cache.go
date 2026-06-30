@@ -25,18 +25,23 @@ type OdooJournalLinesFile struct {
 }
 
 type OdooCacheLine struct {
-	ID             int                    `json:"id"`
-	MoveID         int                    `json:"moveId,omitempty"`
-	PartnerID      int                    `json:"partnerId,omitempty"`
-	AccountID      int                    `json:"accountId,omitempty"`
-	CounterpartID  int                    `json:"counterpartId,omitempty"`
-	Date           string                 `json:"date,omitempty"`
-	PaymentRef     string                 `json:"paymentRef,omitempty"`
-	UniqueImportID string                 `json:"uniqueImportId,omitempty"`
-	Amount         float64                `json:"amount"`
-	IsReconciled   bool                   `json:"isReconciled,omitempty"`
-	Narration      string                 `json:"narration,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	ID            int `json:"id"`
+	MoveID        int `json:"moveId,omitempty"`
+	PartnerID     int `json:"partnerId,omitempty"`
+	AccountID     int `json:"accountId,omitempty"`
+	CounterpartID int `json:"counterpartId,omitempty"`
+	// CounterpartType is the Odoo account_type of the counterpart line
+	// (income/expense = categorized; asset_receivable/liability_payable =
+	// matched to an invoice/bill). Lets the local reconcile matcher offer
+	// categorized lines for invoice attachment while leaving real matches alone.
+	CounterpartType string                 `json:"counterpartType,omitempty"`
+	Date            string                 `json:"date,omitempty"`
+	PaymentRef      string                 `json:"paymentRef,omitempty"`
+	UniqueImportID  string                 `json:"uniqueImportId,omitempty"`
+	Amount          float64                `json:"amount"`
+	IsReconciled    bool                   `json:"isReconciled,omitempty"`
+	Narration       string                 `json:"narration,omitempty"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func writeOdooJournalLinesCache(creds *OdooCredentials, uid int, journalID int) (int, error) {
@@ -174,18 +179,19 @@ func fetchOdooJournalLinesSince(creds *OdooCredentials, uid int, journalID int, 
 		moveID := odooFieldID(row["move_id"])
 		counterpart := counterpartByMoveID[moveID]
 		line := OdooCacheLine{
-			ID:             odooInt(row["id"]),
-			MoveID:         moveID,
-			PartnerID:      odooFieldID(row["partner_id"]),
-			AccountID:      counterpart.AccountID,
-			CounterpartID:  counterpart.LineID,
-			Date:           odooString(row["date"]),
-			PaymentRef:     odooString(row["payment_ref"]),
-			UniqueImportID: odooString(row["unique_import_id"]),
-			Amount:         odooFloat(row["amount"]),
-			IsReconciled:   odooBool(row["is_reconciled"]),
-			Narration:      narration,
-			Metadata:       parseOdooLineNarration(narration),
+			ID:              odooInt(row["id"]),
+			MoveID:          moveID,
+			PartnerID:       odooFieldID(row["partner_id"]),
+			AccountID:       counterpart.AccountID,
+			CounterpartID:   counterpart.LineID,
+			CounterpartType: counterpart.AccountType,
+			Date:            odooString(row["date"]),
+			PaymentRef:      odooString(row["payment_ref"]),
+			UniqueImportID:  odooString(row["unique_import_id"]),
+			Amount:          odooFloat(row["amount"]),
+			IsReconciled:    odooBool(row["is_reconciled"]),
+			Narration:       narration,
+			Metadata:        parseOdooLineNarration(narration),
 		}
 		if line.UniqueImportID == "" {
 			line.UniqueImportID = metaString(line.Metadata, "uniqueImportId")
@@ -342,18 +348,19 @@ func fetchOdooJournalLinesForCacheFull(creds *OdooCredentials, uid int, journalI
 		moveID := odooFieldID(row["move_id"])
 		counterpart := counterpartByMoveID[moveID]
 		line := OdooCacheLine{
-			ID:             odooInt(row["id"]),
-			MoveID:         moveID,
-			PartnerID:      odooFieldID(row["partner_id"]),
-			AccountID:      counterpart.AccountID,
-			CounterpartID:  counterpart.LineID,
-			Date:           odooString(row["date"]),
-			PaymentRef:     odooString(row["payment_ref"]),
-			UniqueImportID: odooString(row["unique_import_id"]),
-			Amount:         odooFloat(row["amount"]),
-			IsReconciled:   odooBool(row["is_reconciled"]),
-			Narration:      narration,
-			Metadata:       parseOdooLineNarration(narration),
+			ID:              odooInt(row["id"]),
+			MoveID:          moveID,
+			PartnerID:       odooFieldID(row["partner_id"]),
+			AccountID:       counterpart.AccountID,
+			CounterpartID:   counterpart.LineID,
+			CounterpartType: counterpart.AccountType,
+			Date:            odooString(row["date"]),
+			PaymentRef:      odooString(row["payment_ref"]),
+			UniqueImportID:  odooString(row["unique_import_id"]),
+			Amount:          odooFloat(row["amount"]),
+			IsReconciled:    odooBool(row["is_reconciled"]),
+			Narration:       narration,
+			Metadata:        parseOdooLineNarration(narration),
 		}
 		if line.UniqueImportID == "" {
 			line.UniqueImportID = metaString(line.Metadata, "uniqueImportId")
@@ -388,18 +395,19 @@ func fetchOdooJournalLinesForCache(creds *OdooCredentials, uid int, journalID in
 		moveID := odooFieldID(row["move_id"])
 		counterpart := counterpartByMoveID[moveID]
 		line := OdooCacheLine{
-			ID:             odooInt(row["id"]),
-			MoveID:         moveID,
-			PartnerID:      odooFieldID(row["partner_id"]),
-			AccountID:      counterpart.AccountID,
-			CounterpartID:  counterpart.LineID,
-			Date:           odooString(row["date"]),
-			PaymentRef:     odooString(row["payment_ref"]),
-			UniqueImportID: odooString(row["unique_import_id"]),
-			Amount:         odooFloat(row["amount"]),
-			IsReconciled:   odooBool(row["is_reconciled"]),
-			Narration:      narration,
-			Metadata:       parseOdooLineNarration(narration),
+			ID:              odooInt(row["id"]),
+			MoveID:          moveID,
+			PartnerID:       odooFieldID(row["partner_id"]),
+			AccountID:       counterpart.AccountID,
+			CounterpartID:   counterpart.LineID,
+			CounterpartType: counterpart.AccountType,
+			Date:            odooString(row["date"]),
+			PaymentRef:      odooString(row["payment_ref"]),
+			UniqueImportID:  odooString(row["unique_import_id"]),
+			Amount:          odooFloat(row["amount"]),
+			IsReconciled:    odooBool(row["is_reconciled"]),
+			Narration:       narration,
+			Metadata:        parseOdooLineNarration(narration),
 		}
 		if line.UniqueImportID == "" {
 			line.UniqueImportID = metaString(line.Metadata, "uniqueImportId")
@@ -420,16 +428,27 @@ func loadLatestOdooJournalLinesCache(journalID int) ([]OdooCacheLine, bool) {
 // loadLatestOdooJournalLinesFile returns the full cache file (including
 // FetchedAt) for a journal, or (_, false) when missing/unparseable.
 func loadLatestOdooJournalLinesFile(journalID int) (OdooJournalLinesFile, bool) {
-	path := odoosource.Path(DataDir(), "latest", "", "journals", journalLinesCacheName(journalID))
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return OdooJournalLinesFile{}, false
+	name := journalLinesCacheName(journalID)
+	// Prefer the per-database namespaced cache, but fall back to the legacy
+	// non-namespaced path for caches written before namespacing (same shim as
+	// the invoices/bills readers) — otherwise the alignment/snapshot views read
+	// as "no cache".
+	candidates := []string{odoosource.Path(DataDir(), "latest", "", "journals", name)}
+	if legacy := filepath.Join(DataDir(), "latest", odoosource.LegacyRelPath("journals", name)); legacy != candidates[0] {
+		candidates = append(candidates, legacy)
 	}
-	var file OdooJournalLinesFile
-	if err := json.Unmarshal(data, &file); err != nil || file.JournalID != journalID {
-		return OdooJournalLinesFile{}, false
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var file OdooJournalLinesFile
+		if err := json.Unmarshal(data, &file); err != nil || file.JournalID != journalID {
+			continue
+		}
+		return file, true
 	}
-	return file, true
+	return OdooJournalLinesFile{}, false
 }
 
 // journalCacheTrustWindow is how recently the journal-lines cache must have been
@@ -561,5 +580,5 @@ func journalLinesCacheName(journalID int) string {
 }
 
 func odooJournalLinesCachePath(journalID int) string {
-	return filepath.Join("providers", "odoo", "journals", journalLinesCacheName(journalID))
+	return odoosource.RelPath("journals", journalLinesCacheName(journalID))
 }

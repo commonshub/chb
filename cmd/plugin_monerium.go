@@ -10,6 +10,11 @@ import (
 
 type moneriumProcessor struct {
 	ordersByTxHash map[string]moneriumOrderInfo
+	// ownIBANs holds the normalized IBANs of accounts we control (e.g. our KBC
+	// bank account). A Monerium mint/redeem whose counterpart IBAN is one of
+	// ours is money moving between two accounts we own — an internal transfer,
+	// not a payment to/from a third party.
+	ownIBANs map[string]bool
 }
 
 type moneriumOrderInfo struct {
@@ -37,6 +42,15 @@ func (p *moneriumProcessor) EnvVars() []ProcessorEnvVar {
 
 func (p *moneriumProcessor) WarmUp(ctx *ProcessorContext) error {
 	p.ordersByTxHash = map[string]moneriumOrderInfo{}
+
+	// Build the set of IBANs we control so redeems/mints into our own bank
+	// account are recognised as internal transfers (see ProcessTransaction).
+	p.ownIBANs = map[string]bool{}
+	for _, acc := range LoadAccountConfigs() {
+		if iban := normalizeIBAN(acc.IBAN); iban != "" {
+			p.ownIBANs[iban] = true
+		}
+	}
 
 	entries, err := os.ReadDir(moneriumsource.Path(ctx.DataDir, ctx.Year, ctx.Month))
 	if err != nil {
@@ -91,6 +105,19 @@ func (p *moneriumProcessor) ProcessTransaction(ctx *ProcessorContext, tx *Transa
 		// IBAN is PII; the public/private split moves the "iban" metadata
 		// key into private/enrichment.json so it never reaches the public file.
 		tx.Metadata["iban"] = info.IBAN
+
+		// A redeem into (or mint from) one of our own bank accounts is an
+		// internal transfer — the EURe leaving the wallet lands in our KBC
+		// account, not with a third party. Mark it INTERNAL so push routes it
+		// to the internal-transfer account (580000) and never tries to match
+		// it against a bill/invoice. Preserve the original on-chain direction
+		// for downstream labels (Amount already carries the sign).
+		if p.ownIBANs[info.IBAN] && !strings.EqualFold(tx.Type, "INTERNAL") {
+			if tx.Type != "" {
+				tx.Metadata["direction"] = tx.Type
+			}
+			tx.Type = "INTERNAL"
+		}
 	}
 	if info.Memo != "" {
 		tx.Metadata["memo"] = info.Memo

@@ -82,6 +82,7 @@ func emitAccountsJSON(args []string, configs []AccountConfig) {
 				}
 			}
 		}
+		row.OdooGlAccountCode = acc.OdooGlAccountCode
 
 		out.Accounts = append(out.Accounts, row)
 	}
@@ -154,6 +155,7 @@ func emitAccountDetailJSON(acc *AccountConfig, args []string) {
 		row.OdooJournalID = acc.OdooJournalID
 		row.OdooJournalName = OdooJournalName(acc.OdooJournalID)
 	}
+	row.OdooGlAccountCode = acc.OdooGlAccountCode
 
 	_ = EmitJSON(row)
 }

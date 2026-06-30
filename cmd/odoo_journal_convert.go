@@ -421,7 +421,7 @@ func applyOdooJournalConvertPlan(creds *OdooCredentials, uid int, plan *odooJour
 			MoveID: pair.Target.MoveID,
 			Amount: pair.Target.Amount,
 		}
-		if err := reconcileStatementLineWithMove(creds, uid, targetForReconcile, pair.InvoiceMove); err != nil {
+		if err := reconcileStatementLineWithMove(creds, uid, targetForReconcile, pair.InvoiceMove, true); err != nil {
 			failed++
 			Warnf("  %s⚠ pair %d: %v%s", Fmt.Yellow, i+1, err, Fmt.Reset)
 			continue
