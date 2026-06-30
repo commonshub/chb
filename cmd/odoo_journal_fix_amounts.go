@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"time"
 
 	stripesource "github.com/CommonsHub/chb/providers/stripe"
 )
@@ -54,7 +55,7 @@ func expectedOdooMainLineAmount(acc *AccountConfig, tx TransactionEntry) float64
 // internal transfers pushed before the internalTransactionDirection sign fix
 // went out as +amount (incoming) when they were outflows, so a drained wallet's
 // journal reads far above its true (~0) balance.
-func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, acc *AccountConfig) ([]odooAmountFix, error) {
+func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, acc *AccountConfig, since time.Time) ([]odooAmountFix, error) {
 	if acc == nil {
 		return nil, nil
 	}
@@ -87,7 +88,7 @@ func detectOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, ac
 		return nil, nil
 	}
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
-		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
+		journalLineSinceDomain(journalID, since),
 		[]string{"id", "date", "amount", "unique_import_id", "move_id", "is_reconciled"},
 		"date asc, id asc")
 	if err != nil {
@@ -385,7 +386,7 @@ func applyOdooJournalAmountFixes(creds *OdooCredentials, uid, journalID int, fix
 // confirm → apply, for the amount-repair step alone. `chb odoo journals <id>
 // fix` runs the same step as part of its broader repair; this shortcut runs
 // only it (no orphan/duplicate/metadata scan) when that's all you need.
-func repairOdooJournalLineAmounts(creds *OdooCredentials, uid, journalID int, assumeYes, dryRun bool) error {
+func repairOdooJournalLineAmounts(creds *OdooCredentials, uid, journalID int, assumeYes, dryRun bool, since time.Time) error {
 	if !dryRun {
 		if err := RequireOdooWriteCapability(); err != nil {
 			return err
@@ -398,7 +399,7 @@ func repairOdooJournalLineAmounts(creds *OdooCredentials, uid, journalID int, as
 	printOdooTargetLine(creds)
 	fmt.Printf("\n  %sChecking line amounts for journal #%d (%s)…%s\n", Fmt.Bold, journalID, acc.Slug, Fmt.Reset)
 
-	fixes, err := detectOdooJournalAmountFixes(creds, uid, journalID, acc)
+	fixes, err := detectOdooJournalAmountFixes(creds, uid, journalID, acc, since)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	stripesource "github.com/CommonsHub/chb/providers/stripe"
 )
@@ -325,7 +326,7 @@ func fetchAccountCodesByID(creds *OdooCredentials, uid int, ids []int) (map[int]
 // Only lines whose category resolves to a mapped account are considered — lines
 // with no mapping keep whatever account they have (no clobbering of manual or
 // default-revenue postings).
-func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journalID int, acc *AccountConfig, remap bool) ([]odooLineAccountFix, error) {
+func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journalID int, acc *AccountConfig, remap bool, since time.Time) ([]odooLineAccountFix, error) {
 	if acc == nil {
 		return nil, nil
 	}
@@ -365,7 +366,7 @@ func detectOdooJournalAccountReclassification(creds *OdooCredentials, uid, journ
 	// carry no category. Categorise the Odoo line's own narration via the rules
 	// — that's how a freshly-added `cp-order-…` drink line resolves to 700003.
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.bank.statement.line",
-		[]interface{}{[]interface{}{"journal_id", "=", journalID}},
+		journalLineSinceDomain(journalID, since),
 		[]string{"id", "unique_import_id", "move_id", "payment_ref", "amount"}, "id asc")
 	if err != nil {
 		return nil, err

@@ -667,10 +667,16 @@ func TransactionsSync(args []string) (int, error) {
 			if acc.Provider == "monerium" {
 				moneriumAccounts = append(moneriumAccounts, acc)
 			}
-			// Auto-include EURe blockchain accounts for Monerium enrichment
+			// Auto-include EURe blockchain accounts for Monerium enrichment.
 			if acc.Provider == "etherscan" && acc.Address != "" && acc.Token != nil &&
 				strings.EqualFold(acc.Token.Symbol, "EURe") {
-				if !shouldRunBlockchainEnrichment(acc.Slug, enrichmentRefresh, blockchainChangedSlugs) {
+				// Monerium orders carry the human description/memo and arrive (or
+				// get processed) independently of the on-chain mint/redeem — an
+				// order can land after the burn is already cached. So an explicit
+				// account pull (`chb accounts pull`) must always re-fetch the
+				// orders; only the bulk `chb sync`/`transactions sync` path stays
+				// gated on a blockchain change to avoid re-hitting the API needlessly.
+				if !accountSyncMode && !shouldRunBlockchainEnrichment(acc.Slug, enrichmentRefresh, blockchainChangedSlugs) {
 					continue
 				}
 				moneriumAccounts = append(moneriumAccounts, FinanceAccount{

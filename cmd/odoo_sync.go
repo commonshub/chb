@@ -616,10 +616,26 @@ func OdooJournals(args []string) error {
 			return odooJournalCheck(creds, uid, journalID)
 		}
 		if len(args) >= 2 && args[1] == "fix" {
-			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--remap"))
+			var since time.Time
+			if v := GetOption(args, "--since"); v != "" {
+				t, ok := ParseSinceDate(v)
+				if !ok {
+					return fmt.Errorf("invalid --since %q (expected a date like 20260630 or 2026-06-30)", v)
+				}
+				since = t
+			}
+			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--remap"), since)
 		}
 		if len(args) >= 2 && (args[1] == "fix-amounts" || args[1] == "repair-amounts") {
-			return repairOdooJournalLineAmounts(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"))
+			var since time.Time
+			if v := GetOption(args, "--since"); v != "" {
+				t, ok := ParseSinceDate(v)
+				if !ok {
+					return fmt.Errorf("invalid --since %q (expected a date like 20260630 or 2026-06-30)", v)
+				}
+				since = t
+			}
+			return repairOdooJournalLineAmounts(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), since)
 		}
 		if len(args) >= 2 && args[1] == "merge" {
 			acc := linkedAccountForJournal(journalID)
@@ -1086,11 +1102,14 @@ ALONE so manual work is never reverted — pass '%s--remap%s' to also re-apply a
 changed mapping (e.g. 612011→612300) across already-assigned history.
 
 %sOPTIONS%s
+  %s--since <date>%s         Only examine statement lines on/after this date
+                          (e.g. 20260630) for the line-content fixes
   %s--dry-run%s              Preview only; no writes to Odoo
   %s--remap%s                Also re-account already-assigned (chb-owned) lines
   %s-y%s, %s--yes%s             Skip the interactive confirmation
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
@@ -2051,7 +2070,18 @@ func odooJournalCheck(creds *OdooCredentials, uid int, journalID int) error {
 // This is safe for the new chronological sync model because line amounts
 // are authoritative — the starting and ending balances are derived from
 // them, not asserted independently.
-func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, remap bool) error {
+// journalLineSinceDomain builds the account.bank.statement.line search domain
+// for a journal, optionally narrowed to lines on/after `since` (zero = no
+// cutoff) so `fix --since` can target only recent entries.
+func journalLineSinceDomain(journalID int, since time.Time) []interface{} {
+	domain := []interface{}{[]interface{}{"journal_id", "=", journalID}}
+	if !since.IsZero() {
+		domain = append(domain, []interface{}{"date", ">=", since.Format("2006-01-02")})
+	}
+	return domain
+}
+
+func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, dryRun, remap bool, since time.Time) error {
 	if !dryRun {
 		if err := RequireOdooWriteCapability(); err != nil {
 			return err
@@ -2098,7 +2128,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 
 		fmt.Printf("  %sChecking line amounts...%s\n", Fmt.Dim, Fmt.Reset)
 		var amountErr error
-		amountFixes, amountErr = detectOdooJournalAmountFixes(creds, uid, journalID, res.Account)
+		amountFixes, amountErr = detectOdooJournalAmountFixes(creds, uid, journalID, res.Account, since)
 		if amountErr != nil {
 			Warnf("  %s⚠ Could not check line amounts: %v%s", Fmt.Yellow, amountErr, Fmt.Reset)
 			amountFixes = nil
@@ -2113,7 +2143,7 @@ func odooJournalFix(creds *OdooCredentials, uid int, journalID int, assumeYes, d
 		}
 
 		fmt.Printf("  %sChecking line accounts vs category mapping...%s\n", Fmt.Dim, Fmt.Reset)
-		if ar, arErr := detectOdooJournalAccountReclassification(creds, uid, journalID, res.Account, remap); arErr != nil {
+		if ar, arErr := detectOdooJournalAccountReclassification(creds, uid, journalID, res.Account, remap, since); arErr != nil {
 			Warnf("  %s⚠ Could not check line accounts: %v%s", Fmt.Yellow, arErr, Fmt.Reset)
 			accountReclass = nil
 		} else {

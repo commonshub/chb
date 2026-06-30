@@ -794,6 +794,14 @@ func AccountsCommand(args []string) {
 		return
 	}
 
+	// `chb accounts push` (no slug) → push every pushable account to Odoo.
+	if len(args) >= 1 && args[0] == "push" {
+		if err := AccountsPushAll(args[1:]); err != nil {
+			Fatalf("%sError:%s %v", Fmt.Red, Fmt.Reset, err)
+		}
+		return
+	}
+
 	// Check for `chb accounts <slug> <action>`
 	if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
 		slug := args[0]
@@ -2099,6 +2107,21 @@ func AccountFetch(slug string, args []string) error {
 	countBefore := accountProviderRawCount(acc)
 	printAccountFetchHeader(acc, args)
 
+	// Odoo-source-of-truth account (e.g. KBC): the Odoo journal is authoritative
+	// and new entries are created there, not in the bank CSV. Pull them from
+	// Odoo by refreshing the journal-lines cache, which is what the views,
+	// reconcile and fix read.
+	if acc.IsOdooSourceOfTruth() && acc.OdooJournalID > 0 {
+		newLines, err := pullOdooSourceOfTruthAccount(acc, HasFlag(args, "--history"), verbose)
+		if err != nil {
+			return err
+		}
+		UpdateSyncSource("account:"+strings.ToLower(slug), HasFlag(args, "--history"))
+		refreshAndPersistAccountBalance(acc)
+		printAccountFetchSummary(acc, newLines, time.Since(startedAt), verbose)
+		return nil
+	}
+
 	// Manual / CSV provider: no upstream API to call. Re-generate every
 	// month touched by the CSV so monthly transactions.json files catch
 	// up with anything the operator dropped under latest/providers/.
@@ -2177,6 +2200,48 @@ func AccountFetch(slug string, args []string) error {
 	}
 	printAccountFetchSummary(acc, newTxs, time.Since(startedAt), verbose)
 	return nil
+}
+
+// pullOdooSourceOfTruthAccount refreshes the linked Odoo journal-lines cache for
+// an odooSourceOfTruth account (the real pull source) and returns how many NEW
+// lines arrived. fullHistory forces a full re-fetch; otherwise it's an
+// incremental pull keyed on the write-date watermark.
+func pullOdooSourceOfTruthAccount(acc *AccountConfig, fullHistory, verbose bool) (int, error) {
+	creds, err := ResolveOdooCredentials()
+	if err != nil {
+		return 0, err
+	}
+	uid, err := odooAuth(creds.URL, creds.DB, creds.Login, creds.Password)
+	if err != nil || uid == 0 {
+		return 0, fmt.Errorf("Odoo authentication failed: %v", err)
+	}
+
+	before := 0
+	if cached, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID); ok {
+		before = len(cached)
+	}
+
+	if fullHistory {
+		cur := LoadSyncCursor(SyncCursorKeyForOdooJournal(acc.OdooJournalID))
+		if _, err := writeOdooJournalLinesCacheFullRefetch(creds, uid, acc.OdooJournalID, &cur); err != nil {
+			return 0, err
+		}
+	} else if _, err := writeOdooJournalLinesCache(creds, uid, acc.OdooJournalID); err != nil {
+		return 0, err
+	}
+
+	after := 0
+	if cached, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID); ok {
+		after = len(cached)
+	}
+	if verbose {
+		fmt.Printf("  %sJournal #%d cache: %d → %d lines%s\n", Fmt.Dim, acc.OdooJournalID, before, after, Fmt.Reset)
+	}
+	newLines := after - before
+	if newLines < 0 {
+		newLines = 0
+	}
+	return newLines, nil
 }
 
 // reconcileAfterPushSummary appends a concise "x new · y reconciled" note to the
@@ -2290,6 +2355,12 @@ func queuePushAttentionHint(label, message string) {
 func accountProviderDisplayName(acc *AccountConfig) string {
 	if acc == nil {
 		return ""
+	}
+	// When the linked Odoo journal is authoritative, the pull source IS Odoo
+	// (e.g. KBC: the bank CSV only bootstrapped the journal; new entries are
+	// created on the Odoo side and pulled from there).
+	if acc.IsOdooSourceOfTruth() {
+		return "Odoo"
 	}
 	switch acc.Provider {
 	case "stripe":
@@ -2450,18 +2521,29 @@ func printAccountFetchSummary(acc *AccountConfig, newTxs int, elapsed time.Durat
 	}
 	var rows []row
 
-	rows = append(rows, row{
-		label:   accountProviderDisplayName(acc) + ":",
-		count:   providerCount,
-		balance: providerBalance,
-	})
-
-	matchLocal := localCount == providerCount && roundCents(localBalance) == roundCents(providerBalance)
-	localRow := row{label: "Local:", count: localCount, balance: localBalance}
-	if providerKnown {
-		localRow.match = &matchLocal
+	// For an odooSourceOfTruth account the provider IS the Odoo journal (shown as
+	// its own row below), so a separate "Odoo:" provider row — derived from the
+	// stale bootstrap CSV — would just be a confusing duplicate. Skip it.
+	odooSoT := acc.IsOdooSourceOfTruth()
+	if !odooSoT {
+		rows = append(rows, row{
+			label:   accountProviderDisplayName(acc) + ":",
+			count:   providerCount,
+			balance: providerBalance,
+		})
 	}
-	rows = append(rows, localRow)
+
+	// The "Local" row is the CSV/generated mirror. For an odooSourceOfTruth
+	// account that mirror isn't authoritative (the Odoo journal is), so drop it
+	// entirely rather than show a misleading mismatch against it.
+	if !odooSoT {
+		matchLocal := localCount == providerCount && roundCents(localBalance) == roundCents(providerBalance)
+		localRow := row{label: "Local:", count: localCount, balance: localBalance}
+		if providerKnown {
+			localRow.match = &matchLocal
+		}
+		rows = append(rows, localRow)
+	}
 
 	var syntheticCount int
 	var syntheticBalance float64
@@ -2493,14 +2575,14 @@ func printAccountFetchSummary(acc *AccountConfig, newTxs int, elapsed time.Durat
 			}
 			// Compare real-line count + total balance against local. The
 			// balance match still uses the full sum because that's what the
-			// journal actually balances to.
-			matchOdoo := realCount == localCount && roundCents(sum) == roundCents(localBalance)
-			rows = append(rows, row{
-				label:   label,
-				count:   realCount,
-				balance: roundCents(sum),
-				match:   &matchOdoo,
-			})
+			// journal actually balances to. For an odooSourceOfTruth account
+			// there's no Local row to match against, so show the figures plainly.
+			r := row{label: label, count: realCount, balance: roundCents(sum)}
+			if !odooSoT {
+				matchOdoo := realCount == localCount && roundCents(sum) == roundCents(localBalance)
+				r.match = &matchOdoo
+			}
+			rows = append(rows, r)
 		}
 	}
 
@@ -2868,6 +2950,46 @@ func odooTargetAlreadyPrinted() bool     { return odooTargetAlreadyPrintedFlag }
 func setOdooTargetAlreadyPrinted(v bool) { odooTargetAlreadyPrintedFlag = v }
 
 // ── Account Odoo push (local → Odoo) ──
+
+// AccountsPushAll pushes every pushable account to Odoo: skips archived accounts,
+// accounts with no linked Odoo journal, and odooSourceOfTruth accounts (where
+// Odoo is authoritative and CHB must not push local txs in). Accounts with
+// nothing new are no-ops — AccountOdooPush only writes the lines missing from
+// the journal — so this is safe to run repeatedly.
+func AccountsPushAll(args []string) error {
+	configs := LoadAccountConfigs()
+	pushed, skipped, failed := 0, 0, 0
+	for i := range configs {
+		acc := &configs[i]
+		var reason string
+		switch {
+		case acc.IsArchived():
+			reason = "archived"
+		case acc.OdooJournalID == 0:
+			reason = "no Odoo journal"
+		case acc.IsOdooSourceOfTruth():
+			reason = "Odoo source-of-truth"
+		}
+		if reason != "" {
+			skipped++
+			fmt.Printf("  %s⤼ %s — skipped (%s)%s\n", Fmt.Dim, acc.Slug, reason, Fmt.Reset)
+			continue
+		}
+		fmt.Printf("\n%s━━ %s ━━%s\n", Fmt.Bold, acc.Slug, Fmt.Reset)
+		if err := AccountOdooPush(acc.Slug, args); err != nil {
+			failed++
+			Warnf("  %s✗ %s: %v%s", Fmt.Red, acc.Slug, err, Fmt.Reset)
+			continue
+		}
+		pushed++
+	}
+	fmt.Printf("\n%sPushed %d account(s)%s · %d skipped", Fmt.Bold, pushed, Fmt.Reset, skipped)
+	if failed > 0 {
+		fmt.Printf(" · %s%d failed%s", Fmt.Red, failed, Fmt.Reset)
+	}
+	fmt.Println()
+	return nil
+}
 
 // AccountOdooPush pushes local transactions to Odoo as bank statement lines.
 // Formerly AccountOdooSync; renamed to make direction explicit.

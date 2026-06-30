@@ -57,8 +57,12 @@ func TestUpdateSyncSourceTracksAccounts(t *testing.T) {
 	if LastSyncTime("account:stripe").IsZero() {
 		t.Fatalf("expected LastSyncTime(account:stripe) to return timestamp")
 	}
-	if got := LastSyncMonth("account:stripe"); got != time.Now().Format("2006-01") {
-		t.Fatalf("LastSyncMonth(account:stripe) = %q, want current month", got)
+	// UpdateSyncSource stamps the timestamp in UTC, so compare against the UTC
+	// month — otherwise this flakes in the local-vs-UTC window at a month
+	// boundary (e.g. just after midnight Brussels on the 1st, UTC is still the
+	// previous month).
+	if got := LastSyncMonth("account:stripe"); got != time.Now().UTC().Format("2006-01") {
+		t.Fatalf("LastSyncMonth(account:stripe) = %q, want current UTC month", got)
 	}
 }
 

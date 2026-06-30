@@ -534,7 +534,13 @@ func generateCalendarsForMonths(
 		generateYearlyCSV(dataDir, year)
 	}
 
-	// Generate markdown files
+	// Generate the latest/ aggregates. events.json and events.md are both
+	// upcoming-event projections of the same per-month data, so they MUST be
+	// regenerated together — otherwise a `chb calendars sync` refreshes
+	// latest/events.md but leaves latest/events.json stale (showing whatever was
+	// upcoming the last time `chb generate` ran). Neither carries ticket-sales
+	// enrichment, so generating events.json here is equivalent to `chb generate`.
+	generateLatestEventsGo(dataDir)
 	generateMarkdownFiles(dataDir)
 
 	return newEventCount
