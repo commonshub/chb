@@ -408,6 +408,10 @@ func main() {
 			if err := cmd.OdooReconcileCommand(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "reclassify":
+			if err := cmd.OdooReclassifyCommand(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "get":
 			if err := cmd.OdooGet(args[2:]); err != nil {
 				exitWithError(err)
