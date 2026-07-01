@@ -5,7 +5,9 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	kbcbrusselssource "github.com/CommonsHub/chb/providers/kbcbrussels"
 )
@@ -150,6 +152,12 @@ func loadKBCAccountTransactions(acc *AccountConfig) []TransactionEntry {
 	if acc == nil {
 		return nil
 	}
+	// Odoo source of truth: the bootstrap CSV is ignored entirely — new entries
+	// arrive in the Odoo journal via a separate plugin — so derive every
+	// transaction from the pulled journal-lines cache.
+	if acc.IsOdooSourceOfTruth() {
+		return kbcTransactionsFromOdoo(acc)
+	}
 	rows, err := kbcbrusselssource.LoadTransactionsForIBAN(DataDir(), acc.IBAN)
 	if err != nil || len(rows) == 0 {
 		return nil
@@ -159,6 +167,122 @@ func loadKBCAccountTransactions(acc *AccountConfig) []TransactionEntry {
 		out = append(out, kbcRowToTransactionEntry(*acc, row))
 	}
 	return out
+}
+
+// kbcTransactionsFromOdoo derives KBC transactions from the pulled Odoo
+// journal-lines cache. For an odooSourceOfTruth account the Odoo journal — not
+// the bootstrap CSV — is authoritative, so this is the single source every
+// consumer (balance, account view, generate's aggregate) reads.
+func kbcTransactionsFromOdoo(acc *AccountConfig) []TransactionEntry {
+	if acc == nil || acc.OdooJournalID == 0 {
+		return nil
+	}
+	lines, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID)
+	if !ok {
+		return nil
+	}
+	out := make([]TransactionEntry, 0, len(lines))
+	for _, ln := range lines {
+		if isOdooSyntheticLine(ln) || ln.Amount == 0 {
+			continue
+		}
+		out = append(out, odooLineToKBCTransaction(*acc, ln))
+	}
+	return out
+}
+
+// kbcMonthsFromOdoo lists the distinct YYYY-MM months present in the pulled
+// journal-lines cache, so a pull can regenerate exactly those months.
+func kbcMonthsFromOdoo(acc *AccountConfig) []string {
+	if acc == nil || acc.OdooJournalID == 0 {
+		return nil
+	}
+	lines, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID)
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	var months []string
+	for _, ln := range lines {
+		if len(ln.Date) < 7 || seen[ln.Date[:7]] {
+			continue
+		}
+		seen[ln.Date[:7]] = true
+		months = append(months, ln.Date[:7])
+	}
+	sort.Strings(months)
+	return months
+}
+
+// kbcEntryInYearMonth reports whether a derived KBC tx falls in the given year
+// (and month, when set) — used to slice the full journal-cache history into the
+// per-month generate buckets.
+func kbcEntryInYearMonth(tx TransactionEntry, year, month string) bool {
+	if tx.Timestamp == 0 {
+		return false
+	}
+	t := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
+	if t.Format("2006") != year {
+		return false
+	}
+	return month == "" || t.Format("01") == month
+}
+
+// odooLineToKBCTransaction maps one Odoo bank-statement line to the canonical
+// KBC TransactionEntry shape (mirrors kbcRowToTransactionEntry). The line's
+// payment_ref becomes the description so the rules categorise it (e.g.
+// cp-order-… → drinks). Identity is the stable Odoo statement-line id.
+func odooLineToKBCTransaction(acc AccountConfig, ln OdooCacheLine) TransactionEntry {
+	currency := strings.ToUpper(acc.Currency)
+	if currency == "" {
+		currency = "EUR"
+	}
+	txType := "CREDIT"
+	if ln.Amount < 0 {
+		txType = "DEBIT"
+	}
+	narration := strings.TrimSpace(firstNonEmptyStr(ln.PaymentRef, ln.Narration))
+	counterparty := kbcbrusselssource.MerchantFromDescription(narration)
+	if counterparty == "" {
+		counterparty = kbcbrusselssource.CleanDescription(narration)
+	}
+	hash := strconv.Itoa(ln.ID)
+	var ts int64
+	if t, err := time.ParseInLocation("2006-01-02", ln.Date, BrusselsTZ()); err == nil {
+		ts = t.Unix()
+	}
+	signed := roundCents(ln.Amount)
+	metadata := map[string]interface{}{}
+	if narration != "" {
+		metadata["description"] = narration
+		metadata["fullDescription"] = narration
+	}
+	if ln.ID > 0 {
+		metadata["odooLineId"] = ln.ID
+	}
+	if ln.UniqueImportID != "" {
+		metadata["odooImportId"] = ln.UniqueImportID
+	}
+	return TransactionEntry{
+		ID:               BuildIBANTxURI(acc.IBAN, hash),
+		ProviderID:       hash,
+		AccountID:        BuildIBANAccountURI(acc.IBAN),
+		TxHash:           hash,
+		Provider:         kbcbrusselssource.Source,
+		Account:          acc.IBAN,
+		AccountSlug:      acc.Slug,
+		AccountName:      acc.Name,
+		Currency:         currency,
+		Value:            fmt.Sprintf("%.2f", signed),
+		Amount:           signed,
+		NetAmount:        signed,
+		GrossAmount:      roundCents(math.Abs(ln.Amount)),
+		NormalizedAmount: signed,
+		Type:             txType,
+		Counterparty:     counterparty,
+		Timestamp:        ts,
+		Metadata:         metadata,
+	}
 }
 
 // kbcAccountsByIBAN returns every configured kbcbrussels account, keyed

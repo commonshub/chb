@@ -399,6 +399,15 @@ func refreshAccountBalance(acc *AccountConfig) (float64, string, error) {
 		return v, key, nil
 	}
 	if acc.Provider == "kbcbrussels" && acc.IBAN != "" {
+		// Odoo source of truth: the journal is authoritative, so the balance is
+		// the sum of its pulled lines — the bootstrap CSV is ignored.
+		if acc.IsOdooSourceOfTruth() {
+			var bal float64
+			for _, tx := range kbcTransactionsFromOdoo(acc) {
+				bal += tx.Amount
+			}
+			return roundCents(bal), strings.ToLower(acc.IBAN), nil
+		}
 		v, _, ok := kbcLatestBalance(acc.IBAN)
 		if !ok {
 			return 0, "", fmt.Errorf("no CSV export found for %s under %s", acc.IBAN, kbcbrusselssource.LatestDir(DataDir()))
@@ -449,7 +458,13 @@ func fetchLiveBalances(configs []AccountConfig) map[string]float64 {
 				balances[key] = balance
 			}
 		} else if acc.Provider == "kbcbrussels" && acc.IBAN != "" {
-			if v, _, ok := kbcLatestBalance(acc.IBAN); ok {
+			if acc.IsOdooSourceOfTruth() {
+				var bal float64
+				for _, tx := range kbcTransactionsFromOdoo(&acc) {
+					bal += tx.Amount
+				}
+				balances[strings.ToLower(acc.IBAN)] = roundCents(bal)
+			} else if v, _, ok := kbcLatestBalance(acc.IBAN); ok {
 				balances[strings.ToLower(acc.IBAN)] = v
 			}
 		}
@@ -1139,6 +1154,9 @@ func liveBalanceSourceShort(acc *AccountConfig) string {
 	case "etherscan":
 		return "on-chain"
 	case "kbcbrussels":
+		if acc.IsOdooSourceOfTruth() {
+			return "Odoo journal"
+		}
 		return "KBC CSV"
 	default:
 		return "live"
@@ -2237,6 +2255,25 @@ func pullOdooSourceOfTruthAccount(acc *AccountConfig, fullHistory, verbose bool)
 	if verbose {
 		fmt.Printf("  %sJournal #%d cache: %d → %d lines%s\n", Fmt.Dim, acc.OdooJournalID, before, after, Fmt.Reset)
 	}
+
+	// Materialise the pulled journal lines into the monthly transactions.json so
+	// generate's aggregate and the local balance pick them up — same as every
+	// other account. (KBC: this replaces the CSV as the source.)
+	if months := kbcMonthsFromOdoo(acc); len(months) > 0 {
+		if verbose {
+			if err := GenerateTransactionsForMonths(months); err != nil {
+				Warnf("  %s⚠ generate after pull: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			}
+		} else {
+			restore := silenceStdout()
+			err := GenerateTransactionsForMonths(months)
+			restore()
+			if err != nil {
+				Warnf("  %s⚠ generate after pull: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			}
+		}
+	}
+
 	newLines := after - before
 	if newLines < 0 {
 		newLines = 0
@@ -4043,6 +4080,9 @@ func accountLiveBalanceLabel(acc *AccountConfig) string {
 	case acc.Provider == "etherscan" && acc.Token != nil:
 		return fmt.Sprintf("on-chain %s/%s", acc.Chain, acc.Token.Symbol)
 	case acc.Provider == "kbcbrussels":
+		if acc.IsOdooSourceOfTruth() {
+			return "Odoo journal"
+		}
 		return "KBC CSV"
 	case acc.Provider != "":
 		return acc.Provider

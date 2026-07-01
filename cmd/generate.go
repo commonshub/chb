@@ -2796,6 +2796,18 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// rebuild-everything mode used by `chb generate latest`.
 	if kbcEnabled {
 		for iban, acc := range kbcAccounts {
+			// Odoo source of truth: pull the month's txs from the journal-lines
+			// cache, not the bootstrap CSV (which is ignored entirely).
+			if acc.IsOdooSourceOfTruth() {
+				a := acc
+				for _, entry := range kbcTransactionsFromOdoo(&a) {
+					if year != "latest" && !kbcEntryInYearMonth(entry, year, month) {
+						continue
+					}
+					transactions = append(transactions, entry)
+				}
+				continue
+			}
 			var rows []kbcbrusselssource.Transaction
 			var err error
 			if year == "latest" && month == "" {
