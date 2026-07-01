@@ -24,13 +24,13 @@ const Source = "wise"
 
 // Transaction is one parsed row of a Wise statement CSV.
 type Transaction struct {
-	BalanceID   string  `json:"balanceId"` // Wise balance/jar id, from the filename
+	BalanceID   string  `json:"balanceId"`  // Wise balance/jar id, from the filename
 	TransferID  string  `json:"transferId"` // Wise "TransferWise ID" (TRANSFER-…, BALANCE-…)
 	Date        string  `json:"date"`       // ISO YYYY-MM-DD
 	Timestamp   int64   `json:"timestamp"`
-	Amount      float64 `json:"amount"`   // signed (credit +, debit −)
+	Amount      float64 `json:"amount"` // signed (credit +, debit −)
 	Currency    string  `json:"currency"`
-	Balance     float64 `json:"balance"`  // running balance after this row
+	Balance     float64 `json:"balance"` // running balance after this row
 	Description string  `json:"description"`
 	Reference   string  `json:"reference,omitempty"`
 	PayerName   string  `json:"payerName,omitempty"`
@@ -38,6 +38,11 @@ type Transaction struct {
 	Merchant    string  `json:"merchant,omitempty"`
 	TotalFees   float64 `json:"totalFees,omitempty"`
 	Hash        string  `json:"hash"` // deterministic short hash of the row
+	// ImportSuffix disambiguates the ImportID when one TransferID survives as
+	// more than one leg (a transfer sent then returned — same id, opposite
+	// amounts). Empty for the primary leg (keeps the historic ImportID);
+	// set to the row hash on any additional leg. Not serialised.
+	ImportSuffix string `json:"-"`
 }
 
 // RelPath returns the path inside DATA_DIR for this provider.
@@ -71,9 +76,15 @@ func (t Transaction) Counterparty() string {
 
 // ImportID is the stable unique_import_id used on the Odoo side. The Wise
 // transfer id is globally unique, but the same id appears on both legs of an
-// intra-Wise conversion (one per balance), so it's scoped by balance.
+// intra-Wise conversion (one per balance), so it's scoped by balance. When a
+// single TransferID survives as more than one leg (sent then returned), the
+// extra legs carry an ImportSuffix so they don't collide in Odoo.
 func (t Transaction) ImportID() string {
-	return fmt.Sprintf("%s:%s:%s", Source, t.BalanceID, t.TransferID)
+	id := fmt.Sprintf("%s:%s:%s", Source, t.BalanceID, t.TransferID)
+	if t.ImportSuffix != "" {
+		id += ":" + t.ImportSuffix
+	}
+	return id
 }
 
 // balanceIDFromFilename extracts the Wise balance id from
@@ -88,9 +99,11 @@ func balanceIDFromFilename(name string) string {
 }
 
 // LoadAllTransactions reads every statement CSV under latest/providers/wise/
-// and returns the parsed rows, deduplicated by (balance, transfer id) keeping
-// the latest sighting, sorted by (timestamp, hash). Overlapping quarterly
-// exports therefore collapse to one row per transaction per balance.
+// and returns the parsed rows, deduplicated by (balance, transfer id, amount)
+// keeping the latest sighting, sorted by (timestamp, hash). Overlapping
+// quarterly exports (identical amount) therefore collapse to one row, while a
+// transfer that was sent then returned (same id, opposite amounts) keeps both
+// legs — the extra leg carries an ImportSuffix so its ImportID stays unique.
 func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 	dir := LatestDir(dataDir)
 	entries, err := os.ReadDir(dir)
@@ -101,6 +114,11 @@ func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 		return nil, fmt.Errorf("read %s: %v", dir, err)
 	}
 	byKey := map[string]Transaction{}
+	// primaryAmt records, per balance|transferId, the amount of the leg the
+	// legacy dedup would have kept (last write wins in file/row order). That
+	// leg keeps the historic ImportID — it's the one already imported into
+	// Odoo — while any additional leg gets a suffixed ImportID below.
+	primaryAmt := map[string]string{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || strings.HasPrefix(name, "._") || !strings.HasSuffix(strings.ToLower(name), ".csv") {
@@ -115,7 +133,13 @@ func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 			return nil, fmt.Errorf("%s: %v", name, err)
 		}
 		for _, tx := range txs {
-			byKey[tx.BalanceID+"|"+tx.TransferID] = tx
+			// Key by amount too: overlapping quarterly exports repeat the
+			// same transaction (identical amount) and must collapse, but a
+			// transfer that was sent then returned appears under one
+			// TransferID as two opposite-sign legs — both are real and must
+			// survive.
+			byKey[fmt.Sprintf("%s|%s|%.2f", tx.BalanceID, tx.TransferID, tx.Amount)] = tx
+			primaryAmt[tx.BalanceID+"|"+tx.TransferID] = fmt.Sprintf("%.2f", tx.Amount)
 		}
 	}
 	out := make([]Transaction, 0, len(byKey))
@@ -128,6 +152,16 @@ func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 		}
 		return out[i].Timestamp < out[j].Timestamp
 	})
+	// When a TransferID kept more than one leg, the leg the legacy dedup would
+	// have kept (already imported into Odoo with the historic ImportID) stays
+	// plain; every other leg gets a hash-suffixed ImportID so it doesn't
+	// collide on Odoo's unique_import_id.
+	for i := range out {
+		k := out[i].BalanceID + "|" + out[i].TransferID
+		if primaryAmt[k] != fmt.Sprintf("%.2f", out[i].Amount) {
+			out[i].ImportSuffix = out[i].Hash
+		}
+	}
 	return out, nil
 }
 
