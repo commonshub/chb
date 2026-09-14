@@ -247,50 +247,37 @@ func TransactionsSync(args []string) (int, error) {
 						}
 					}
 
-					// Check if we can skip the full fetch by peeking at the latest tx.
-					// Never skip while a backfill is pending — historical months may
-					// be missing even when the latest tx is unchanged.
-					if !force && !allowBackfill {
-						peekHash, peekErr := etherscansource.PeekLatest(etherscanAccount(acc), apiKey)
-						if peekErr == nil {
-							cachedLatest := etherscansource.LatestCachedTxHashGlobal(DataDir(), acc.Chain, acc.Slug, acc.Address, fileToken)
-							if cachedLatest == "" {
-								cachedLatest = readLastPeekHash(DataDir(), acc.Chain, acc.Slug+"."+fileToken)
-							}
-							if peekHash == cachedLatest {
-								// Peek matches, but only skip if we're not missing data for months in range.
-								// Etherscan accounts may have data in months we haven't cached yet.
-								relPathFn := func(year, month string) string {
-									if p, ok := etherscansource.FindFileForAddr(DataDir(), year, month, acc.Chain, acc.Slug, acc.Address, fileToken); ok {
-										if rel, err := filepath.Rel(filepath.Join(DataDir(), year, month), p); err == nil {
-											return rel
-										}
-									}
-									// No cached file for this month → return a path that won't exist.
-									return etherscansource.RelPath(acc.Chain, etherscansource.FileName(acc.Slug, acc.Address, fileToken))
-								}
-								if peekHash == "" || allMonthsCached(DataDir(), startMonth, endMonth, relPathFn) {
-									printBlockchainNewTxStatus(0, accountSyncMode, "latest unchanged")
-									time.Sleep(400 * time.Millisecond)
-									continue
-								}
-							}
-						}
+					// Incremental (the hourly default): ask the explorer only for
+					// blocks at/after the newest one we have cached. One small
+					// request, usually empty — instead of a peek plus a full-history
+					// download every hour, which is what burned Etherscan's free
+					// quota. Forced, backfilling and enrichment-refresh runs still
+					// fetch the full history.
+					etherscansource.OnFallback = func(chainID int, from, to, reason string) {
+						fmt.Printf("    %s↪ %s declined chain %d (%s) — using %s%s\n", Fmt.Dim, from, chainID, reason, to, Fmt.Reset)
 					}
-
+					incremental := !force && !allowBackfill && !enrichmentRefresh
 					existingKeys := existingTokenTransferKeys(acc, fileToken)
+					var sinceBlock int64
+					if incremental {
+						sinceBlock = etherscansource.LatestCachedBlockGlobal(DataDir(), acc.Chain, acc.Slug, acc.Address, fileToken)
+					}
 					Progress(fmt.Sprintf("fetching %s transfers (%s)", acc.Token.Symbol, acc.Name))
-					transfers, err := etherscansource.FetchTokenTransfers(etherscanAccount(acc), apiKey)
+					transfers, err := etherscansource.FetchTokenTransfersSince(etherscanAccount(acc), apiKey, sinceBlock)
 					if err != nil {
 						Errorf("    %s✗ Error: %v%s", Fmt.Red, err, Fmt.Reset)
 						continue
 					}
 
 					if !accountSyncMode {
-						fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
+						if sinceBlock > 0 {
+							fmt.Printf("    %sFetched %d transfers since block %d%s\n", Fmt.Dim, len(transfers), sinceBlock, Fmt.Reset)
+						} else {
+							fmt.Printf("    %sFetched %d total transfers%s\n", Fmt.Dim, len(transfers), Fmt.Reset)
+						}
 					}
 					newTransfers := countNewTokenTransfers(existingKeys, transfers)
-					if newTransfers == 0 && defaultIncremental && !allowBackfill {
+					if newTransfers == 0 && !allowBackfill && (defaultIncremental || incremental) {
 						printBlockchainNewTxStatus(0, accountSyncMode, "")
 						time.Sleep(400 * time.Millisecond)
 						continue
@@ -327,6 +314,16 @@ func TransactionsSync(args []string) (int, error) {
 							// But always update current month
 							if ym != fmt.Sprintf("%d-%02d", now.Year(), now.Month()) {
 								continue
+							}
+						}
+
+						// A delta fetch only carries this month's newest transfers:
+						// union it with what the month file already holds.
+						if incremental {
+							if p, ok := etherscansource.FindFileForAddr(dataDir, year, month, acc.Chain, acc.Slug, acc.Address, fileToken); ok {
+								if cached, ok := etherscansource.LoadCache(p); ok {
+									monthTxs = etherscansource.MergeTokenTransfers(cached.Transactions, monthTxs)
+								}
 							}
 						}
 
@@ -1021,13 +1018,7 @@ func accountHasUnenrichedMoneriumTxs(slug string) bool {
 }
 
 func tokenTransferKey(tx etherscansource.TokenTransfer) string {
-	return strings.ToLower(tx.Hash) + "|" +
-		strings.ToLower(tx.From) + "|" +
-		strings.ToLower(tx.To) + "|" +
-		tx.Value + "|" +
-		tx.TimeStamp + "|" +
-		tx.TokenDecimal + "|" +
-		strings.ToLower(tx.TokenSymbol)
+	return tx.Key()
 }
 
 // saveNostrMetadataLayers writes Nostr metadata to two layers:

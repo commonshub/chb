@@ -182,3 +182,36 @@ func normalize(s string) string {
 	s = strings.Join(strings.Fields(s), "-")
 	return s
 }
+
+// LatestCachedBlockGlobal returns the highest block number archived for one
+// (account, token) scope across every cached month, or 0 when nothing is
+// cached. Passing it as startblock turns the hourly sync into a delta fetch:
+// the explorer answers with only what happened since.
+func LatestCachedBlockGlobal(dataDir, chain, slug, addr, tokenSymbol string) int64 {
+	yearDirs, err := os.ReadDir(dataDir)
+	if err != nil {
+		return 0
+	}
+	var newest int64
+	for _, yd := range yearDirs {
+		if !yd.IsDir() || len(yd.Name()) != 4 {
+			continue
+		}
+		monthDirs, _ := os.ReadDir(filepath.Join(dataDir, yd.Name()))
+		for _, md := range monthDirs {
+			if !md.IsDir() || len(md.Name()) != 2 {
+				continue
+			}
+			fp, ok := FindFileForAddr(dataDir, yd.Name(), md.Name(), chain, slug, addr, tokenSymbol)
+			if !ok {
+				continue
+			}
+			if cache, ok := LoadCache(fp); ok {
+				if b := NewestBlock(cache.Transactions); b > newest {
+					newest = b
+				}
+			}
+		}
+	}
+	return newest
+}

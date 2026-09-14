@@ -13,16 +13,16 @@ import (
 
 // RuleMatch defines what a rule matches against.
 type RuleMatch struct {
-	Sender      string   `json:"sender,omitempty"`      // glob on counterparty for incoming (IBAN, 0xaddr, name)
-	Recipient   string   `json:"recipient,omitempty"`   // glob on counterparty for outgoing (IBAN, 0xaddr, name)
-	Counterparty string  `json:"counterparty,omitempty"` // glob on counterparty, any direction (use sender/recipient when you only want one direction)
-	Description string   `json:"description,omitempty"` // glob on metadata.description / metadata.memo only — does NOT fall back to counterparty (use the counterparty field for that)
-	IBAN        string   `json:"iban,omitempty"`        // exact match on counterparty IBAN (spaces stripped, case-insensitive)
-	Account     string   `json:"account,omitempty"`     // account slug (fridge, coffee, stripe, savings)
-	Collective  string   `json:"collective,omitempty"`  // glob on the collective resolved so far (e.g. "genesis", "*idg*")
-	Provider    string   `json:"provider,omitempty"`    // stripe, etherscan, monerium
-	Currency    string   `json:"currency,omitempty"`    // EUR, EURe, EURb, CHT
-	Amount      *float64 `json:"amount,omitempty"`      // exact signed GROSS amount, rounded to cents
+	Sender       string   `json:"sender,omitempty"`       // glob on counterparty for incoming (IBAN, 0xaddr, name)
+	Recipient    string   `json:"recipient,omitempty"`    // glob on counterparty for outgoing (IBAN, 0xaddr, name)
+	Counterparty string   `json:"counterparty,omitempty"` // glob on counterparty, any direction (use sender/recipient when you only want one direction)
+	Description  string   `json:"description,omitempty"`  // glob on metadata.description / metadata.memo only — does NOT fall back to counterparty (use the counterparty field for that)
+	IBAN         string   `json:"iban,omitempty"`         // exact match on counterparty IBAN (spaces stripped, case-insensitive)
+	Account      string   `json:"account,omitempty"`      // account slug (fridge, coffee, stripe, savings)
+	Collective   string   `json:"collective,omitempty"`   // glob on the collective resolved so far (e.g. "genesis", "*idg*")
+	Provider     string   `json:"provider,omitempty"`     // stripe, etherscan, monerium
+	Currency     string   `json:"currency,omitempty"`     // EUR, EURe, EURb, CHT
+	Amount       *float64 `json:"amount,omitempty"`       // exact signed GROSS amount, rounded to cents
 	// MinAmount / MaxAmount are inclusive bounds on the ABSOLUTE
 	// gross amount (sign-independent). Use direction:"in" /
 	// direction:"out" alongside when you want to scope a range to
