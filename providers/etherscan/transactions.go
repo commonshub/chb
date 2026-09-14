@@ -60,10 +60,11 @@ func fetchFrom(ep explorerEndpoint, acc Account, startBlock int64, extra string)
 		ep.Name, acc.ChainID, acc.TokenAddress, acc.Address, redactAPIKey(url, ep.APIKey))
 
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < explorerMaxAttempts; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			sleepFn(time.Duration(attempt) * time.Second)
 		}
+		ep.pace()
 
 		resp, err := http.Get(url)
 		if err != nil {
@@ -82,7 +83,11 @@ func fetchFrom(ep explorerEndpoint, acc Account, startBlock int64, extra string)
 			lastErr = fmt.Errorf("%s HTTP %d (%s): %s", ep.Name, resp.StatusCode, ctx, bodySnippet(body))
 			// 429/5xx are worth a retry; other 4xx won't change on retry.
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-				time.Sleep(2 * time.Second)
+				// Honour Retry-After when the explorer says how long; otherwise
+				// double the wait each time (2s, 4s, 8s, …). Blockscout's
+				// public instances throttle bursts, and asking again 2s later
+				// three times in a row is exactly what got us throttled.
+				sleepFn(retryDelay(resp.Header.Get("Retry-After"), attempt))
 				continue
 			}
 			return nil, false, lastErr
@@ -106,7 +111,7 @@ func fetchFrom(ep explorerEndpoint, acc Account, startBlock int64, extra string)
 			// reached"), not just `message` ("NOTOK") — check both.
 			if strings.Contains(strings.ToLower(env.Message+" "+detail), "rate limit") {
 				lastErr = fmt.Errorf("rate limited: %w", apiErr)
-				time.Sleep(2 * time.Second)
+				sleepFn(retryDelay("", attempt))
 				continue
 			}
 			return nil, false, apiErr
@@ -125,7 +130,7 @@ func fetchFrom(ep explorerEndpoint, acc Account, startBlock int64, extra string)
 		return transfers, false, nil
 	}
 
-	return nil, false, fmt.Errorf("%s: failed after 3 attempts: %w", ep.Name, lastErr)
+	return nil, false, fmt.Errorf("%s: failed after %d attempts: %w", ep.Name, explorerMaxAttempts, lastErr)
 }
 
 // queryExplorers runs one tokentx query against each explorer for the chain

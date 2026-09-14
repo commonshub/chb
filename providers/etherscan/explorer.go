@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Explorer endpoints.
@@ -162,4 +164,53 @@ func NewestBlock(transfers []TokenTransfer) int64 {
 		}
 	}
 	return max
+}
+
+// Request pacing and backoff.
+//
+// Blockscout's public instances throttle bursts (HTTP 429) — 16 back-to-back
+// tokentx queries (8 Gnosis accounts × 2 contracts) tripped it. Requests to
+// the same explorer are spaced by minRequestGap, and a throttled request
+// waits Retry-After (or an exponentially growing delay) before trying again.
+const explorerMaxAttempts = 5
+
+var (
+	minRequestGap = map[string]time.Duration{
+		"blockscout": 1200 * time.Millisecond,
+		"etherscan":  250 * time.Millisecond, // free plan: 5 req/s
+	}
+	sleepFn = time.Sleep // injectable for tests
+	nowFn   = time.Now
+
+	paceMu      sync.Mutex
+	lastRequest = map[string]time.Time{}
+)
+
+// pace blocks until at least minRequestGap has passed since the previous
+// request to this explorer.
+func (ep explorerEndpoint) pace() {
+	gap := minRequestGap[ep.Name]
+	if gap <= 0 {
+		return
+	}
+	paceMu.Lock()
+	wait := gap - nowFn().Sub(lastRequest[ep.Name])
+	if wait > 0 {
+		sleepFn(wait)
+	}
+	lastRequest[ep.Name] = nowFn()
+	paceMu.Unlock()
+}
+
+// retryDelay is how long to wait before retrying a throttled request:
+// Retry-After when given (seconds), else 2s doubling per attempt, capped.
+func retryDelay(retryAfter string, attempt int) time.Duration {
+	if secs, err := strconv.ParseFloat(strings.TrimSpace(retryAfter), 64); err == nil && secs > 0 {
+		return time.Duration(secs * float64(time.Second))
+	}
+	d := 2 * time.Second << uint(attempt)
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
 }

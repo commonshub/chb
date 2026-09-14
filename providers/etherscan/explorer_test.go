@@ -8,16 +8,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func withTestExplorers(t *testing.T, etherscan, blockscout string) {
 	t.Helper()
-	origE, origB, origU := etherscanV2Base, blockscoutBases, etherscanUnsupported
+	origE, origB, origU, origSleep := etherscanV2Base, blockscoutBases, etherscanUnsupported, sleepFn
 	etherscanV2Base = etherscan
 	blockscoutBases = map[int]string{100: blockscout, 42220: blockscout}
 	etherscanUnsupported = map[int]bool{100: true}
+	sleepFn = func(time.Duration) {} // pacing/backoff must not slow the suite
 	t.Cleanup(func() {
-		etherscanV2Base, blockscoutBases, etherscanUnsupported = origE, origB, origU
+		etherscanV2Base, blockscoutBases, etherscanUnsupported, sleepFn = origE, origB, origU, origSleep
 		OnFallback = nil
 	})
 }
@@ -158,5 +160,65 @@ func TestLatestCachedBlockGlobal(t *testing.T) {
 	}
 	if got := LatestCachedBlockGlobal(dir, "gnosis", "nobody", "0x0", "EURe"); got != 0 {
 		t.Errorf("unknown scope = %d, want 0", got)
+	}
+}
+
+func TestThrottledRequestBacksOffAndRecovers(t *testing.T) {
+	var sleeps []time.Duration
+	origSleep := sleepFn
+	sleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
+	t.Cleanup(func() { sleepFn = origSleep })
+
+	hits := 0
+	bs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		switch hits {
+		case 1:
+			w.Header().Set("Retry-After", "3")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 2:
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			w.Write([]byte(transfersJSON("0xok")))
+		}
+	}))
+	defer bs.Close()
+	withTestExplorers(t, "http://127.0.0.1:1", bs.URL)
+
+	got, err := FetchTokenTransfersSince(Account{ChainID: 100, TokenAddress: "0xt"}, "", 0)
+	if err != nil {
+		t.Fatalf("two 429s then success must succeed: %v", err)
+	}
+	if len(got) != 1 || hits != 3 {
+		t.Errorf("hits=%d got=%+v", hits, got)
+	}
+	var sawRetryAfter, sawBackoff bool
+	for _, d := range sleeps {
+		if d == 3*time.Second {
+			sawRetryAfter = true
+		}
+		if d == 4*time.Second { // attempt 1 without Retry-After: 2s<<1
+			sawBackoff = true
+		}
+	}
+	if !sawRetryAfter || !sawBackoff {
+		t.Errorf("sleeps = %v: want a 3s Retry-After wait and a 4s exponential wait", sleeps)
+	}
+}
+
+func TestPaceSpacesRequestsToTheSameExplorer(t *testing.T) {
+	var slept time.Duration
+	origSleep, origNow := sleepFn, nowFn
+	sleepFn = func(d time.Duration) { slept += d }
+	now := time.Unix(1_700_000_000, 0)
+	nowFn = func() time.Time { return now }
+	t.Cleanup(func() { sleepFn, nowFn = origSleep, origNow; lastRequest = map[string]time.Time{} })
+	lastRequest = map[string]time.Time{}
+
+	ep := explorerEndpoint{Name: "blockscout"}
+	ep.pace() // first request: no wait
+	ep.pace() // immediately again: must wait the full gap
+	if slept != minRequestGap["blockscout"] {
+		t.Errorf("slept %v, want %v between back-to-back Blockscout requests", slept, minRequestGap["blockscout"])
 	}
 }
