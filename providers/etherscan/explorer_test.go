@@ -164,11 +164,6 @@ func TestLatestCachedBlockGlobal(t *testing.T) {
 }
 
 func TestThrottledRequestBacksOffAndRecovers(t *testing.T) {
-	var sleeps []time.Duration
-	origSleep := sleepFn
-	sleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
-	t.Cleanup(func() { sleepFn = origSleep })
-
 	hits := 0
 	bs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -184,6 +179,9 @@ func TestThrottledRequestBacksOffAndRecovers(t *testing.T) {
 	}))
 	defer bs.Close()
 	withTestExplorers(t, "http://127.0.0.1:1", bs.URL)
+	// Record the waits (after the helper installed its no-op sleeper).
+	var sleeps []time.Duration
+	sleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
 
 	got, err := FetchTokenTransfersSince(Account{ChainID: 100, TokenAddress: "0xt"}, "", 0)
 	if err != nil {
