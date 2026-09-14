@@ -18,9 +18,11 @@ func withTestExplorers(t *testing.T, etherscan, blockscout string) {
 	blockscoutBases = map[int]string{100: blockscout, 42220: blockscout}
 	etherscanUnsupported = map[int]bool{100: true}
 	sleepFn = func(time.Duration) {} // pacing/backoff must not slow the suite
+	exhaustedUntil = map[string]time.Time{}
 	t.Cleanup(func() {
 		etherscanV2Base, blockscoutBases, etherscanUnsupported, sleepFn = origE, origB, origU, origSleep
 		OnFallback = nil
+		exhaustedUntil = map[string]time.Time{}
 	})
 }
 
@@ -218,5 +220,64 @@ func TestPaceSpacesRequestsToTheSameExplorer(t *testing.T) {
 	ep.pace() // immediately again: must wait the full gap
 	if slept != minRequestGap["blockscout"] {
 		t.Errorf("slept %v, want %v between back-to-back Blockscout requests", slept, minRequestGap["blockscout"])
+	}
+}
+
+func TestEmptyHourlyBucketFailsFastForTheRestOfTheRun(t *testing.T) {
+	hits := 0
+	bs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("x-ratelimit-limit", "10")
+		w.Header().Set("x-ratelimit-remaining", "0")
+		w.Header().Set("x-ratelimit-reset", "3461535") // ms ≈ 58 min, as gnosisscan sends it
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"message":"Too many requests. Increase limits now at https://dev.blockscout.com","result":null,"status":"0"}`))
+	}))
+	defer bs.Close()
+	withTestExplorers(t, "http://127.0.0.1:1", bs.URL)
+
+	_, err := FetchTokenTransfersSince(Account{ChainID: 100, TokenAddress: "0xt", Address: "0xa"}, "", 0)
+	if err == nil || !strings.Contains(err.Error(), "quota exhausted") {
+		t.Fatalf("want a quota-exhausted error, got %v", err)
+	}
+	if hits != 1 {
+		t.Errorf("hits = %d, want 1 — no point retrying an empty hourly bucket", hits)
+	}
+	// The next account in the same run must not even make the request.
+	_, err = FetchTokenTransfersSince(Account{ChainID: 100, TokenAddress: "0xt", Address: "0xb"}, "", 0)
+	if err == nil || !strings.Contains(err.Error(), "quota exhausted") || hits != 1 {
+		t.Errorf("second scope: err=%v hits=%d — want fail-fast without an HTTP request", err, hits)
+	}
+}
+
+func TestLastAllowedRequestMarksTheBucketEmpty(t *testing.T) {
+	hits := 0
+	bs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("x-ratelimit-remaining", "0")
+		w.Header().Set("x-ratelimit-reset", "3000000")
+		w.Write([]byte(transfersJSON("0xlast")))
+	}))
+	defer bs.Close()
+	withTestExplorers(t, "http://127.0.0.1:1", bs.URL)
+
+	got, err := FetchTokenTransfersSince(Account{ChainID: 100, TokenAddress: "0xt"}, "", 0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("the last allowed request must still succeed: %v %v", got, err)
+	}
+	if _, err := FetchTokenTransfersSince(Account{ChainID: 100, TokenAddress: "0xt", Address: "0xb"}, "", 0); err == nil || hits != 1 {
+		t.Errorf("after remaining=0 the next request must short-circuit: err=%v hits=%d", err, hits)
+	}
+}
+
+func TestResetDurationUnits(t *testing.T) {
+	if d := resetDuration("3461535"); d < 57*time.Minute || d > 58*time.Minute {
+		t.Errorf("ms value read wrong: %v", d)
+	}
+	if d := resetDuration("120"); d != 2*time.Minute {
+		t.Errorf("seconds value read wrong: %v", d)
+	}
+	if d := resetDuration(""); d != 0 {
+		t.Errorf("empty = %v", d)
 	}
 }

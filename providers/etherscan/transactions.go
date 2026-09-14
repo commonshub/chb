@@ -61,6 +61,10 @@ func fetchFrom(ep explorerEndpoint, acc Account, startBlock int64, extra string)
 
 	var lastErr error
 	for attempt := 0; attempt < explorerMaxAttempts; attempt++ {
+		if left := quotaExhaustedFor(ep.Name); left > 0 {
+			return nil, false, fmt.Errorf("%s: hourly request quota exhausted, resets in %s (%s)",
+				ep.Name, left.Round(time.Minute), ctx)
+		}
 		if attempt > 0 {
 			sleepFn(time.Duration(attempt) * time.Second)
 		}
@@ -83,14 +87,31 @@ func fetchFrom(ep explorerEndpoint, acc Account, startBlock int64, extra string)
 			lastErr = fmt.Errorf("%s HTTP %d (%s): %s", ep.Name, resp.StatusCode, ctx, bodySnippet(body))
 			// 429/5xx are worth a retry; other 4xx won't change on retry.
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-				// Honour Retry-After when the explorer says how long; otherwise
-				// double the wait each time (2s, 4s, 8s, …). Blockscout's
-				// public instances throttle bursts, and asking again 2s later
-				// three times in a row is exactly what got us throttled.
-				sleepFn(retryDelay(resp.Header.Get("Retry-After"), attempt))
+				// Honour Retry-After / x-ratelimit-reset when the explorer says
+				// how long; otherwise double the wait each time (2s, 4s, 8s, …).
+				// A wait beyond a minute means the hourly bucket is empty:
+				// remember that and fail fast instead of sleeping through it.
+				wait := retryDelay(resp.Header.Get("Retry-After"), attempt)
+				if r := resetDuration(resp.Header.Get("x-ratelimit-reset")); r > 0 && resp.StatusCode == http.StatusTooManyRequests {
+					wait = r
+				}
+				if wait > quotaShortCircuit {
+					markQuotaExhausted(ep.Name, wait)
+					return nil, false, fmt.Errorf("%s: hourly request quota exhausted, resets in %s (%s)",
+						ep.Name, wait.Round(time.Minute), ctx)
+				}
+				sleepFn(wait)
 				continue
 			}
 			return nil, false, lastErr
+		}
+
+		// A successful answer that also says "that was your last one" —
+		// stop before provoking a 429 with the next account.
+		if resp.Header.Get("x-ratelimit-remaining") == "0" {
+			if r := resetDuration(resp.Header.Get("x-ratelimit-reset")); r > quotaShortCircuit {
+				markQuotaExhausted(ep.Name, r)
+			}
 		}
 
 		var env apiEnvelope

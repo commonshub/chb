@@ -214,3 +214,55 @@ func retryDelay(retryAfter string, attempt int) time.Duration {
 	}
 	return d
 }
+
+// Quota awareness.
+//
+// gnosisscan.io/api (where gnosis.blockscout.com/api redirects) allows 10
+// requests per hour per IP unauthenticated and says so in
+// x-ratelimit-limit / x-ratelimit-remaining / x-ratelimit-reset (ms). Once
+// the bucket is empty, retrying is pointless for the rest of the hour — and
+// five retries with 30s backoff per account turned a 1-minute pull into a
+// 13-minute one. So: when an explorer reports an empty bucket (on a 200 or
+// a 429), remember until when, and fail fast for that explorer meanwhile.
+var (
+	exhaustedMu    sync.Mutex
+	exhaustedUntil = map[string]time.Time{}
+)
+
+// quotaExhaustedFor returns how long the explorer is known to be out of
+// quota (0 if usable).
+func quotaExhaustedFor(name string) time.Duration {
+	exhaustedMu.Lock()
+	defer exhaustedMu.Unlock()
+	if until, ok := exhaustedUntil[name]; ok {
+		if d := until.Sub(nowFn()); d > 0 {
+			return d
+		}
+		delete(exhaustedUntil, name)
+	}
+	return 0
+}
+
+func markQuotaExhausted(name string, for_ time.Duration) {
+	exhaustedMu.Lock()
+	exhaustedUntil[name] = nowFn().Add(for_)
+	exhaustedMu.Unlock()
+}
+
+// resetDuration parses x-ratelimit-reset, which Blockscout/Cloudflare send
+// in milliseconds; anything that would exceed a day as seconds is read as
+// milliseconds.
+func resetDuration(h string) time.Duration {
+	v, err := strconv.ParseFloat(strings.TrimSpace(h), 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	if v > 86400 {
+		return time.Duration(v * float64(time.Millisecond))
+	}
+	return time.Duration(v * float64(time.Second))
+}
+
+// quotaShortCircuit is the threshold above which a wait is treated as "out
+// of quota for this run" instead of something to sleep through.
+const quotaShortCircuit = 60 * time.Second

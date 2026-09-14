@@ -193,6 +193,7 @@ func TransactionsSync(args []string) (int, error) {
 		type etherscanJob struct {
 			acc       FinanceAccount
 			fileToken string
+			prior     bool // a retired contract version, not the live token
 		}
 		var etherscanJobs []etherscanJob
 		for _, acc := range etherscanAccounts {
@@ -206,6 +207,7 @@ func TransactionsSync(args []string) (int, error) {
 				etherscanJobs = append(etherscanJobs, etherscanJob{
 					acc:       clone,
 					fileToken: pt.Symbol + "-" + etherscansource.ShortAddr(pt.Address),
+					prior:     true,
 				})
 			}
 		}
@@ -257,6 +259,22 @@ func TransactionsSync(args []string) (int, error) {
 						fmt.Printf("    %s↪ %s declined chain %d (%s) — using %s%s\n", Fmt.Dim, from, chainID, reason, to, Fmt.Reset)
 					}
 					incremental := !force && !allowBackfill && !enrichmentRefresh
+
+					// Request budget: the Gnosis explorer allows 10 requests per
+					// hour per IP. Routine runs therefore skip what cannot have
+					// changed — archived accounts, and retired prior contracts
+					// more than once a day. An explicit --slug / --force still
+					// fetches everything.
+					if incremental && slugFilter == "" {
+						if (&AccountConfig{ArchivedAt: acc.ArchivedAt}).IsArchived() {
+							printBlockchainNewTxStatus(0, accountSyncMode, "archived — skipped")
+							continue
+						}
+						if job.prior && time.Since(readLastPriorPoll(DataDir(), acc.Chain, scope)) < 24*time.Hour {
+							printBlockchainNewTxStatus(0, accountSyncMode, "retired contract — polled daily")
+							continue
+						}
+					}
 					existingKeys := existingTokenTransferKeys(acc, fileToken)
 					var sinceBlock int64
 					if incremental {
@@ -269,6 +287,9 @@ func TransactionsSync(args []string) (int, error) {
 						continue
 					}
 
+					if job.prior {
+						writeLastPriorPoll(DataDir(), acc.Chain, scope)
+					}
 					if !accountSyncMode {
 						if sinceBlock > 0 {
 							fmt.Printf("    %sFetched %d transfers since block %d%s\n", Fmt.Dim, len(transfers), sinceBlock, Fmt.Reset)
@@ -1335,6 +1356,28 @@ func currentMonthCacheFile(dataDir string, relPathFn func(year, month string) st
 // providers/etherscan location.
 func peekHashPath(dataDir, chain, slug string) string {
 	return filepath.Join(dataDir, "latest", ".cache", "etherscan", strings.ToLower(chain), "peek-"+slug)
+}
+
+// priorPollPath is the state file recording when a retired prior-token
+// contract was last polled (routine runs poll those once a day).
+func priorPollPath(dataDir, chain, scope string) string {
+	return filepath.Join(dataDir, "latest", ".cache", "etherscan", strings.ToLower(chain), "prior-"+scope)
+}
+
+func readLastPriorPoll(dataDir, chain, scope string) time.Time {
+	data, err := os.ReadFile(priorPollPath(dataDir, chain, scope))
+	if err != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func writeLastPriorPoll(dataDir, chain, scope string) {
+	_ = writeDataFile(priorPollPath(dataDir, chain, scope), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"))
 }
 
 // readLastPeekHash reads the stored latest tx hash from a previous sync.
