@@ -3666,7 +3666,12 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 	cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
 	saveBalanceCache(cache)
 
-	odooBalance, err := odooJournalCurrentBalance(creds, uid, acc.OdooJournalID)
+	// Compare on one basis: the sum of the journal's statement lines — the
+	// same figure the "Journal data:" summary shows and the same basis as the
+	// local mirror. Odoo's journal-level current_statement_balance field can
+	// lag the lines by a few cents (a line outside any statement), which
+	// showed up as a phantom −0.65 EUR "drift" on every hourly run.
+	odooSnap, err := fetchOdooJournalSnapshot(creds, uid, acc.OdooJournalID, accCurrency(acc))
 	if err != nil {
 		warn := fmt.Sprintf("  %s⚠ %s: could not fetch Odoo journal balance: %v%s\n", Fmt.Yellow, acc.Slug, err, Fmt.Reset)
 		if !quietOdooContext() {
@@ -3674,6 +3679,7 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 		}
 		return live, warn
 	}
+	odooBalance := odooSnap.Balance
 	if math.Abs(odooBalance-live) < 0.01 {
 		return live, "" // balances agree — stay silent
 	}
