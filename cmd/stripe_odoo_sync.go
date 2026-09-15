@@ -334,6 +334,7 @@ func syncStripeChronological(
 	processedBTs := 0
 	skippedBTs := 0
 	existingUpdates := 0
+	postedSkipped := 0 // existing lines left untouched because their move is posted
 	dryRunCreates := 0
 	payoutsSeen := 0
 	createMismatch := false
@@ -542,6 +543,13 @@ func syncStripeChronological(
 						// the Odoo entry stays wrong forever.
 						if odooBool(row["is_reconciled"]) && stripeLineIsInvoiceMatched(creds, uid, moveID) {
 							// invoice-matched — leave it
+						} else if posted, perr := odooMoveIsPosted(creds, uid, moveID); perr == nil && posted {
+							// Posted entries are the accountant's record: Odoo refuses
+							// to touch their journal items ("You can't delete a posted
+							// journal item"), and drafting/reposting them just to
+							// refresh a label is not ours to do. Leave them as they are
+							// and say so once, instead of one failure line per tx.
+							postedSkipped++
 						} else if err := updateStatementLineFieldsForMetadata(creds, uid, lineID, moveID, update); err != nil {
 							Warnf("  %s⚠ Failed to update Stripe line %s: %v%s", Fmt.Yellow, importID, err, Fmt.Reset)
 						} else {
@@ -768,6 +776,10 @@ func syncStripeChronological(
 		}
 		odooLog("  %sStripe transactions: processed %s%s, skipped %s%s, closed %s%s\n",
 			Fmt.Dim, Pluralize(processedBTs, "balance transaction", ""), createdPart, Pluralize(skippedBTs, "duplicate", ""), updatePart, Pluralize(stats.Statements, "statement", ""), Fmt.Reset)
+	}
+	if postedSkipped > 0 {
+		odooLog("  %s%s left untouched (posted in Odoo — label/narration not refreshed)%s\n",
+			Fmt.Dim, Pluralize(postedSkipped, "existing line", ""), Fmt.Reset)
 	}
 
 	if !quietOdooContext() {

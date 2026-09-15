@@ -350,6 +350,49 @@ func printPartnerLinkSummary(plan partnerLinkPlan) {
 }
 
 // writePartnerOnLines sets partner_id on the given statement lines, chunked.
+// splitPostedStatementLines separates statement lines whose journal entry is
+// posted (Odoo refuses writes on them: "You can't delete a posted journal
+// item") from those that can still be edited. On a lookup failure every
+// line is treated as writable so the caller's own error handling applies.
+func splitPostedStatementLines(creds *OdooCredentials, uid int, lineIDs []int) (writable []int, posted int) {
+	if len(lineIDs) == 0 {
+		return nil, 0
+	}
+	rows, err := odooReadMapsByIDs(creds, uid, "account.bank.statement.line", lineIDs, []string{"id", "move_id"})
+	if err != nil {
+		return lineIDs, 0
+	}
+	moveByLine := map[int]int{}
+	var moveIDs []int
+	for _, r := range rows {
+		m := odooFieldID(r["move_id"])
+		moveByLine[odooInt(r["id"])] = m
+		if m > 0 {
+			moveIDs = append(moveIDs, m)
+		}
+	}
+	postedMoves := map[int]bool{}
+	if len(moveIDs) > 0 {
+		states, err := odooReadMapsByIDs(creds, uid, "account.move", uniquePositiveInts(moveIDs), []string{"id", "state"})
+		if err != nil {
+			return lineIDs, 0
+		}
+		for _, r := range states {
+			if odooString(r["state"]) == "posted" {
+				postedMoves[odooInt(r["id"])] = true
+			}
+		}
+	}
+	for _, id := range lineIDs {
+		if postedMoves[moveByLine[id]] {
+			posted++
+			continue
+		}
+		writable = append(writable, id)
+	}
+	return writable, posted
+}
+
 func writePartnerOnLines(creds *OdooCredentials, uid int, lineIDs []int, partnerID int) error {
 	const chunk = 200
 	for start := 0; start < len(lineIDs); start += chunk {
@@ -369,6 +412,7 @@ func writePartnerOnLines(creds *OdooCredentials, uid int, lineIDs []int, partner
 // applyPartnerLinks creates the new partners (+ their bank accounts) and writes
 // partner_id on every planned line, batched per partner.
 func applyPartnerLinks(creds *OdooCredentials, uid int, plan partnerLinkPlan, status *statusLine) (linked, created int) {
+	postedSkipped := 0
 	// New partners first.
 	keys := make([]string, 0, len(plan.NewGroups))
 	for k := range plan.NewGroups {
@@ -391,11 +435,16 @@ func applyPartnerLinks(creds *OdooCredentials, uid int, plan partnerLinkPlan, st
 				Warnf("  %s⚠ Could not attach account %s to %q: %v%s", Fmt.Yellow, acct, g.Name, err, Fmt.Reset)
 			}
 		}
-		if err := writePartnerOnLines(creds, uid, g.LineIDs, pid); err != nil {
-			Warnf("  %s⚠ Could not link %s to new partner %q: %v%s", Fmt.Yellow, Pluralize(len(g.LineIDs), "line", ""), g.Name, err, Fmt.Reset)
+		writable, posted := splitPostedStatementLines(creds, uid, g.LineIDs)
+		postedSkipped += posted
+		if len(writable) == 0 {
 			continue
 		}
-		linked += len(g.LineIDs)
+		if err := writePartnerOnLines(creds, uid, writable, pid); err != nil {
+			Warnf("  %s⚠ Could not link %s to new partner %q: %v%s", Fmt.Yellow, Pluralize(len(writable), "line", ""), g.Name, err, Fmt.Reset)
+			continue
+		}
+		linked += len(writable)
 	}
 
 	// Existing partners, grouped so each gets a single batched write. Collect
@@ -425,11 +474,20 @@ func applyPartnerLinks(creds *OdooCredentials, uid int, plan partnerLinkPlan, st
 				Warnf("  %s⚠ Could not attach account %s to partner #%d: %v%s", Fmt.Yellow, acct, pid, err, Fmt.Reset)
 			}
 		}
-		if err := writePartnerOnLines(creds, uid, byPartner[pid], pid); err != nil {
-			Warnf("  %s⚠ Could not link %s to partner #%d: %v%s", Fmt.Yellow, Pluralize(len(byPartner[pid]), "line", ""), pid, err, Fmt.Reset)
+		writable, posted := splitPostedStatementLines(creds, uid, byPartner[pid])
+		postedSkipped += posted
+		if len(writable) == 0 {
 			continue
 		}
-		linked += len(byPartner[pid])
+		if err := writePartnerOnLines(creds, uid, writable, pid); err != nil {
+			Warnf("  %s⚠ Could not link %s to partner #%d: %v%s", Fmt.Yellow, Pluralize(len(writable), "line", ""), pid, err, Fmt.Reset)
+			continue
+		}
+		linked += len(writable)
+	}
+	if postedSkipped > 0 {
+		fmt.Printf("  %s%s left untouched (posted in Odoo — partner not changed)%s\n",
+			Fmt.Dim, Pluralize(postedSkipped, "line", ""), Fmt.Reset)
 	}
 	return linked, created
 }

@@ -3693,15 +3693,8 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 	default:
 		liveLabel = acc.Provider
 	}
-	diff := odooBalance - live
-	detail := fmt.Sprintf("    %s⚠ Odoo %s ≠ live %s (%s) — off by %s%s\n",
-		Fmt.Yellow,
-		formatBalance(odooBalance, currency),
-		formatBalance(live, currency), liveLabel,
-		formatBalance(diff, currency),
-		Fmt.Reset)
-	detail += fmt.Sprintf("    %sHint: chb accounts %s pull && chb accounts %s push --force  |  chb odoo journals %d fix%s\n",
-		Fmt.Dim, acc.Slug, acc.Slug, acc.OdooJournalID, Fmt.Reset)
+	localBalance := accountLocalOdooSyncSnapshot(acc).Balance
+	detail := liveDriftDetail(acc, odooBalance, localBalance, live, currency, liveLabel)
 	if !quietOdooContext() {
 		Warnf("%s", strings.TrimRight(detail, "\n"))
 	}
@@ -3715,6 +3708,34 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 // accountant adjustments — `journals fix` lists and removes them) or
 // history the journal predates the local archive on (a `push --force`
 // rebuild resolves it). Empty when the balances agree.
+// liveDriftDetail explains an Odoo-vs-live balance gap. Two very different
+// situations produce one: the local mirror is simply behind the source (new
+// activity since the last pull — Odoo matches the mirror, the next pull
+// catches up), or the journal genuinely drifted from the mirror (lines
+// missing, edited or duplicated in Odoo — needs `fix`). Conflating them sent
+// people chasing a "drift" that was just an hour of new Stripe charges.
+func liveDriftDetail(acc *AccountConfig, odooBalance, localBalance, live float64, currency, liveLabel string) string {
+	mirrorBehind := live - localBalance
+	journalDrift := odooBalance - localBalance
+	switch {
+	case math.Abs(journalDrift) < 0.01:
+		return fmt.Sprintf("    %s· Odoo matches the local mirror; the mirror is %s behind live %s (%s) — new activity since the last pull, the next pull/push catches up%s\n",
+			Fmt.Dim, formatBalance(mirrorBehind, currency), formatBalance(live, currency), liveLabel, Fmt.Reset)
+	case math.Abs(mirrorBehind) < 0.01:
+		return fmt.Sprintf("    %s⚠ Odoo %s ≠ local mirror %s (= live, %s) — journal drift of %s%s\n",
+			Fmt.Yellow, formatBalance(odooBalance, currency), formatBalance(localBalance, currency), liveLabel,
+			formatBalance(journalDrift, currency), Fmt.Reset) +
+			fmt.Sprintf("    %sHint: chb odoo journals %d push --dry-run --history  |  chb odoo journals %d fix%s\n",
+				Fmt.Dim, acc.OdooJournalID, acc.OdooJournalID, Fmt.Reset)
+	default:
+		return fmt.Sprintf("    %s⚠ Odoo %s ≠ local mirror %s ≠ live %s (%s) — journal drift %s, mirror %s behind live%s\n",
+			Fmt.Yellow, formatBalance(odooBalance, currency), formatBalance(localBalance, currency), formatBalance(live, currency), liveLabel,
+			formatBalance(journalDrift, currency), formatBalance(mirrorBehind, currency), Fmt.Reset) +
+			fmt.Sprintf("    %sHint: chb accounts %s pull, then chb odoo journals %d push --dry-run --history  |  chb odoo journals %d fix%s\n",
+				Fmt.Dim, acc.Slug, acc.OdooJournalID, acc.OdooJournalID, Fmt.Reset)
+	}
+}
+
 func localJournalBalanceMismatchHint(acc *AccountConfig, local, journal accountOdooSyncSnapshot) string {
 	if acc == nil || acc.OdooJournalID == 0 {
 		return ""
