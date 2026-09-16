@@ -3220,6 +3220,10 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	txData, _ := json.MarshalIndent(out, "", "  ")
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "transactions.json"), txData)
 
+	// Audience tiers (see docs/audiences.md). The legacy generated/ +
+	// generated/private/ pair above stays until every consumer reads a tier.
+	writeTransactionsForAudiences(dataDir, year, month, transactions)
+
 	// Write Odoo-specific resolution out to providers/odoo/pending/. The
 	// public transactions.json is now target-agnostic; push paths look up
 	// AccountCode/PartnerID from pending instead.
@@ -3958,4 +3962,83 @@ func fetchDiscordMemberCount(settings *Settings) int {
 	}
 	json.NewDecoder(resp.Body).Decode(&guild)
 	return guild.ApproximateMemberCount
+}
+
+
+// Per-audience projections of a transaction. Each tier is a strict subset of
+// the one above it — the same file name, the same shape, less data:
+//
+//	stewards: the entry as generated (counterparty, hash, every metadata key).
+//	members:  counterparty names and free-text (memo, bank narration) stay,
+//	          but nothing that lets you contact or pay someone: no email, no
+//	          IBAN/BIC, no Stripe customer/charge ids.
+//	public:   no person at all: no names, no free-text narration, no bank
+//	          references, no donor display names. Amounts, categories,
+//	          collectives, accounts and canonical ids only.
+func transactionForAudience(tx TransactionEntry, a Audience) TransactionEntry {
+	out := tx
+	out.Metadata = make(map[string]interface{}, len(tx.Metadata))
+	for k, v := range tx.Metadata {
+		out.Metadata[k] = v
+	}
+	if a == AudienceStewards {
+		return out
+	}
+	// members and public
+	out.TxHash = ""
+	out.Account = ""
+	out.StripeChargeID = ""
+	out.StripeCustomerID = ""
+	for k, v := range out.Metadata {
+		if s, ok := v.(string); ok && containsEmail(s) {
+			delete(out.Metadata, k)
+		}
+	}
+	for _, k := range []string{"email", "iban", "bic", "counterparty"} {
+		delete(out.Metadata, k)
+	}
+	if a == AudienceMembers {
+		return out
+	}
+	// public
+	out.Counterparty = ""
+	for k := range out.Metadata {
+		if isPublicUnsafeMetadataKey(k) {
+			delete(out.Metadata, k)
+		}
+	}
+	return out
+}
+
+// isPublicUnsafeMetadataKey names metadata that carries people or bank
+// references and therefore stops at the members tier.
+func isPublicUnsafeMetadataKey(k string) bool {
+	switch k {
+	case "name", "firstName", "lastName", "fullDescription", "reference", "freeReference",
+		"statementNumber", "balance", "memo":
+		return true
+	}
+	return strings.HasPrefix(k, "custom_")
+}
+
+func writeTransactionsForAudiences(dataDir, year, month string, transactions []TransactionEntry) {
+	for _, a := range Audiences {
+		projected := make([]TransactionEntry, len(transactions))
+		for i, tx := range transactions {
+			projected[i] = transactionForAudience(tx, a)
+		}
+		out := TransactionsFile{
+			Year:         year,
+			Month:        month,
+			GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+			Transactions: projected,
+		}
+		data, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			continue
+		}
+		if err := writeAudienceFile(dataDir, year, month, a, "transactions.json", data); err != nil {
+			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
 }
