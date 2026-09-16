@@ -83,6 +83,12 @@ func enforcePIIPolicy(path string, data []byte) []byte {
 	if pathHasPrivateSegment(path) || pathHasProviderArchiveSegment(path) {
 		return data
 	}
+	// Tier directories carry their own policy (enforceAudiencePolicy, applied
+	// before the write); the legacy email-only guard must not re-scrub a
+	// members/stewards file that is allowed to hold names.
+	if a, ok := audienceOfPath(path); ok && a != AudiencePublic {
+		return data
+	}
 	cleaned, scrubbed := scrubNameFields(data)
 	for _, leak := range scrubbed {
 		Warnf("⚠ PII guard: scrubbed %s in %s (%s)", leak.Kind, path, leak.String())
@@ -121,9 +127,15 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 		dirRel = filepath.Dir(rel)
 	}
 
+	// Tier directories (public/members/stewards) set the mode for their
+	// whole subtree; see Audience.DirMode. Outside them the legacy rule
+	// applies: a literal "private" segment or a provider archive is 0700.
+	tier, inTier := audienceOfPath(rel)
+
 	if dirRel != "." {
 		current := baseDir
 		privateMode := false
+		tierMode := false
 		for _, part := range strings.Split(dirRel, string(os.PathSeparator)) {
 			if part == "" || part == "." {
 				continue
@@ -132,8 +144,14 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 			if part == "private" || providerArchivesStartAt(baseDir, current) {
 				privateMode = true
 			}
+			if a, ok := parseAudience(part); ok && inTier && a == tier {
+				tierMode = true
+			}
 			mode := dataPublicDirMode
-			if privateMode {
+			switch {
+			case tierMode:
+				mode = tier.DirMode()
+			case privateMode:
 				mode = dataPrivateDirMode
 			}
 			if err := os.Chmod(current, mode); err != nil && !os.IsNotExist(err) {
@@ -143,7 +161,11 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 	}
 
 	if !isDir {
-		if err := os.Chmod(targetPath, dataFileMode); err != nil && !os.IsNotExist(err) {
+		fileMode := dataFileMode
+		if inTier {
+			fileMode = tier.FileMode()
+		}
+		if err := os.Chmod(targetPath, fileMode); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

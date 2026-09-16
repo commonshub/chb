@@ -42,7 +42,7 @@ type DoorOpener struct {
 	Avatar   string   `json:"avatar,omitempty"`   // CDN URL, when the Discord user has one
 	Days     int      `json:"days"`               // number of DIFFERENT days with at least one opening
 	Opens    int      `json:"opens"`              // total openings
-	Dates    []string `json:"dates"`              // the distinct days (YYYY-MM-DD, Brussels time)
+	Dates    []string `json:"dates,omitempty"`    // the distinct days (YYYY-MM-DD, Brussels time)
 	Via      []string `json:"via,omitempty"`      // access methods seen (shortcut, citizenwallet, event)
 }
 
@@ -170,7 +170,63 @@ func generateMonthDoorGo(dataDir, year, month string, settings *Settings) bool {
 		return false
 	}
 	writeMonthFile(dataDir, year, month, filepath.Join("generated", "door.json"), data)
+
+	// Audience tiers: who opened the door is presence data. The public tier
+	// gets counts only; members see who (identity, days, opens); stewards
+	// additionally get the exact dates.
+	for _, a := range Audiences {
+		tiered, err := json.MarshalIndent(doorFileForAudience(out, a), "", "  ")
+		if err != nil {
+			continue
+		}
+		if err := writeAudienceFile(dataDir, year, month, a, "door.json", tiered); err != nil {
+			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
 	return true
+}
+
+// DoorPublicFile is the public projection of a month of door openings:
+// aggregate counts, no persons.
+type DoorPublicFile struct {
+	Month       string `json:"month"`
+	GeneratedAt string `json:"generatedAt"`
+	Openers     int    `json:"openers"`
+	OpenDays    int    `json:"openDays"`
+	TokenOpens  int    `json:"tokenOpens"`
+	TotalOpens  int    `json:"totalOpens"`
+}
+
+// doorFileForAudience projects the full door file down to a tier.
+func doorFileForAudience(full DoorMonthFile, a Audience) interface{} {
+	switch a {
+	case AudienceStewards:
+		return full
+	case AudienceMembers:
+		openers := make([]DoorOpener, len(full.Openers))
+		for i, o := range full.Openers {
+			o.Dates = nil
+			openers[i] = o
+		}
+		out := full
+		out.Openers = openers
+		return out
+	default:
+		days := map[string]bool{}
+		for _, o := range full.Openers {
+			for _, d := range o.Dates {
+				days[d] = true
+			}
+		}
+		return DoorPublicFile{
+			Month:       full.Month,
+			GeneratedAt: full.GeneratedAt,
+			Openers:     len(full.Openers),
+			OpenDays:    len(days),
+			TokenOpens:  full.TokenOpens,
+			TotalOpens:  full.TotalOpens,
+		}
+	}
 }
 
 // doorOpenerIdentity resolves who a door message credits.

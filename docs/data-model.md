@@ -34,7 +34,10 @@ $DATA_DIR/
 ├── YYYY/MM/
 │   ├── providers/<provider>/...        # raw provider archives (one per source)
 │   ├── processors/<processor>/...      # cross-provider enrichment outputs
-│   └── generated/                       # public outputs derived from providers/
+│   ├── public/                          # processed data, per audience — see audiences.md
+│   ├── members/                         #   same file names, strictly less in each lower tier
+│   ├── stewards/                        #   (0755 / 0750 / 0700)
+│   └── generated/                       # legacy: today's public tree + private/ (being phased out)
 │       ├── transactions.json
 │       ├── events.json
 │       ├── messages.json
@@ -43,8 +46,13 @@ $DATA_DIR/
 │       └── private/                     # PII layer, requires --with-pii
 │           └── enrichment.json
 └── latest/
-    └── generated/                       # the most recent month's outputs, mirrored
+    ├── {public,members,stewards}/       # the most recent month per audience, mirrored
+    └── generated/                       # legacy mirror
 ```
+
+Audiences: `public/`, `members/`, `stewards/` are three levels of trust;
+[audiences.md](audiences.md) defines what each may contain, how the policy is
+enforced at write time and on disk, and the migration from `generated/`.
 
 ### `providers/<provider>/`
 
