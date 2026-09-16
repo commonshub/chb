@@ -316,7 +316,7 @@ func checkRoomChannelDirs(dataDir string, report *doctorReport) {
 
 func checkGeneratedFiles(scope doctorScope, report *doctorReport) {
 	messagesDir := filepath.Join(scope.Path, "providers", "discord")
-	generatedDir := filepath.Join(scope.Path, "generated")
+	generatedDir := filepath.Join(scope.Path, stewardsDirName)
 	transactionSourceDirs := []string{
 		filepath.Join(scope.Path, "providers", "stripe"),
 		filepath.Join(scope.Path, "providers", "etherscan"),
@@ -325,15 +325,15 @@ func checkGeneratedFiles(scope doctorScope, report *doctorReport) {
 	publicICS := filepath.Join(generatedDir, "calendars", "public.ics")
 
 	if hasChannelMessages(messagesDir) {
-		requireFile(scope, filepath.Join(generatedDir, "images.json"), "messages present but generated/images.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "images.json"), "messages present but stewards/images.json is missing", "Run: chb generate", report)
 	}
 	if hasAnyMaterialData(transactionSourceDirs...) {
-		requireFile(scope, filepath.Join(generatedDir, "transactions.json"), "transaction provider archives present but generated/transactions.json is missing", "Run: chb generate", report)
-		requireFile(scope, filepath.Join(generatedDir, "counterparties.json"), "transaction provider archives present but generated/counterparties.json is missing", "Run: chb generate", report)
-		requireFile(scope, filepath.Join(generatedDir, "summary.json"), "transaction provider archives present but generated/summary.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "transactions.json"), "transaction provider archives present but stewards/transactions.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "counterparties.json"), "transaction provider archives present but stewards/counterparties.json is missing", "Run: chb generate", report)
+		requireFile(scope, filepath.Join(generatedDir, "summary.json"), "transaction provider archives present but stewards/summary.json is missing", "Run: chb generate", report)
 	}
 	if hasPublicEventSourceData(publicICS) {
-		requireFile(scope, filepath.Join(generatedDir, "events.json"), "calendar/event data present but generated/events.json is missing", "Run: chb calendars sync --history && chb generate events", report)
+		requireFile(scope, filepath.Join(generatedDir, "events.json"), "calendar/event data present but stewards/events.json is missing", "Run: chb calendars sync --history && chb generate events", report)
 	}
 }
 
@@ -402,7 +402,7 @@ func hasPublicEventSourceData(publicICS string) bool {
 }
 
 func checkImagesFile(dataDir string, scope doctorScope, report *doctorReport) int {
-	imagesPath := filepath.Join(scope.Path, "generated", "images.json")
+	imagesPath := filepath.Join(scope.Path, stewardsDirName, "images.json")
 	raw, err := os.ReadFile(imagesPath)
 	if err != nil {
 		return 0
@@ -413,7 +413,7 @@ func checkImagesFile(dataDir string, scope doctorScope, report *doctorReport) in
 		report.Findings = append(report.Findings, doctorFinding{
 			Severity: "error",
 			Scope:    scope.Label,
-			Message:  "generated/images.json still contains deprecated proxyUrl fields",
+			Message:  "stewards/images.json still contains deprecated proxyUrl fields",
 			Fix:      "Run: chb generate",
 		})
 	}
@@ -421,7 +421,7 @@ func checkImagesFile(dataDir string, scope doctorScope, report *doctorReport) in
 		report.Findings = append(report.Findings, doctorFinding{
 			Severity: "error",
 			Scope:    scope.Label,
-			Message:  "generated/images.json contains escaped unicode sequences",
+			Message:  "stewards/images.json contains escaped unicode sequences",
 			Fix:      "Run: chb generate",
 		})
 	}
@@ -439,7 +439,7 @@ func checkImagesFile(dataDir string, scope doctorScope, report *doctorReport) in
 		report.Findings = append(report.Findings, doctorFinding{
 			Severity: "error",
 			Scope:    scope.Label,
-			Message:  "generated/images.json is not valid JSON",
+			Message:  "stewards/images.json is not valid JSON",
 			Fix:      "Run: chb generate",
 		})
 		return 0
@@ -516,14 +516,14 @@ func checkImagesFile(dataDir string, scope doctorScope, report *doctorReport) in
 }
 
 func checkLatestHomepageEvents(dataDir string, report *doctorReport) {
-	latestEventsPath := filepath.Join(dataDir, "latest", "generated", "events.json")
+	latestEventsPath := filepath.Join(dataDir, "latest", stewardsDirName, "events.json")
 	raw, err := os.ReadFile(latestEventsPath)
 	if err != nil {
 		if hasAnyMonthlyGeneratedEvents(dataDir) {
 			report.Findings = append(report.Findings, doctorFinding{
 				Severity: "error",
 				Scope:    "latest",
-				Message:  "latest/generated/events.json is missing",
+				Message:  "latest/stewards/events.json is missing",
 				Fix:      "Run: chb generate",
 			})
 		}
@@ -535,7 +535,7 @@ func checkLatestHomepageEvents(dataDir string, report *doctorReport) {
 		report.Findings = append(report.Findings, doctorFinding{
 			Severity: "error",
 			Scope:    "latest",
-			Message:  "latest/generated/events.json is not valid JSON",
+			Message:  "latest/stewards/events.json is not valid JSON",
 			Fix:      "Run: chb generate",
 		})
 		return
@@ -592,7 +592,7 @@ func checkLatestHomepageEvents(dataDir string, report *doctorReport) {
 func hasAnyMonthlyGeneratedEvents(dataDir string) bool {
 	for _, year := range getAvailableYears(dataDir) {
 		for _, month := range getAvailableMonths(dataDir, year) {
-			eventsPath := filepath.Join(dataDir, year, month, "generated", "events.json")
+			eventsPath := filepath.Join(dataDir, year, month, stewardsDirName, "events.json")
 			if st, err := os.Stat(eventsPath); err == nil && !st.IsDir() && st.Size() > 0 {
 				return true
 			}

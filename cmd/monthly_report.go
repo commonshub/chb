@@ -200,7 +200,8 @@ func generateMonthlyReportGo(dataDir, year, month string, settings *Settings) bo
 	if err != nil {
 		return false
 	}
-	return writeMonthFile(dataDir, year, month, filepath.Join("generated", "summary.json"), data) == nil
+	writeTiersSame(dataDir, year, month, "summary.json", data)
+	return true
 }
 
 func monthlyReportContributors() []MonthlyReportContributor {
@@ -217,7 +218,7 @@ func monthlyReportContributors() []MonthlyReportContributor {
 
 func readMonthlyReportSummary(dataDir, year, month string) MonthlyReportSummary {
 	var summary MonthlyReportSummary
-	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "contributors.json")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "contributors.json")); err == nil {
 		var f MonthlyContributorsFile
 		if json.Unmarshal(data, &f) == nil {
 			summary.Contributors = f.Summary.TotalContributors
@@ -226,7 +227,7 @@ func readMonthlyReportSummary(dataDir, year, month string) MonthlyReportSummary 
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "images.json")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "images.json")); err == nil {
 		var f ImagesFile
 		if json.Unmarshal(data, &f) == nil {
 			summary.Images = f.Count
@@ -235,13 +236,13 @@ func readMonthlyReportSummary(dataDir, year, month string) MonthlyReportSummary 
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "transactions.json")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")); err == nil {
 		var f TransactionsFile
 		if json.Unmarshal(data, &f) == nil {
 			summary.Transactions = len(f.Transactions)
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "events.json")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "events.json")); err == nil {
 		var f FullEventsFile
 		if json.Unmarshal(data, &f) == nil {
 			summary.Events = len(f.Events)
@@ -252,7 +253,7 @@ func readMonthlyReportSummary(dataDir, year, month string) MonthlyReportSummary 
 }
 
 func buildMonthlyReportCurrencies(dataDir, year, month string) []MonthlyReportCurrency {
-	data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json"))
 	if err != nil {
 		return nil
 	}
@@ -295,7 +296,7 @@ func buildMonthlyReportCurrencies(dataDir, year, month string) []MonthlyReportCu
 }
 
 func buildMonthlyReportTaggedFlows(dataDir, year, month string) (collectives, categories []TaggedSummary) {
-	data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json"))
 	if err != nil {
 		return nil, nil
 	}
@@ -438,7 +439,7 @@ func buildMonthlyReportTaggedFlows(dataDir, year, month string) (collectives, ca
 
 	// Fiscal-host commissions — synthetic 10% transfer from each collective
 	// to commonshub, derived from this month's gross income per (collective,
-	// currency). Generated upstream into generated/commissions.json.
+	// currency). Generated upstream into stewards/commissions.json.
 	for _, c := range LoadCommissions(dataDir, year, month) {
 		v, err := strconv.ParseFloat(c.Amount, 64)
 		if err != nil || v == 0 {
@@ -507,7 +508,7 @@ func groupByTag(agg map[tagKey]*CurrencyFlow, tagMap map[tagKey]string) []Tagged
 }
 
 func buildMonthlyReportAccounts(dataDir, year, month string) []MonthlyReportAccount {
-	data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json"))
 	if err != nil {
 		return nil
 	}
@@ -856,7 +857,7 @@ func countICSBookingsByCalendar(dataDir, year, month string) (int, map[string]in
 }
 
 func countGeneratedEventsByCalendar(dataDir, year, month string) (int, map[string]int) {
-	data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "events.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "events.json"))
 	if err != nil {
 		return 0, map[string]int{}
 	}
@@ -1111,7 +1112,7 @@ func (nostrMonthlyReportContributor) MonthlyReport(ctx MonthlyReportContext, sco
 
 // ── Cross-month rollup (per-collective balances + global summary) ───────────
 
-// GlobalSummaryFile is the rollup written to latest/generated/summary.json.
+// GlobalSummaryFile is the rollup written to latest/<tier>/summary.json.
 // One entry per collective, each with a per-currency breakdown carrying
 // lifetime totals, activity span, and final balance.
 type GlobalSummaryFile struct {
@@ -1123,7 +1124,7 @@ type GlobalSummaryFile struct {
 
 // rebuildSummaryRollup walks every month's summary.json in chronological
 // order, fills in StartBalance / EndBalance for each collective row, and
-// writes latest/generated/summary.json with the lifetime aggregate. Returns
+// writes latest/<tier>/summary.json with the lifetime aggregate. Returns
 // the number of collective entries in the global file.
 func rebuildSummaryRollup(dataDir string) (int, error) {
 	type monthRef struct {
@@ -1152,7 +1153,7 @@ func rebuildSummaryRollup(dataDir string) (int, error) {
 	globalSlug := map[tagKey]string{}
 
 	for _, m := range months {
-		path := filepath.Join(dataDir, m.year, m.month, "generated", "summary.json")
+		path := filepath.Join(dataDir, m.year, m.month, stewardsDirName, "summary.json")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -1201,7 +1202,7 @@ func rebuildSummaryRollup(dataDir string) (int, error) {
 		if changed {
 			out, err := marshalIndentedNoHTMLEscape(file)
 			if err == nil {
-				_ = writeMonthFile(dataDir, m.year, m.month, filepath.Join("generated", "summary.json"), out)
+				writeTiersSame(dataDir, m.year, m.month, "summary.json", out)
 			}
 		}
 	}
@@ -1260,12 +1261,6 @@ func rebuildSummaryRollup(dataDir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	dest := filepath.Join(dataDir, "latest", "generated", "summary.json")
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return 0, err
-	}
-	if err := os.WriteFile(dest, data, 0644); err != nil {
-		return 0, err
-	}
+	writeTiersSame(dataDir, "latest", "", "summary.json", data)
 	return len(rows), nil
 }

@@ -562,7 +562,7 @@ func (m *ruleEditorModel) applyRule() {
 	dataDir := DataDir()
 	updated := 0
 	for mk, indices := range byMonth {
-		txPath := filepath.Join(dataDir, mk.year, mk.month, "generated", "transactions.json")
+		txPath := filepath.Join(dataDir, mk.year, mk.month, stewardsDirName, "transactions.json")
 		data, err := os.ReadFile(txPath)
 		if err != nil {
 			continue
@@ -594,7 +594,7 @@ func (m *ruleEditorModel) applyRule() {
 
 		if changed {
 			out, _ := json.MarshalIndent(txFile, "", "  ")
-			writeMonthFile(dataDir, mk.year, mk.month, filepath.Join("generated", "transactions.json"), out)
+			writeMonthFile(dataDir, mk.year, mk.month, filepath.Join(stewardsDirName, "transactions.json"), out)
 		}
 	}
 

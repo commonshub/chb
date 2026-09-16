@@ -45,7 +45,7 @@ func countPendingTransactionAnnotations(args []string) int {
 			if ym < startMonth || ym > endMonth {
 				continue
 			}
-			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), "generated", "transactions.json")
+			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), stewardsDirName, "transactions.json")
 			data, err := os.ReadFile(txPath)
 			if err != nil {
 				continue
@@ -152,7 +152,7 @@ func TransactionsPublish(args []string) error {
 				continue
 			}
 
-			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), "generated", "transactions.json")
+			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), stewardsDirName, "transactions.json")
 			data, err := os.ReadFile(txPath)
 			if err != nil {
 				continue

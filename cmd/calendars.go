@@ -380,7 +380,7 @@ func loadICSCountsForMonth(dataDir, year, month string, dateRange calendarSummar
 
 func loadPublicEventCountsForMonth(dataDir, year, month string, dateRange calendarSummaryRange) map[string]int {
 	out := map[string]int{}
-	path := filepath.Join(dataDir, year, month, "generated", "events.json")
+	path := filepath.Join(dataDir, year, month, stewardsDirName, "events.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return out

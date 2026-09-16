@@ -390,7 +390,7 @@ func applyCategoriesToTxs(idSet map[string]bool, category, collective, event str
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), "generated", "transactions.json")
+			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), stewardsDirName, "transactions.json")
 			data, err := os.ReadFile(txPath)
 			if err != nil {
 				continue
@@ -421,7 +421,7 @@ func applyCategoriesToTxs(idSet map[string]bool, category, collective, event str
 			if changed {
 				out, _ := json.MarshalIndent(txFile, "", "  ")
 				writeMonthFile(dataDir, yd.Name(), md.Name(),
-					filepath.Join("generated", "transactions.json"), out)
+					filepath.Join(stewardsDirName, "transactions.json"), out)
 			}
 		}
 	}

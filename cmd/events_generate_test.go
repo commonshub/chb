@@ -30,7 +30,7 @@ func TestGenerateEventsWritesLatestMarkdown(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("DATA_DIR", dataDir)
 
-	eventsDir := filepath.Join(dataDir, "2099", "01", "generated")
+	eventsDir := filepath.Join(dataDir, "2099", "01", stewardsDirName)
 	if err := os.MkdirAll(eventsDir, 0755); err != nil {
 		t.Fatalf("mkdir events dir: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestGenerateEventsWritesLatestMarkdown(t *testing.T) {
 		t.Fatalf("GenerateEvents: %v", err)
 	}
 
-	mdPath := filepath.Join(dataDir, "latest", "generated", "events.md")
+	mdPath := filepath.Join(dataDir, "latest", stewardsDirName, "events.md")
 	data, err := os.ReadFile(mdPath)
 	if err != nil {
 		t.Fatalf("expected latest generated events.md: %v", err)
@@ -62,7 +62,7 @@ func TestGenerateEventsWritesLatestMarkdown(t *testing.T) {
 	if !strings.Contains(string(data), "Future Brussels Event") {
 		t.Fatalf("events.md missing event:\n%s", data)
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "generated")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dataDir, stewardsDirName)); !os.IsNotExist(err) {
 		t.Fatalf("GenerateEvents should not create DATA_DIR/generated, got err=%v", err)
 	}
 }
@@ -71,7 +71,7 @@ func TestGenerateEventsWritesLatestJSONFromSameUpcomingSetAsMarkdown(t *testing.
 	dataDir := t.TempDir()
 	t.Setenv("DATA_DIR", dataDir)
 
-	eventsDir := filepath.Join(dataDir, "2099", "02", "generated")
+	eventsDir := filepath.Join(dataDir, "2099", "02", stewardsDirName)
 	if err := os.MkdirAll(eventsDir, 0755); err != nil {
 		t.Fatalf("mkdir events dir: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestGenerateEventsWritesLatestJSONFromSameUpcomingSetAsMarkdown(t *testing.
 		t.Fatalf("GenerateEvents: %v", err)
 	}
 
-	latestData, err := os.ReadFile(filepath.Join(dataDir, "latest", "generated", "events.json"))
+	latestData, err := os.ReadFile(filepath.Join(dataDir, "latest", stewardsDirName, "events.json"))
 	if err != nil {
 		t.Fatalf("read latest events.json: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestGenerateEventsWritesLatestJSONFromSameUpcomingSetAsMarkdown(t *testing.
 		t.Fatalf("latest events.json count=%d len=%d, want 2; payload=%s", latest.Count, len(latest.Events), latestData)
 	}
 
-	mdData, err := os.ReadFile(filepath.Join(dataDir, "latest", "generated", "events.md"))
+	mdData, err := os.ReadFile(filepath.Join(dataDir, "latest", stewardsDirName, "events.md"))
 	if err != nil {
 		t.Fatalf("read events.md: %v", err)
 	}

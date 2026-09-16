@@ -404,7 +404,7 @@ func TestGenerateTransactionsMergesStripeChargeDataEvenWithCustomerData(t *testi
 	if count := generateTransactionsGo(dataDir, "2026", "04", nil); count != 1 {
 		t.Fatalf("generated %d transactions, want 1", count)
 	}
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestGenerateTransactionsMergesStripeChargeDataEvenWithCustomerData(t *testi
 
 func writeTestLumaEventsFile(t *testing.T, dataDir, year, month, payload string) {
 	t.Helper()
-	dir := filepath.Join(dataDir, year, month, "generated")
+	dir := filepath.Join(dataDir, year, month, stewardsDirName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -32,8 +32,8 @@ type InboundSpread struct {
 	URI          string `json:"uri"`
 	NaturalYM    string `json:"naturalYM"`
 	TxID         string `json:"txID"`
-	Amount       string `json:"amount"`            // allocation for this target month
-	Total        string `json:"total,omitempty"`   // sum of all spread allocations on the source tx
+	Amount       string `json:"amount"`          // allocation for this target month
+	Total        string `json:"total,omitempty"` // sum of all spread allocations on the source tx
 	Currency     string `json:"currency,omitempty"`
 	Type         string `json:"type,omitempty"`
 	Counterparty string `json:"counterparty,omitempty"`
@@ -53,7 +53,7 @@ const inboundSpreadsFile = "inbound_spreads.json"
 
 // inboundSpreadsPath returns data/<year>/<month>/generated/inbound_spreads.json.
 func inboundSpreadsPath(dataDir, year, month string) string {
-	return filepath.Join(dataDir, year, month, "generated", inboundSpreadsFile)
+	return filepath.Join(dataDir, year, month, stewardsDirName, inboundSpreadsFile)
 }
 
 // LoadInboundSpreads reads the inbound spreads for a given target month.
@@ -113,7 +113,7 @@ func scanAnnotationCachesForSpreads(dataDir string) (map[string][]InboundSpread,
 					return txIndex
 				}
 				txIndex = map[string]TransactionEntry{}
-				txData, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "transactions.json"))
+				txData, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json"))
 				if err != nil {
 					return txIndex
 				}
@@ -218,12 +218,8 @@ func rebuildInboundSpreads(dataDir string) error {
 			return err
 		}
 		path := inboundSpreadsPath(dataDir, year, month)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return err
-		}
+		_ = data
+		writeTiers(dataDir, year, month, inboundSpreadsFile, tierJSON(f, inboundSpreadsFileForAudience))
 		written[path] = true
 	}
 	for path := range current {
@@ -260,4 +256,3 @@ func findExistingInboundSpreadFiles(dataDir string) (map[string]bool, error) {
 	}
 	return out, nil
 }
-

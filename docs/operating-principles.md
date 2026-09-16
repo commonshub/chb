@@ -10,7 +10,7 @@ Everything reads from the local cache under `$DATA_DIR` (default `~/.chb/data`).
 Read, analysis, report, and `generate` commands **never fetch inline** — network
 access is isolated to the explicit `pull` / `sync` verbs.
 
-- `generate` never hits the network (`providers/` → `generated/`, local-only).
+- `generate` never hits the network (`providers/` → `{public,members,stewards}/`, local-only).
 - Reports, stats, reconciliation, the TUIs, etc. read only local caches.
 - If data is missing or stale, a command **stops and tells you which sync to run**
   rather than silently fetching — e.g. *"No data found. Run sync first."*,

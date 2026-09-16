@@ -532,7 +532,7 @@ func loadTransactionsFile(dataDir, year, month string, includePII bool) *Transac
 	if includePII {
 		return LoadTransactionsWithPII(dataDir, year, month)
 	}
-	txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
+	txPath := filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")
 	data, err := os.ReadFile(txPath)
 	if err != nil {
 		return nil
@@ -2796,7 +2796,7 @@ func saveTransactionUpdate(tx *TransactionEntry) bool {
 	year := fmt.Sprintf("%d", t.Year())
 	month := fmt.Sprintf("%02d", t.Month())
 
-	txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
+	txPath := filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")
 	data, err := os.ReadFile(txPath)
 	if err != nil {
 		return false
@@ -2812,7 +2812,7 @@ func saveTransactionUpdate(tx *TransactionEntry) bool {
 			txFile.Transactions[i].Spread = tx.Spread
 			syncTransactionTags(&txFile.Transactions[i])
 			out, _ := json.MarshalIndent(txFile, "", "  ")
-			writeMonthFile(dataDir, year, month, filepath.Join("generated", "transactions.json"), out)
+			writeMonthFile(dataDir, year, month, filepath.Join(stewardsDirName, "transactions.json"), out)
 			return true
 		}
 	}

@@ -43,7 +43,7 @@ func TestEventsSinceUntilSortsAscending(t *testing.T) {
 
 func TestEventsSinceBeforeLatestOldestLoadsMonthlyEvents(t *testing.T) {
 	dataDir := t.TempDir()
-	writeEventsFixture(t, dataDir, "latest", "generated", []EventEntry{
+	writeEventsFixture(t, dataDir, "latest", stewardsDirName, []EventEntry{
 		{ID: "latest-a", Name: "Latest A", StartAt: "2026-04-10T09:00:00Z"},
 	})
 	writeEventsFixture(t, dataDir, "2026", "03", []EventEntry{
@@ -64,7 +64,7 @@ func TestEventsSinceBeforeLatestOldestLoadsMonthlyEvents(t *testing.T) {
 
 func TestEventsSince20260401MonthlyFallbackSortsAscending(t *testing.T) {
 	dataDir := t.TempDir()
-	writeEventsFixture(t, dataDir, "latest", "generated", []EventEntry{
+	writeEventsFixture(t, dataDir, "latest", stewardsDirName, []EventEntry{
 		{ID: "latest-a", Name: "Latest A", StartAt: "2026-04-29T09:00:00Z"},
 	})
 	writeEventsFixture(t, dataDir, "2026", "04", []EventEntry{
@@ -87,7 +87,7 @@ func TestEventsSince20260401MonthlyFallbackSortsAscending(t *testing.T) {
 
 func TestEventsUntilBeforeLatestOldestLoadsMonthlyEvents(t *testing.T) {
 	dataDir := t.TempDir()
-	writeEventsFixture(t, dataDir, "latest", "generated", []EventEntry{
+	writeEventsFixture(t, dataDir, "latest", stewardsDirName, []EventEntry{
 		{ID: "latest-a", Name: "Latest A", StartAt: "2026-04-10T09:00:00Z"},
 	})
 	writeEventsFixture(t, dataDir, "2026", "02", []EventEntry{
@@ -111,7 +111,7 @@ func TestEventsUntilBeforeLatestOldestLoadsMonthlyEvents(t *testing.T) {
 
 func TestEventsSinceInsideLatestUsesLatestSnapshot(t *testing.T) {
 	dataDir := t.TempDir()
-	writeEventsFixture(t, dataDir, "latest", "generated", []EventEntry{
+	writeEventsFixture(t, dataDir, "latest", stewardsDirName, []EventEntry{
 		{ID: "latest-a", Name: "Latest A", StartAt: "2026-04-10T09:00:00Z"},
 	})
 	writeEventsFixture(t, dataDir, "2026", "04", []EventEntry{
@@ -158,9 +158,9 @@ func eventIDs(events []EventEntry) []string {
 
 func writeEventsFixture(t *testing.T, dataDir, year, month string, events []EventEntry) {
 	t.Helper()
-	dir := filepath.Join(dataDir, year, month, "generated")
+	dir := filepath.Join(dataDir, year, month, stewardsDirName)
 	if year == "latest" {
-		dir = filepath.Join(dataDir, "latest", "generated")
+		dir = filepath.Join(dataDir, "latest", stewardsDirName)
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)

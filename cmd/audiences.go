@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type Audience string
@@ -163,29 +164,99 @@ func enforceAudiencePolicy(a Audience, rel string, data []byte) ([]byte, error) 
 		return data, nil
 	}
 	cleaned := data
-	if strings.HasSuffix(rel, ".json") && a == AudiencePublic {
+	if strings.HasSuffix(rel, ".json") {
+		// Name-like fields (name, firstName, lastName, displayName) whose
+		// value is an email are scrubbed in both lower tiers: a display
+		// name that is a mailbox is a contact detail, not a name.
 		var leaks []PIILeak
-		cleaned, leaks = scrubNameFields(data)
+		cleaned, leaks = scrubNameFields(cleaned)
 		for _, leak := range leaks {
 			Warnf("⚠ audience policy: scrubbed %s in %s/%s (%s)", leak.Kind, a, rel, leak.String())
 		}
 	}
+	// Emails inside free text (a message, a memo, a CSV cell) are masked
+	// rather than the whole file withheld — the file stays useful and the
+	// mailbox is gone. Opaque ids that merely look like emails (Luma /
+	// Google Calendar UIDs) and role mailboxes (hello@, info@) are kept.
+	cleaned = maskEmails(cleaned)
+
 	var problems []string
 	if strings.HasSuffix(rel, ".json") {
-		hard, soft := validatePublicJSON(cleaned)
-		for _, l := range append(hard, soft...) {
+		hard, _ := validatePublicJSON(cleaned)
+		for _, l := range hard {
 			problems = append(problems, fmt.Sprintf("email at %s (%s)", l.Field, l.String()))
 		}
-	} else if containsEmail(string(cleaned)) {
-		problems = append(problems, "email")
 	}
+	// A bank account number of a third party never belongs below stewards.
+	// Our own accounts' IBANs are on every invoice we send and stay.
 	for _, iban := range findIBANs(cleaned) {
+		if ownAccountIBANs()[iban] {
+			continue
+		}
 		problems = append(problems, "IBAN "+redactIBAN(iban))
 	}
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("%w: %s/%s must not carry %s", ErrAudiencePolicy, a, rel, strings.Join(problems, "; "))
 	}
 	return cleaned, nil
+}
+
+// emailMask replaces a masked mailbox in free text.
+const emailMask = "[email removed]"
+
+// calendarUIDPattern matches Google Calendar event UIDs, which are shaped
+// like emails (26 lowercase alphanumerics @google.com) but identify events.
+var calendarUIDPattern = regexp.MustCompile(`^[a-z0-9]{20,}@google\.com$`)
+
+// roleMailboxLocalParts are generic organisational mailboxes, not people.
+var roleMailboxLocalParts = map[string]bool{
+	"hello": true, "info": true, "contact": true, "team": true, "admin": true,
+	"support": true, "press": true, "bookings": true, "booking": true, "events": true,
+	"noreply": true, "no-reply": true, "billing": true, "invoices": true, "finance": true,
+}
+
+func isRoleMailbox(addr string) bool {
+	at := strings.IndexByte(addr, '@')
+	if at <= 0 {
+		return false
+	}
+	return roleMailboxLocalParts[strings.ToLower(addr[:at])]
+}
+
+// maskEmails replaces every personal email-shaped substring with emailMask.
+// Emails contain no quotes or backslashes, so a textual replacement keeps
+// JSON valid.
+func maskEmails(data []byte) []byte {
+	return emailPattern.ReplaceAllFunc(data, func(m []byte) []byte {
+		s := string(m)
+		if isNonMailboxIdentifier(s) || calendarUIDPattern.MatchString(s) || isRoleMailbox(s) {
+			return m
+		}
+		return []byte(emailMask)
+	})
+}
+
+// ownAccountIBANs is the set of IBANs of the org's own tracked accounts
+// (accounts.json). Computed once per process; tests override.
+var (
+	ownIBANsOnce    sync.Once
+	ownIBANsSet     map[string]bool
+	ownIBANsForTest map[string]bool
+)
+
+func ownAccountIBANs() map[string]bool {
+	if ownIBANsForTest != nil {
+		return ownIBANsForTest
+	}
+	ownIBANsOnce.Do(func() {
+		ownIBANsSet = map[string]bool{}
+		for _, acc := range LoadAccountConfigs() {
+			if iban := normalizeIBAN(acc.IBAN); iban != "" {
+				ownIBANsSet[iban] = true
+			}
+		}
+	})
+	return ownIBANsSet
 }
 
 // ibanCandidate matches the shape of an IBAN (country, check digits, BBAN);
@@ -237,4 +308,159 @@ func redactIBAN(iban string) string {
 		return iban
 	}
 	return iban[:4] + "…" + iban[len(iban)-4:]
+}
+
+// ---- chb's own view, legacy output, and migration ----------------------
+
+// stewardsDirName is the directory chb reads from and writes to: the full,
+// unredacted dataset. Every internal path that used to say "generated" says
+// this now; members/ and public/ are projections written next to it.
+const stewardsDirName = "stewards"
+
+// legacyGeneratedDirName is the pre-tier output directory. It keeps being
+// written (with the same content as before, minus generated/private/) for
+// consumers that have not moved to a tier yet — the website, until it reads
+// public/ and members/. Set CHB_LEGACY_GENERATED=0 to stop writing it.
+const legacyGeneratedDirName = "generated"
+
+func legacyGeneratedEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CHB_LEGACY_GENERATED"))) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	return true
+}
+
+// tierPayload carries one artifact's bytes per tier. A nil entry means the
+// artifact has no representation in that tier (e.g. profiles never reach
+// public/). Stewards is always written.
+type tierPayload struct {
+	Stewards []byte
+	Members  []byte
+	Public   []byte
+	Legacy   []byte // what generated/<rel> used to contain; nil = don't write it
+}
+
+// writeTiers writes one artifact to every tier it belongs to (month +
+// latest/ mirror, like writeMonthFile), and to the legacy generated/ tree
+// while that is still enabled. A members/public policy violation is
+// reported and that tier is skipped — the stewards copy is never withheld.
+func writeTiers(dataDir, year, month, rel string, p tierPayload) {
+	if p.Stewards != nil {
+		if err := writeAudienceFile(dataDir, year, month, AudienceStewards, rel, p.Stewards); err != nil {
+			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
+	if p.Members != nil {
+		if err := writeAudienceFile(dataDir, year, month, AudienceMembers, rel, p.Members); err != nil {
+			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
+	if p.Public != nil {
+		if err := writeAudienceFile(dataDir, year, month, AudiencePublic, rel, p.Public); err != nil {
+			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
+	if p.Legacy != nil && legacyGeneratedEnabled() {
+		_ = writeMonthFile(dataDir, year, month, filepath.Join(legacyGeneratedDirName, rel), p.Legacy)
+	}
+}
+
+// writeTiersSame is writeTiers for artifacts that carry no personal data at
+// all (aggregates, calendars, markdown): identical bytes in every tier.
+func writeTiersSame(dataDir, year, month, rel string, data []byte) {
+	writeTiers(dataDir, year, month, rel, tierPayload{Stewards: data, Members: data, Public: data, Legacy: data})
+}
+
+// migrateGeneratedToStewards seeds stewards/ from a pre-tier generated/ tree
+// so chb keeps working on months that have not been regenerated since the
+// tier split: every file under generated/ that stewards/ lacks is copied
+// over (generated/private/ included, so PII enrichment stays readable), and
+// generated/private/ is then removed — that subtree was the one thing in
+// the legacy tree that must never be reachable by a public consumer.
+// Idempotent and cheap: one stat per file.
+func migrateGeneratedToStewards(baseDir string) {
+	roots := []string{filepath.Join(baseDir, "latest")}
+	years, _ := os.ReadDir(baseDir)
+	for _, y := range years {
+		if !y.IsDir() || !isYearSegment(y.Name()) {
+			continue
+		}
+		roots = append(roots, filepath.Join(baseDir, y.Name()))
+		months, _ := os.ReadDir(filepath.Join(baseDir, y.Name()))
+		for _, m := range months {
+			if m.IsDir() && isMonthSegment(m.Name()) {
+				roots = append(roots, filepath.Join(baseDir, y.Name(), m.Name()))
+			}
+		}
+	}
+	for _, root := range roots {
+		src := filepath.Join(root, legacyGeneratedDirName)
+		if info, err := os.Stat(src); err != nil || !info.IsDir() {
+			continue
+		}
+		dst := filepath.Join(root, stewardsDirName)
+		copied := 0
+		_ = filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return nil
+			}
+			target := filepath.Join(dst, rel)
+			if _, err := os.Stat(target); err == nil {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			if err := os.MkdirAll(filepath.Dir(target), AudienceStewards.DirMode()); err != nil {
+				return nil
+			}
+			if err := os.WriteFile(target, data, AudienceStewards.FileMode()); err == nil {
+				copied++
+			}
+			return nil
+		})
+		privateDir := filepath.Join(src, "private")
+		_, hadPrivate := os.Stat(privateDir)
+		_ = os.RemoveAll(privateDir)
+		if copied > 0 || hadPrivate == nil {
+			note := ""
+			if hadPrivate == nil {
+				note = "; generated/private/ removed"
+			}
+			fmt.Fprintf(os.Stderr, "  %s✓%s %s: seeded stewards/ from generated/ (%d files)%s\n",
+				Fmt.Green, Fmt.Reset, strings.TrimPrefix(root, baseDir+string(os.PathSeparator)), copied, note)
+		}
+	}
+}
+
+// tierPathScope reports the (year, month) a tier file path belongs to —
+// ("2026","09") for 2026/09/<tier>/…, ("2026","") for 2026/<tier>/…,
+// ("latest","") for latest/<tier>/….
+func tierPathScope(dataDir, path string) (year, month string, ok bool) {
+	rel, err := filepath.Rel(dataDir, path)
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	switch {
+	case len(parts) >= 4 && isYearSegment(parts[0]) && isMonthSegment(parts[1]):
+		if _, isTier := parseAudience(parts[2]); isTier {
+			return parts[0], parts[1], true
+		}
+	case len(parts) >= 3 && isYearSegment(parts[0]):
+		if _, isTier := parseAudience(parts[1]); isTier {
+			return parts[0], "", true
+		}
+	case len(parts) >= 3 && parts[0] == "latest":
+		if _, isTier := parseAudience(parts[1]); isTier {
+			return "latest", "", true
+		}
+	}
+	return "", "", false
 }

@@ -104,22 +104,55 @@ website's `/api/image-proxy?url=/data/<rel>` serves *any* file under
 file; until then the route needs an allowlist (`generated/` only, image
 extensions only, no `private` segment).
 
-## Migration
+## How `chb` works with the tiers
 
-1. **This PR** — mechanism (`cmd/audiences.go`), tier-aware modes, the policy,
-   and two worked artifacts written to all three tiers alongside the legacy
-   files: `transactions.json` and `door.json`. Nothing that exists today
-   changes; `generated/` keeps being written.
-2. Convert the remaining writers one by one (`events`, `members`,
-   `contributors`, `profiles`, `images`, `counterparties`, Odoo documents,
-   summaries), each with a projection function and a test that the public
-   projection passes the public policy. Route the four writers that bypass
-   `writeDataFile` (`latest/generated/summary.json`, `inbound_spreads.json`,
-   `commissions.json`, `cache/discord-wallets.json`) through the tier writer.
-3. Website: `data-paths.ts` gains a tier root (`DATA_DIR_PUBLIC`,
-   `DATA_DIR_MEMBERS`); readers pick by session. Coolify mounts
-   `/data/commonshub/prod/{public,members}` views, not the whole tree.
-4. Stop writing `generated/` and `generated/private/`; `LoadTransactionsWithPII`
-   and `--with-pii` read `stewards/`.
-5. Prod: create group `chb-members`, add the website's runtime uid; the
-   `stewards/` tree stays `chb`-only.
+- **`stewards/` is chb's own working tree.** Every command that used to read
+  or write `generated/` now uses `stewards/` (`stewardsDirName` in code):
+  `generate`, `report`, `stats`, `doctor`, `transactions`, `accounts …
+  push`, `odoo …`, `nostr publish`, `rules`, `events`, `members`, `tokens`,
+  `calendars`, the Luma/Stripe processor, ticket-sales enrichment. The PII
+  enrichment layer is no longer a separate file: `stewards/transactions.json`
+  carries counterparty, email and IBAN on the entry itself.
+  `LoadTransactionsWithPII` still merges a `stewards/private/enrichment.json`
+  when one exists (seeded from a pre-tier tree, see below).
+- **Every writer emits all three tiers** through `writeTiers` /
+  `writeTiersSame` (`cmd/audiences.go`) with the projections in
+  `cmd/audience_projections.go`. `writeTiers` also mirrors to
+  `latest/<tier>/`, as `writeMonthFile` did for `generated/`.
+- **Binary assets live in the lowest tier they belong to** and are referenced
+  from every tier: event cover images are written to
+  `public/events/images/` only and `coverImageLocal` points there in all
+  three `events.json`. Discord image attachments stay in the provider archive.
+- **Caches** (`cache/discord-wallets.json`, `cache/event-og-images.json`)
+  live under `latest/stewards/cache/`.
+- **Seeding from a pre-tier tree.** On every run the data-dir normaliser runs
+  `migrateGeneratedToStewards`: for each month/year/`latest`, every file
+  under `generated/` that `stewards/` lacks is copied over (including
+  `generated/private/`), then **`generated/private/` is deleted** — that
+  subtree was the one thing in the legacy tree a public consumer must never
+  reach. Months regenerated since the split are untouched. So an upgraded
+  `chb` works on old months immediately; `members/` and `public/` for those
+  months appear on the next `generate` of that month (`chb generate
+  --history --force` once to fill them all — the sources-unchanged skip
+  otherwise leaves old months alone).
+- **Legacy `generated/` keeps being written**, with the same content as
+  before the split (transactions: the old public projection), for consumers
+  that have not moved yet — the website. It is a courtesy, not a tier:
+  nothing checks it. Set `CHB_LEGACY_GENERATED=0` once the website reads
+  `public/` + `members/`; the tree can then be deleted.
+
+## Migration status
+
+1. ✅ Mechanism, tier modes, write-time policy.
+2. ✅ Every writer converted: `transactions`, `counterparties`, `members`,
+   `contributors` (month, year, top), `profiles` (never public), `images`,
+   `events` (month, year, latest, csv), `calendars/public.ics`,
+   `events.md`, `rooms.md`, `door`, `summary` (month + lifetime rollup),
+   `commissions`, `inbound_spreads`, `activitygrid`, `README.md`. Every chb
+   reader points at `stewards/`. Pre-tier trees are seeded automatically and
+   lose `generated/private/`.
+3. ⬜ Website: read `public/` and `members/` — see
+   [website-migration.md](website-migration.md). Move the Monerium admin
+   views out of the web container.
+4. ⬜ `CHB_LEGACY_GENERATED=0` on prod, delete `generated/`.
+5. ⬜ Prod: create group `chb-members`, add the website's runtime uid.
