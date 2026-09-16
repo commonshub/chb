@@ -45,7 +45,7 @@ func WriteJSON(dataDir, year, month string, v interface{}, elems ...string) erro
 		return err
 	}
 	path := Path(dataDir, year, month, elems...)
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(path, data, 0600); err != nil {
