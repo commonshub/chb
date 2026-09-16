@@ -95,7 +95,7 @@ func sortedDiagnosticKinds(counts map[string]int) []string {
 // CalendarsSync fetches every configured ICS feed, archives the booking events
 // per month under providers/ics/<slug>.ics, then hands the in-memory parsed
 // events over to events_generate.go to produce every derived artifact under
-// generated/.
+// stewards/.
 //
 // Returns (newBookings, newEvents, error).
 func CalendarsSync(args []string) (int, int, error) {
@@ -637,7 +637,7 @@ func countCachedEventsInMonthRange(dataDir, sinceMonth, untilMonth string) int {
 		if len(parts) != 2 {
 			continue
 		}
-		path := filepath.Join(dataDir, parts[0], parts[1], "generated", "events.json")
+		path := filepath.Join(dataDir, parts[0], parts[1], stewardsDirName, "events.json")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue

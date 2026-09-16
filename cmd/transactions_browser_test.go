@@ -173,7 +173,7 @@ func TestBulkCategoryAssignmentUpdatesSelectedTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal transactions: %v", err)
 	}
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"), string(data))
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"), string(data))
 
 	cols := transactionTableColumns(true, true)
 	m := txBrowserModel{
@@ -256,7 +256,7 @@ func TestCategoryPickerReturnsToTableAndShowsPublishStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal transactions: %v", err)
 	}
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"), string(data))
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"), string(data))
 
 	cols := transactionTableColumns(true, true)
 	m := txBrowserModel{
@@ -433,7 +433,7 @@ func TestEditAssignmentUpdatesCategoryAndCollectiveWithOnePublishCommand(t *test
 	if err != nil {
 		t.Fatalf("marshal transactions: %v", err)
 	}
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"), string(data))
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"), string(data))
 
 	cols := transactionTableColumns(true, true)
 	m := txBrowserModel{

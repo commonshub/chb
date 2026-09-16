@@ -15,7 +15,7 @@ This page is the fast on-ramp for AI agents and new contributors picking up `chb
 These come from real bugs. Don't relax them without explicit user buy-in.
 
 1. **`pull` never writes to remote systems, `push` never reads from non-archived sources.** See [philosophy.md § Command verbs](philosophy.md#command-verbs-pull--generate--push).
-2. **`sync` files never write under `generated/`.** Use `<provider>_sync.go` for fetch, `<provider>_generate.go` for transforms.
+2. **`sync` files never write under `stewards/`.** Use `<provider>_sync.go` for fetch, `<provider>_generate.go` for transforms.
 3. **All user-facing times are normalised to `Europe/Brussels` in `generate`, never in `sync`.** Use `BrusselsTZ()` / `FormatTimeBrussels` / `FmtDate` from `cmd/format.go`.
 4. **All-day events render without a clock time.** Don't bypass the iCal parser.
 5. **`transactions.json` is target-agnostic.** Odoo-specific resolution lives in `providers/odoo/pending/<YYYY-MM>.json`. Don't put `accountCode` / `partnerId` back into the public tx schema.
@@ -70,7 +70,7 @@ Follow the file split: `cmd/<provider>_sync.go` for fetch, `cmd/<provider>_gener
 
 ## When in doubt
 
-- A `*_sync.go` file with a `writeMonthFile("…/generated/…")` call is an obvious smell.
+- A `*_sync.go` file with a `writeMonthFile("…/stewards/…")` call is an obvious smell.
 - A push path that calls `LookupOdooMapping(...)` instead of reading `providers/odoo/pending/` is an obvious smell.
 - A compact command that goes silent for >1s is an obvious smell.
 

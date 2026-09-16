@@ -128,7 +128,7 @@ Spread lives in three places, in order of authority:
      }
    }
    ```
-3. **Generated transactions.** `DATA_DIR/YYYY/MM/generated/transactions.json` —
+3. **Generated transactions.** `DATA_DIR/YYYY/MM/stewards/transactions.json` —
    the `Spread` field on the transaction entry, copied from the annotation by
    `chb generate`.
 
@@ -138,7 +138,7 @@ To answer "what allocates to month X?" without scanning every other month at
 read time, `chb generate` produces a per-month inbound index:
 
 ```text
-DATA_DIR/YYYY/MM/generated/inbound_spreads.json
+DATA_DIR/YYYY/MM/stewards/inbound_spreads.json
 ```
 
 ```json

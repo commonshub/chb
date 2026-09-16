@@ -2,11 +2,11 @@ package cmd
 
 // events_generate.go owns the *generate* side of the events pipeline: reading
 // in-memory parsed ICS events (handed over by events_sync.go after fetching)
-// and producing every derived artifact under generated/ — events.json per
+// and producing every derived artifact under stewards/ — events.json per
 // month, public.ics, yearly aggregates, events.csv, and the human-facing
 // markdown summaries. All timezone normalisation to Europe/Brussels and
 // AllDay handling live here. Sync code in events_sync.go must not write to
-// generated/. See docs/philosophy.md.
+// stewards/. See docs/philosophy.md.
 
 import (
 	"encoding/json"
@@ -327,7 +327,7 @@ func setEventOGCacheEntryResult(entry *eventOGCacheItem, result og.FetchResult) 
 }
 
 func eventOGCachePath(dataDir string) string {
-	return filepath.Join(dataDir, "latest", "generated", "cache", "event-og-images.json")
+	return filepath.Join(dataDir, "latest", stewardsDirName, "cache", "event-og-images.json")
 }
 
 func loadEventOGCache(dataDir string) *eventOGCache {
@@ -480,10 +480,10 @@ func eventHostFromURL(raw string) string {
 // generateCalendarsForMonths takes the in-memory parsed room events fetched by
 // CalendarsSync and produces every derived calendar artifact:
 //
-//   - generated/calendars/public.ics per month
-//   - generated/events.json per month (with OG image enrichment)
+//   - stewards/calendars/public.ics per month
+//   - stewards/events.json per month (with OG image enrichment)
 //   - yearly events.json and events.csv aggregates
-//   - latest/generated/events.md and rooms.md
+//   - latest/<tier>/events.md and rooms.md
 //
 // It returns the number of newly-seen events across all processed months.
 func generateCalendarsForMonths(
@@ -504,7 +504,7 @@ func generateCalendarsForMonths(
 			icsEvents = append(icsEvents, re.event)
 		}
 		content := ical.WrapICS(icsEvents, "-//Commons Hub Brussels//Public Calendar Events//EN")
-		writeMonthFile(dataDir, year, month, filepath.Join("generated", "calendars", "public.ics"), []byte(content))
+		writeTiersSame(dataDir, year, month, filepath.Join("calendars", "public.ics"), []byte(content))
 	}
 
 	// Process each month (og:image scraping, events.json generation)
@@ -556,7 +556,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	existingIDs := map[string]bool{}
 	existingMetadata := map[string]EventMetadata{}
 	existingEvents := map[string]FullEvent{}
-	existingPath := filepath.Join(monthPath, "generated", "events.json")
+	existingPath := filepath.Join(monthPath, stewardsDirName, "events.json")
 	if data, err := os.ReadFile(existingPath); err == nil {
 		var ef FullEventsFile
 		if json.Unmarshal(data, &ef) == nil {
@@ -712,8 +712,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Events:      fullEvents,
 	}
-	data, _ := json.MarshalIndent(ef, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "events.json"), data)
+	writeTiers(dataDir, year, month, "events.json", tierJSON(ef, eventsFileForAudience))
 	fmt.Printf("  %s: %s, %s, %s pending, %d new, wrote %d\n",
 		label, Pluralize(len(roomEvents), "public event", ""), Pluralize(needsOGFetch, "page fetch", "page fetches"), Pluralize(needsCoverSync, "cover", ""), len(newEvents), len(fullEvents))
 
@@ -819,7 +818,7 @@ func generateYearlyEvents(dataDir, year string) {
 		if !d.IsDir() || len(d.Name()) != 2 {
 			continue
 		}
-		eventsPath := filepath.Join(yearPath, d.Name(), "generated", "events.json")
+		eventsPath := filepath.Join(yearPath, d.Name(), stewardsDirName, "events.json")
 		data, err := os.ReadFile(eventsPath)
 		if err != nil {
 			continue
@@ -839,13 +838,12 @@ func generateYearlyEvents(dataDir, year string) {
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Events:      allEvents,
 	}
-	data, _ := json.MarshalIndent(ef, "", "  ")
-	_ = writeDataFile(filepath.Join(yearPath, "generated", "events.json"), data)
+	writeTiers(dataDir, year, "", "events.json", tierJSON(ef, eventsFileForAudience))
 }
 
 func generateYearlyCSV(dataDir, year string) {
 	yearPath := filepath.Join(dataDir, year)
-	eventsPath := filepath.Join(yearPath, "generated", "events.json")
+	eventsPath := filepath.Join(yearPath, stewardsDirName, "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return
@@ -911,7 +909,12 @@ func generateYearlyCSV(dataDir, year string) {
 	}
 
 	csvContent := headers + "\n" + strings.Join(rows, "\n") + "\n"
-	_ = writeDataFile(filepath.Join(yearPath, "generated", "events.csv"), []byte(csvContent))
+	writeTiers(dataDir, year, "", "events.csv", tierPayload{
+		Stewards: []byte(csvContent),
+		Members:  []byte(csvContent),
+		Public:   []byte(eventsCSVForAudience(csvContent, AudiencePublic)),
+		Legacy:   []byte(csvContent),
+	})
 }
 
 func csvEscape(s string) string {
@@ -947,7 +950,7 @@ func loadUpcomingFullEvents(dataDir string) []FullEvent {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			eventsPath := filepath.Join(yearPath, md.Name(), "generated", "events.json")
+			eventsPath := filepath.Join(yearPath, md.Name(), stewardsDirName, "events.json")
 			data, err := os.ReadFile(eventsPath)
 			if err != nil {
 				continue
@@ -1040,9 +1043,7 @@ This file is automatically generated. Last updated: %s
 Want to host an event at Commons Hub Brussels? [Contact us](%s/contact) or [book a room](%s/rooms).
 `, time.Now().UTC().Format(time.RFC3339), icsLine, eventsMarkdown, baseURL, baseURL)
 
-	latestDir := filepath.Join(dataDir, "latest", "generated")
-	_ = mkdirAllManagedData(latestDir)
-	_ = writeDataFile(filepath.Join(latestDir, "events.md"), []byte(content))
+	writeTiersSame(dataDir, "latest", "", "events.md", []byte(content))
 }
 
 func formatEventTimeBrussels(t time.Time) string {
@@ -1141,7 +1142,5 @@ Rooms can be booked by visiting the individual room pages above and filling out 
 For questions about bookings, contact us at hello@commonshub.brussels or visit [commonshub.brussels/contact](%s/contact).
 `, time.Now().UTC().Format(time.RFC3339), roomsMarkdown, baseURL)
 
-	latestDir := filepath.Join(dataDir, "latest", "generated")
-	_ = mkdirAllManagedData(latestDir)
-	_ = writeDataFile(filepath.Join(latestDir, "rooms.md"), []byte(content))
+	writeTiersSame(dataDir, "latest", "", "rooms.md", []byte(content))
 }

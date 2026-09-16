@@ -141,7 +141,7 @@ func Stats(args []string) {
 	categoryTotals := map[string]*txSummary{} // category slug -> in/out
 
 	for _, m := range months {
-		txPath := filepath.Join(m.path, "generated", "transactions.json")
+		txPath := filepath.Join(m.path, stewardsDirName, "transactions.json")
 		data, err := os.ReadFile(txPath)
 		if err != nil {
 			continue
@@ -491,7 +491,7 @@ func Stats(args []string) {
 			}
 		}
 		// Also count event cover images
-		eventImagesDir := filepath.Join(m.path, "generated", "events", "images")
+		eventImagesDir := filepath.Join(m.path, stewardsDirName, "events", "images")
 		if entries, err := os.ReadDir(eventImagesDir); err == nil {
 			for _, e := range entries {
 				if e.IsDir() {
@@ -562,7 +562,7 @@ func Stats(args []string) {
 		}
 
 		// Count public events from events.json
-		eventsPath := filepath.Join(m.path, "generated", "events.json")
+		eventsPath := filepath.Join(m.path, stewardsDirName, "events.json")
 		if data, err := os.ReadFile(eventsPath); err == nil {
 			var evFile FullEventsFile
 			if json.Unmarshal(data, &evFile) == nil {
@@ -654,6 +654,12 @@ func typeIcon(name string) string {
 		return "📌"
 	case "generated":
 		return "⚙️"
+	case "stewards":
+		return "🔐"
+	case "members":
+		return "👥"
+	case "public":
+		return "🌍"
 	default:
 		return "📁"
 	}

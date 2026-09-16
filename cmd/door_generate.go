@@ -5,7 +5,7 @@ package cmd
 // The door server (github.com/commonshub/door) posts one Discord message per
 // opening into the configured "door" channel. `chb messages sync` mirrors that
 // channel under providers/discord/<channelID>/messages.json like any other
-// channel; this generator reads the mirror and writes generated/door.json —
+// channel; this generator reads the mirror and writes stewards/door.json —
 // per member: identity + on how many different days they opened the door.
 //
 // Message formats posted by the door server (server/routes/open/index.js):
@@ -23,7 +23,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -42,11 +41,11 @@ type DoorOpener struct {
 	Avatar   string   `json:"avatar,omitempty"`   // CDN URL, when the Discord user has one
 	Days     int      `json:"days"`               // number of DIFFERENT days with at least one opening
 	Opens    int      `json:"opens"`              // total openings
-	Dates    []string `json:"dates"`              // the distinct days (YYYY-MM-DD, Brussels time)
+	Dates    []string `json:"dates,omitempty"`    // the distinct days (YYYY-MM-DD, Brussels time)
 	Via      []string `json:"via,omitempty"`      // access methods seen (shortcut, citizenwallet, event)
 }
 
-// DoorMonthFile is generated/door.json.
+// DoorMonthFile is stewards/door.json.
 type DoorMonthFile struct {
 	Month       string       `json:"month"`
 	GeneratedAt string       `json:"generatedAt"`
@@ -72,7 +71,7 @@ func doorChannelID(settings *Settings) string {
 	return GetDiscordChannelIDs(settings)[doorChannelSettingsKey]
 }
 
-// generateMonthDoorGo writes generated/door.json for one month. Returns true
+// generateMonthDoorGo writes stewards/door.json for one month. Returns true
 // when a file was written (i.e. the door channel is configured and mirrored).
 func generateMonthDoorGo(dataDir, year, month string, settings *Settings) bool {
 	channelID := doorChannelID(settings)
@@ -169,8 +168,55 @@ func generateMonthDoorGo(dataDir, year, month string, settings *Settings) bool {
 	if err != nil {
 		return false
 	}
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "door.json"), data)
+	// Who opened the door is presence data: public gets counts only,
+	// members see who (identity, days, opens), stewards also the dates.
+	membersData, _ := json.MarshalIndent(doorFileForAudience(out, AudienceMembers), "", "  ")
+	publicData, _ := json.MarshalIndent(doorFileForAudience(out, AudiencePublic), "", "  ")
+	writeTiers(dataDir, year, month, "door.json", tierPayload{Stewards: data, Members: membersData, Public: publicData, Legacy: data})
 	return true
+}
+
+// DoorPublicFile is the public projection of a month of door openings:
+// aggregate counts, no persons.
+type DoorPublicFile struct {
+	Month       string `json:"month"`
+	GeneratedAt string `json:"generatedAt"`
+	Openers     int    `json:"openers"`
+	OpenDays    int    `json:"openDays"`
+	TokenOpens  int    `json:"tokenOpens"`
+	TotalOpens  int    `json:"totalOpens"`
+}
+
+// doorFileForAudience projects the full door file down to a tier.
+func doorFileForAudience(full DoorMonthFile, a Audience) interface{} {
+	switch a {
+	case AudienceStewards:
+		return full
+	case AudienceMembers:
+		openers := make([]DoorOpener, len(full.Openers))
+		for i, o := range full.Openers {
+			o.Dates = nil
+			openers[i] = o
+		}
+		out := full
+		out.Openers = openers
+		return out
+	default:
+		days := map[string]bool{}
+		for _, o := range full.Openers {
+			for _, d := range o.Dates {
+				days[d] = true
+			}
+		}
+		return DoorPublicFile{
+			Month:       full.Month,
+			GeneratedAt: full.GeneratedAt,
+			Openers:     len(full.Openers),
+			OpenDays:    len(days),
+			TokenOpens:  full.TokenOpens,
+			TotalOpens:  full.TotalOpens,
+		}
+	}
 }
 
 // doorOpenerIdentity resolves who a door message credits.

@@ -522,7 +522,7 @@ func isHexAddress(addr string) bool {
 }
 
 func walletResolutionCachePath(dataDir string) string {
-	return filepath.Join(dataDir, "latest", "generated", "cache", "discord-wallets.json")
+	return filepath.Join(dataDir, "latest", stewardsDirName, "cache", "discord-wallets.json")
 }
 
 func loadWalletResolutionCache(dataDir string) *walletResolutionCache {

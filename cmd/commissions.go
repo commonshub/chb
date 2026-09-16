@@ -46,7 +46,7 @@ type CommissionsFile struct {
 const commissionsFile = "commissions.json"
 
 func commissionsPath(dataDir, year, month string) string {
-	return filepath.Join(dataDir, year, month, "generated", commissionsFile)
+	return filepath.Join(dataDir, year, month, stewardsDirName, commissionsFile)
 }
 
 // LoadCommissions reads the commissions for a given month. Returns nil when
@@ -64,7 +64,7 @@ func LoadCommissions(dataDir, year, month string) []Commission {
 }
 
 // rebuildCommissions re-derives commissions.json for every month that has a
-// generated/transactions.json, and removes orphan files for months that no
+// stewards/transactions.json, and removes orphan files for months that no
 // longer have any qualifying income. Always rebuilt from scratch so rule or
 // category changes don't leave stale entries.
 func rebuildCommissions(dataDir string) error {
@@ -111,12 +111,7 @@ func rebuildCommissions(dataDir string) error {
 				return err
 			}
 			path := commissionsPath(dataDir, year, month)
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(path, data, 0644); err != nil {
-				return err
-			}
+			writeTiersSame(dataDir, year, month, commissionsFile, data)
 			written[path] = true
 		}
 	}
@@ -132,7 +127,7 @@ func rebuildCommissions(dataDir string) error {
 // commission entry per (collective, currency) with non-zero gross income.
 // commissionHostSlug never pays a commission to itself.
 func commissionsForMonth(dataDir, year, month string) []Commission {
-	data, err := os.ReadFile(filepath.Join(dataDir, year, month, "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json"))
 	if err != nil {
 		return nil
 	}

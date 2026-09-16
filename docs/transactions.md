@@ -1,8 +1,9 @@
 # transactions.json — canonical schema
 
 The shape every provider produces and every consumer can rely on. Lives at
-`$DATA_DIR/<YYYY>/<MM>/generated/transactions.json` and the mirror in
-`latest/generated/`.
+`$DATA_DIR/<YYYY>/<MM>/stewards/transactions.json` (chb's full view; `members/`
+and `public/` hold projections with less in them — see audiences.md) and the
+mirror in `latest/stewards/`.
 
 ## Account-based, not graph-based
 

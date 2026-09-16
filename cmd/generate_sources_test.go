@@ -34,7 +34,7 @@ func TestGenerateMonthContributorsGoUsesDiscordSourceMessages(t *testing.T) {
 		t.Fatalf("generateMonthContributorsGo() = %d, want 2", n)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "contributors.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "contributors.json"))
 	if err != nil {
 		t.Fatalf("read contributors.json: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestGenerateTransactionsGoUsesStripeEtherscanAndMoneriumSources(t *testing.
 		t.Fatalf("generateTransactionsGo() = %d, want 2", n)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"))
 	if err != nil {
 		t.Fatalf("read transactions.json: %v", err)
 	}
@@ -158,9 +158,10 @@ func TestGenerateTransactionsGoUsesStripeEtherscanAndMoneriumSources(t *testing.
 	if want := "ethereum:100:address:0xdead000000000000000000000000000000000000"; chainTx.CounterpartyID != want {
 		t.Fatalf("etherscan counterpartyId = %q, want %q", chainTx.CounterpartyID, want)
 	}
-	// Monerium counterparty name is PII and must not appear in the public tx.
-	if chainTx.Counterparty != "" {
-		t.Fatalf("monerium counterparty leaked into public output: %q", chainTx.Counterparty)
+	// stewards/ is the full tier: the Monerium bank-counterparty name is
+	// carried inline (there is no separate enrichment file anymore).
+	if chainTx.Counterparty != "Bank Sender" {
+		t.Fatalf("stewards counterparty = %q, want Bank Sender", chainTx.Counterparty)
 	}
 	if got := stringMetadata(chainTx.Metadata, "memo"); got != "SEPA topup" {
 		t.Fatalf("monerium memo = %q, want SEPA topup", got)
@@ -169,17 +170,29 @@ func TestGenerateTransactionsGoUsesStripeEtherscanAndMoneriumSources(t *testing.
 		t.Fatalf("missing monerium tags: %#v", chainTx.Tags)
 	}
 
-	// PII (the bank-counterparty name) must be captured in the private file.
-	piiData, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "private", "enrichment.json"))
-	if err != nil {
-		t.Fatalf("read enrichment.json: %v", err)
+	// members/ keeps the name and the memo; public/ carries neither.
+	tierTx := func(tier string) TransactionEntry {
+		raw, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", tier, "transactions.json"))
+		if err != nil {
+			t.Fatalf("read %s/transactions.json: %v", tier, err)
+		}
+		var f TransactionsFile
+		if err := json.Unmarshal(raw, &f); err != nil {
+			t.Fatalf("unmarshal %s/transactions.json: %v", tier, err)
+		}
+		for _, tx := range f.Transactions {
+			if tx.Provider == "etherscan" {
+				return tx
+			}
+		}
+		t.Fatalf("%s/transactions.json has no etherscan tx", tier)
+		return TransactionEntry{}
 	}
-	var piiFile TransactionsPIIFile
-	if err := json.Unmarshal(piiData, &piiFile); err != nil {
-		t.Fatalf("unmarshal enrichment.json: %v", err)
+	if m := tierTx("members"); m.Counterparty != "Bank Sender" || stringMetadata(m.Metadata, "memo") != "SEPA topup" {
+		t.Fatalf("members tx must keep name and memo: %#v", m)
 	}
-	if got := piiFile.Enrichments[chainTx.ID]; got == nil || got.Name != "Bank Sender" {
-		t.Fatalf("expected PII name 'Bank Sender' for %q, got %#v", chainTx.ID, got)
+	if p := tierTx("public"); p.Counterparty != "" || stringMetadata(p.Metadata, "memo") != "" {
+		t.Fatalf("monerium counterparty/memo leaked into public output: %#v", p)
 	}
 }
 
@@ -222,7 +235,7 @@ func TestGenerateTransactionsGoKeepsBothSidesOfInternalAccountTransfer(t *testin
 		t.Fatalf("generateTransactionsGo() = %d, want 2", n)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"))
 	if err != nil {
 		t.Fatalf("read transactions.json: %v", err)
 	}
@@ -284,7 +297,7 @@ func TestGenerateTransactionsGoDetectsInternalAccountsFromAccountsConfig(t *test
 	if n := generateTransactionsGo(dataDir, "2026", "04", &Settings{}); n != 2 {
 		t.Fatalf("generateTransactionsGo() = %d, want 2", n)
 	}
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"))
 	if err != nil {
 		t.Fatalf("read transactions.json: %v", err)
 	}
@@ -303,22 +316,22 @@ func TestGenerateMonthlyReportGoSummarizesGeneratedFilesAndSources(t *testing.T)
 	dataDir := t.TempDir()
 	hash := "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "contributors.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "contributors.json"), `{
 	  "summary": {"totalContributors": 2},
 	  "contributors": [{ "id": "user-1" }, { "id": "user-2" }]
 	}`)
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "images.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "images.json"), `{
 	  "count": 1,
 	  "images": [{ "id": "img-1" }]
 	}`)
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"), `{
 	  "transactions": [
 	    {"id":"stripe:txn_1","provider":"stripe","account":"stripe","accountSlug":"acct_test","accountName":"Stripe","currency":"EUR","netAmount":9.5,"grossAmount":10,"fee":0.5,"type":"CREDIT"},
 	    {"id":"stripe:txn_2","provider":"stripe","account":"stripe","accountSlug":"acct_test","accountName":"Stripe","currency":"EUR","netAmount":-4,"grossAmount":4,"type":"DEBIT"},
 	    {"id":"gnosis:abc","provider":"etherscan","chain":"gnosis","account":"0xabc","accountSlug":"treasury","accountName":"Treasury","currency":"EURe","amount":1,"type":"CREDIT"}
 	  ]
 	}`)
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "events.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "events.json"), `{
 	  "events": [
 	    {"id":"event-1","name":"Public event","calendarSource":"ostrom"},
 	    {"id":"event-2","name":"Other event","calendarSource":"commons"}
@@ -369,7 +382,7 @@ END:VCALENDAR`)
 		t.Fatalf("generateMonthlyReportGo() = false")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "summary.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "summary.json"))
 	if err != nil {
 		t.Fatalf("read summary.json: %v", err)
 	}
@@ -480,7 +493,7 @@ func TestGenerateMonthlyReportGoSummarizesMintableTokens(t *testing.T) {
 		t.Fatalf("generateMonthlyReportGo() = false")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "summary.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "summary.json"))
 	if err != nil {
 		t.Fatalf("read summary.json: %v", err)
 	}
