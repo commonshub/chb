@@ -109,7 +109,7 @@ func WriteJSON(dataDir, year, month string, v interface{}, elems ...string) erro
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return err
 	}
-	_ = os.Chmod(filepath.Dir(path), 0700)
+	_ = os.Chmod(filepath.Dir(path), 0755)
 	_ = os.Chmod(path, 0600)
 	return nil
 }
