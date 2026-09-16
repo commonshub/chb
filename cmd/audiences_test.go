@@ -43,25 +43,35 @@ func TestIBANChecksum(t *testing.T) {
 }
 
 func TestEnforceAudiencePolicy(t *testing.T) {
-	withEmail := []byte(`{"transactions":[{"metadata":{"stripe_receipt_email":"someone@example.com"}}]}`)
-	withIBAN := []byte(`{"enrichments":{"x":{"iban":"BE68539007547034"}}}`)
-	withName := []byte(`{"transactions":[{"counterparty":"Jane Doe","metadata":{"memo":"rent"}}]}`)
-	nameHasAt := []byte(`{"name":"jane@example.com"}`)
+	ownIBANsForTest = map[string]bool{"BE46734072238636": true}
+	t.Cleanup(func() { ownIBANsForTest = nil })
 
-	if _, err := enforceAudiencePolicy(AudiencePublic, "transactions.json", withEmail); !errors.Is(err, ErrAudiencePolicy) {
-		t.Errorf("public must refuse an email, got %v", err)
-	}
-	if _, err := enforceAudiencePolicy(AudiencePublic, "x.json", withIBAN); !errors.Is(err, ErrAudiencePolicy) {
-		t.Errorf("public must refuse an IBAN, got %v", err)
-	}
-	if out, err := enforceAudiencePolicy(AudiencePublic, "x.json", nameHasAt); err != nil || strings.Contains(string(out), "jane@") {
-		t.Errorf("public scrubs a name field carrying an email: out=%s err=%v", out, err)
-	}
-	if _, err := enforceAudiencePolicy(AudienceMembers, "x.json", withEmail); !errors.Is(err, ErrAudiencePolicy) {
-		t.Errorf("members must refuse an email, got %v", err)
-	}
-	if _, err := enforceAudiencePolicy(AudienceMembers, "x.json", withIBAN); !errors.Is(err, ErrAudiencePolicy) {
-		t.Errorf("members must refuse an IBAN, got %v", err)
+	withEmail := []byte(`{"transactions":[{"metadata":{"memo":"paid by someone@example.com, thanks"}}]}`)
+	withIBAN := []byte(`{"enrichments":{"x":{"iban":"BE68539007547034"}}}`)
+	withOwnIBAN := []byte(`{"accounts":[{"id":"iban:be46734072238636","iban":"BE46734072238636"}]}`)
+	withName := []byte(`{"transactions":[{"counterparty":"Jane Doe","metadata":{"memo":"rent"}}]}`)
+	nameHasAt := []byte(`{"author":{"displayName":"jane@example.com","username":"jane"}}`)
+	ids := []byte(`{"id":"4lk13p4bfk66fhaj4humbbthvu@google.com","event":"evt-abc@events.lu.ma","contact":"hello@commonshub.brussels"}`)
+
+	for _, a := range []Audience{AudiencePublic, AudienceMembers} {
+		out, err := enforceAudiencePolicy(a, "transactions.json", withEmail)
+		if err != nil || strings.Contains(string(out), "someone@") || !strings.Contains(string(out), emailMask) {
+			t.Errorf("%s: an email in free text is masked, not refused: out=%s err=%v", a, out, err)
+		}
+		if _, err := enforceAudiencePolicy(a, "x.json", withIBAN); !errors.Is(err, ErrAudiencePolicy) {
+			t.Errorf("%s must refuse a third-party IBAN, got %v", a, err)
+		}
+		if _, err := enforceAudiencePolicy(a, "x.json", withOwnIBAN); err != nil {
+			t.Errorf("%s: our own account IBAN is not personal data: %v", a, err)
+		}
+		out, err = enforceAudiencePolicy(a, "x.json", nameHasAt)
+		if err != nil || strings.Contains(string(out), "jane@") {
+			t.Errorf("%s: an email-shaped displayName is scrubbed: out=%s err=%v", a, out, err)
+		}
+		out, err = enforceAudiencePolicy(a, "x.json", ids)
+		if err != nil || string(out) != string(ids) {
+			t.Errorf("%s: calendar ids, Luma ids and role mailboxes are kept verbatim: out=%s err=%v", a, out, err)
+		}
 	}
 	if out, err := enforceAudiencePolicy(AudienceMembers, "x.json", withName); err != nil || !strings.Contains(string(out), "Jane Doe") {
 		t.Errorf("members may carry names: out=%s err=%v", out, err)
@@ -69,9 +79,12 @@ func TestEnforceAudiencePolicy(t *testing.T) {
 	if out, err := enforceAudiencePolicy(AudienceStewards, "x.json", withIBAN); err != nil || string(out) != string(withIBAN) {
 		t.Errorf("stewards is passthrough: out=%s err=%v", out, err)
 	}
-	// Non-JSON payloads are scanned too.
+	// Non-JSON payloads: emails masked, third-party IBANs refused.
+	if out, err := enforceAudiencePolicy(AudiencePublic, "rooms.md", []byte("Contact hello@commonshub.brussels or jane@example.com\n")); err != nil || strings.Contains(string(out), "jane@") || !strings.Contains(string(out), "hello@commonshub.brussels") {
+		t.Errorf("markdown: out=%s err=%v", out, err)
+	}
 	if _, err := enforceAudiencePolicy(AudiencePublic, "events.csv", []byte("Host,IBAN\nJane,BE68539007547034\n")); !errors.Is(err, ErrAudiencePolicy) {
-		t.Errorf("csv with an IBAN must be refused for public, got %v", err)
+		t.Errorf("csv with a third-party IBAN must be refused for public, got %v", err)
 	}
 }
 
@@ -163,6 +176,12 @@ func TestTransactionForAudience(t *testing.T) {
 		t.Errorf("stewards must keep everything: %+v", st)
 	}
 
+	emailCp := tx
+	emailCp.Counterparty = "someone@example.com"
+	if got := transactionForAudience(emailCp, AudienceMembers).Counterparty; got != "" {
+		t.Errorf("members: an email standing in for a name must go, got %q", got)
+	}
+
 	me := transactionForAudience(tx, AudienceMembers)
 	if me.Counterparty != "Jane Doe" || me.Metadata["fullDescription"] != "VIREMENT DE JANE DOE" || me.Metadata["memo"] != "coworking september" {
 		t.Errorf("members keeps names and narration: %+v", me)
@@ -225,3 +244,21 @@ func TestDoorFileForAudience(t *testing.T) {
 }
 
 func syncMapReset() sync.Map { return sync.Map{} }
+
+func TestTierPathScope(t *testing.T) {
+	cases := []struct {
+		path, y, m string
+		ok         bool
+	}{
+		{"d/2026/09/stewards/events.json", "2026", "09", true},
+		{"d/2026/stewards/events.json", "2026", "", true},
+		{"d/latest/stewards/events.json", "latest", "", true},
+		{"d/2026/09/generated/events.json", "", "", false},
+	}
+	for _, c := range cases {
+		y, m, ok := tierPathScope("d", c.path)
+		if y != c.y || m != c.m || ok != c.ok {
+			t.Errorf("tierPathScope(%s) = %q,%q,%v want %q,%q,%v", c.path, y, m, ok, c.y, c.m, c.ok)
+		}
+	}
+}

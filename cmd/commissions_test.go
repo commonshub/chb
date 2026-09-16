@@ -8,7 +8,7 @@ import (
 func TestRebuildCommissionsBuildsTenPercentTransfer(t *testing.T) {
 	dataDir := t.TempDir()
 
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "transactions.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "transactions.json"), `{
 	  "year": "2026", "month": "04",
 	  "transactions": [
 	    {"id":"stripe:c1","provider":"stripe","currency":"EUR","amount":1210,"grossAmount":1210,"type":"CREDIT","collective":"openletter","category":"ticket","timestamp":1712000000},
@@ -42,7 +42,7 @@ func TestRebuildCommissionsBuildsTenPercentTransfer(t *testing.T) {
 func TestRebuildCommissionsClearsOrphans(t *testing.T) {
 	dataDir := t.TempDir()
 	// Pretend a previous rebuild left a stale file with no source data.
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "05", "generated", "commissions.json"),
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "05", stewardsDirName, "commissions.json"),
 		`{"items":[{"collective":"openletter","currency":"EUR","amount":"50.00"}]}`)
 	if err := rebuildCommissions(dataDir); err != nil {
 		t.Fatalf("rebuildCommissions: %v", err)
@@ -55,7 +55,7 @@ func TestRebuildCommissionsClearsOrphans(t *testing.T) {
 func TestBuildMonthlyReportFoldsCommissionsIntoCollectives(t *testing.T) {
 	dataDir := t.TempDir()
 
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "06", "generated", "transactions.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "06", stewardsDirName, "transactions.json"), `{
 	  "year": "2026", "month": "06",
 	  "transactions": [
 	    {"id":"stripe:x1","provider":"stripe","currency":"EUR","amount":1210,"grossAmount":1210,"type":"CREDIT","collective":"openletter","category":"ticket","timestamp":1717200000,"metadata":{"vatAmount":210}}

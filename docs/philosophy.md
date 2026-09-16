@@ -23,14 +23,16 @@ Rules:
   raw provider data can change them.
 - Failures here only block fetching; they never corrupt generated state.
 
-If a sync command currently emits derived artifacts (e.g. `generated/events.json`
-or `latest/generated/events.md`), that is a layering violation to be migrated
+If a sync command currently emits derived artifacts (e.g. `stewards/events.json`
+or `latest/stewards/events.md`), that is a layering violation to be migrated
 into `generate`, not extended.
 
 ## `generate` — transform provider archives into standardised outputs
 
-`generate` reads `providers/` archives and produces every file under `generated/`
-and `latest/generated/`. This is where all normalisation happens.
+`generate` reads `providers/` archives and produces every processed file under
+the three audience tiers `public/`, `members/`, `stewards/` (and their
+`latest/<tier>/` mirrors — see [audiences.md](audiences.md)). This is where all
+normalisation happens; `stewards/` is the full dataset chb itself reads.
 
 Rules:
 
@@ -54,7 +56,7 @@ files**. The naming convention is:
 
 - `<provider>_sync.go` — fetch raw data, archive under `providers/<provider>/`.
 - `<provider>_generate.go` — read archives, produce everything under
-  `generated/`.
+  `stewards/`.
 
 Example: `cmd/events_sync.go` only fetches ICS feeds and writes per-month
 bookings to `providers/ics/`. `cmd/events_generate.go` owns every derived
@@ -65,7 +67,7 @@ When the same orchestrator command needs both phases (e.g. `chb calendars
 sync` fetches then immediately generates), the sync file's orchestrator calls
 into the generate file via a single hand-off function (e.g.
 `generateCalendarsForMonths(...)`). Generate code never imports HTTP clients
-or provider SDKs. Sync code never writes to `generated/`.
+or provider SDKs. Sync code never writes to `stewards/`.
 
 Provider packages and monthly data archives both live under `providers/<provider>/`
 within their respective roots.
@@ -73,7 +75,7 @@ within their respective roots.
 This file split:
 
 - Makes the philosophy reviewable at a glance (a sync file with a
-  `writeDataFile("…/generated/…")` is an obvious smell).
+  `writeDataFile("…/stewards/…")` is an obvious smell).
 - Keeps the OG/enrichment/markdown code reachable when we later expose a
   `chb generate` entry point that runs without re-fetching.
 - Lets provider contributors learn one provider at a time.
@@ -152,7 +154,7 @@ both pull and push — that's the bug we already removed.
 - **`pull`** (alias: `sync`, deprecated) — network read, remote → local. Never
   writes to remote systems. Examples: `chb pull`, `chb providers stripe pull`,
   `chb odoo pull`.
-- **`generate`** — local-only transform, `providers/` → `generated/`. Never hits
+- **`generate`** — local-only transform, `providers/` → `{public,members,stewards}/`. Never hits
   the network. Resolves rules.json + odoo_mapping.json so downstream pushes
   trust the local files.
 - **`push`** (alias: `sync`, deprecated) — network write, local → remote.

@@ -33,6 +33,7 @@ func normalizeDataDir(baseDir string) {
 	migrateLegacySourceArchives(baseDir)
 	migrateLegacyRootGenerated(baseDir)
 	migrateLegacySourcePathReferences(baseDir)
+	migrateGeneratedToStewards(baseDir)
 	_ = applyDataPathPolicy(baseDir, baseDir, true)
 	_ = filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {

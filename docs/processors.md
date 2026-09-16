@@ -92,7 +92,7 @@ enrichment:
 
 ```json
 ["event", "calendar-event-uid"]
-["eventName", "Event name from generated/events.json"]
+["eventName", "Event name from stewards/events.json"]
 ["lumaEvent", "evt-2gc6B12TEyRNRqN"]
 ["eventUrl", "https://luma.com/example"]
 ["i", "https://luma.com/example", "https://luma.com/example"]

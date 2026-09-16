@@ -2847,7 +2847,7 @@ func loadLocalStripeEventHints(dataDir string) []stripeLocalEventHint {
 		}
 	}
 
-	addFile(filepath.Join(dataDir, "latest", "generated", "events.json"))
+	addFile(filepath.Join(dataDir, "latest", stewardsDirName, "events.json"))
 	years, err := os.ReadDir(dataDir)
 	if err != nil {
 		return hints
@@ -2862,7 +2862,7 @@ func loadLocalStripeEventHints(dataDir string) []stripeLocalEventHint {
 		}
 		for _, month := range months {
 			if month.IsDir() {
-				addFile(filepath.Join(dataDir, year.Name(), month.Name(), "generated", "events.json"))
+				addFile(filepath.Join(dataDir, year.Name(), month.Name(), stewardsDirName, "events.json"))
 			}
 		}
 	}

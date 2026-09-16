@@ -150,6 +150,9 @@ func TestDataDirNormalizesExistingPrivateDirectoryModes(t *testing.T) {
 	if err := os.MkdirAll(privateDir, 0755); err != nil {
 		t.Fatalf("mkdir private dir: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(privateDir, "enrichment.json"), []byte(`{"enrichments":{}}`), 0644); err != nil {
+		t.Fatalf("write enrichment: %v", err)
+	}
 	if err := os.Chmod(privateDir, 0755); err != nil {
 		t.Fatalf("chmod private dir: %v", err)
 	}
@@ -157,7 +160,12 @@ func TestDataDirNormalizesExistingPrivateDirectoryModes(t *testing.T) {
 	t.Setenv("DATA_DIR", dataDir)
 	_ = DataDir()
 
-	assertMode(t, privateDir, 0700)
+	// The pre-tier PII subtree is seeded into stewards/ (0700) and removed
+	// from the legacy tree — it must never stay reachable next to public data.
+	if _, err := os.Stat(privateDir); !os.IsNotExist(err) {
+		t.Fatalf("expected generated/private to be removed, got err=%v", err)
+	}
+	assertMode(t, filepath.Join(dataDir, "2026", "04", "stewards"), 0700)
 }
 
 func TestWriteMonthFileCreatesNestedMessageDirectories(t *testing.T) {

@@ -53,7 +53,7 @@ func MembersStats(args []string) {
 				continue
 			}
 
-			membersPath := filepath.Join(dataDir, year, month, "generated", "members.json")
+			membersPath := filepath.Join(dataDir, year, month, stewardsDirName, "members.json")
 			data, err := os.ReadFile(membersPath)
 			if err != nil {
 				continue

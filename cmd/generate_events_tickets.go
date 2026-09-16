@@ -14,7 +14,7 @@ import (
 // enrichEventsWithTicketSales attaches the transactions tagged with each
 // event UID to the events.json that describes the event. Tickets for an
 // event in April may have been sold in February — so we build a global
-// event → []tx index by walking every month's generated/transactions.json,
+// event → []tx index by walking every month's stewards/transactions.json,
 // then rewrite every events.json to attach the matching tx summaries.
 //
 // Silent when there are no events or no tagged transactions. Safe to run
@@ -75,16 +75,13 @@ func enrichEventsWithTicketSales(dataDir string) {
 			return
 		}
 		f.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-		out, err := json.MarshalIndent(f, "", "  ")
-		if err != nil {
+		// Ticket sales are members-tier data: rewrite every tier's copy
+		// through the projections, not just the stewards file we walked.
+		year, month, ok := tierPathScope(dataDir, path)
+		if !ok {
 			return
 		}
-		// Route through writeDataFile so enforcePIIPolicy scrubs name fields
-		// and warns on email-regex matches — events.json is a public path.
-		if err := writeDataFile(path, out); err != nil {
-			Warnf("  %s⚠ enrich events: %s: %v%s", Fmt.Yellow, path, err, Fmt.Reset)
-			return
-		}
+		writeTiers(dataDir, year, month, "events.json", tierJSON(f, eventsFileForAudience))
 		touched++
 	})
 	if touched > 0 {
@@ -234,7 +231,7 @@ func sign(v float64) float64 {
 }
 
 // forEachGeneratedMonth walks <dataDir>/<YYYY>/<MM>/generated/<name> for
-// every present month, plus latest/generated/<name> when it exists, and
+// every present month, plus latest/stewards/<name> when it exists, and
 // invokes fn for each existing file path. Returns nil on success — walk
 // errors bubble up.
 func forEachGeneratedMonth(dataDir, name string, fn func(path string)) error {
@@ -254,13 +251,13 @@ func forEachGeneratedMonth(dataDir, name string, fn func(path string)) error {
 				if !me.IsDir() || len(me.Name()) != 2 {
 					continue
 				}
-				p := filepath.Join(dataDir, ye.Name(), me.Name(), "generated", name)
+				p := filepath.Join(dataDir, ye.Name(), me.Name(), stewardsDirName, name)
 				if _, err := os.Stat(p); err == nil {
 					fn(p)
 				}
 			}
 		case ye.Name() == "latest":
-			p := filepath.Join(dataDir, "latest", "generated", name)
+			p := filepath.Join(dataDir, "latest", stewardsDirName, name)
 			if _, err := os.Stat(p); err == nil {
 				fn(p)
 			}

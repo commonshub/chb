@@ -5,7 +5,7 @@ package cmd
 // The door server (github.com/commonshub/door) posts one Discord message per
 // opening into the configured "door" channel. `chb messages sync` mirrors that
 // channel under providers/discord/<channelID>/messages.json like any other
-// channel; this generator reads the mirror and writes generated/door.json —
+// channel; this generator reads the mirror and writes stewards/door.json —
 // per member: identity + on how many different days they opened the door.
 //
 // Message formats posted by the door server (server/routes/open/index.js):
@@ -23,7 +23,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -46,7 +45,7 @@ type DoorOpener struct {
 	Via      []string `json:"via,omitempty"`      // access methods seen (shortcut, citizenwallet, event)
 }
 
-// DoorMonthFile is generated/door.json.
+// DoorMonthFile is stewards/door.json.
 type DoorMonthFile struct {
 	Month       string       `json:"month"`
 	GeneratedAt string       `json:"generatedAt"`
@@ -72,7 +71,7 @@ func doorChannelID(settings *Settings) string {
 	return GetDiscordChannelIDs(settings)[doorChannelSettingsKey]
 }
 
-// generateMonthDoorGo writes generated/door.json for one month. Returns true
+// generateMonthDoorGo writes stewards/door.json for one month. Returns true
 // when a file was written (i.e. the door channel is configured and mirrored).
 func generateMonthDoorGo(dataDir, year, month string, settings *Settings) bool {
 	channelID := doorChannelID(settings)
@@ -169,20 +168,11 @@ func generateMonthDoorGo(dataDir, year, month string, settings *Settings) bool {
 	if err != nil {
 		return false
 	}
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "door.json"), data)
-
-	// Audience tiers: who opened the door is presence data. The public tier
-	// gets counts only; members see who (identity, days, opens); stewards
-	// additionally get the exact dates.
-	for _, a := range Audiences {
-		tiered, err := json.MarshalIndent(doorFileForAudience(out, a), "", "  ")
-		if err != nil {
-			continue
-		}
-		if err := writeAudienceFile(dataDir, year, month, a, "door.json", tiered); err != nil {
-			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
-		}
-	}
+	// Who opened the door is presence data: public gets counts only,
+	// members see who (identity, days, opens), stewards also the dates.
+	membersData, _ := json.MarshalIndent(doorFileForAudience(out, AudienceMembers), "", "  ")
+	publicData, _ := json.MarshalIndent(doorFileForAudience(out, AudiencePublic), "", "  ")
+	writeTiers(dataDir, year, month, "door.json", tierPayload{Stewards: data, Members: membersData, Public: publicData, Legacy: data})
 	return true
 }
 

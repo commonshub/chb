@@ -37,7 +37,7 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(monthDir, "providers", "discord", "chan-1", "messages.json"), []byte(`{"messages":[{}]}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(monthDir, "generated"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(monthDir, stewardsDirName), 0755); err != nil {
 		t.Fatal(err)
 	}
 	imageRel := "2026/04/providers/discord/images/att-1.png"
@@ -57,7 +57,7 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	    }
 	  ]
 	}`
-	if err := os.WriteFile(filepath.Join(monthDir, "generated", "images.json"), []byte(imagesJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(monthDir, stewardsDirName, "images.json"), []byte(imagesJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
 	monthEventsJSON := `{
@@ -69,14 +69,14 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	      "startAt": "2099-04-13T12:00:00Z",
 	      "url": "https://lu.ma/healthy-event",
 	      "coverImage": "https://images.luma.com/cover.jpg",
-	      "coverImageLocal": "2026/04/generated/events/images/event-1.jpg"
+	      "coverImageLocal": "2026/04/public/events/images/event-1.jpg"
 	    }
 	  ]
 	}`
-	if err := os.WriteFile(filepath.Join(monthDir, "generated", "events.json"), []byte(monthEventsJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(monthDir, stewardsDirName, "events.json"), []byte(monthEventsJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "latest", "generated"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dataDir, "latest", stewardsDirName), 0755); err != nil {
 		t.Fatal(err)
 	}
 	latestEventsJSON := `{
@@ -89,17 +89,17 @@ func TestRunDoctorChecksHealthyData(t *testing.T) {
 	      "startAt": "2099-04-13T12:00:00Z",
 	      "url": "https://lu.ma/healthy-event",
 	      "coverImage": "https://images.luma.com/cover.jpg",
-	      "coverImageLocal": "2026/04/generated/events/images/event-1.jpg"
+	      "coverImageLocal": "2026/04/public/events/images/event-1.jpg"
 	    }
 	  ]
 	}`
-	if err := os.MkdirAll(filepath.Join(dataDir, "2026", "04", "generated", "events", "images"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dataDir, "2026", "04", "public", "events", "images"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, "2026", "04", "generated", "events", "images", "event-1.jpg"), []byte("jpg"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataDir, "2026", "04", "public", "events", "images", "event-1.jpg"), []byte("jpg"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, "latest", "generated", "events.json"), []byte(latestEventsJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dataDir, "latest", stewardsDirName, "events.json"), []byte(latestEventsJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestRunDoctorChecksFindsBrokenImagesJSON(t *testing.T) {
 	}
 
 	scopeDir := filepath.Join(dataDir, "latest")
-	if err := os.MkdirAll(filepath.Join(scopeDir, "generated"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(scopeDir, stewardsDirName), 0755); err != nil {
 		t.Fatal(err)
 	}
 	badJSON := `{
@@ -170,7 +170,7 @@ func TestRunDoctorChecksFindsBrokenImagesJSON(t *testing.T) {
 	  ],
 	  "message": "\u003ctag\u003e"
 	}`
-	if err := os.WriteFile(filepath.Join(scopeDir, "generated", "images.json"), []byte(badJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(scopeDir, stewardsDirName, "images.json"), []byte(badJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,7 +217,7 @@ func TestRunDoctorChecksIgnoresRoomICSOnlyMonth(t *testing.T) {
 	}
 
 	report := runDoctorChecks(dataDir)
-	if containsDoctorMessage(report.Findings, "generated/events.json is missing") {
+	if containsDoctorMessage(report.Findings, "stewards/events.json is missing") {
 		t.Fatalf("expected no events.json finding for room ICS only month, got %+v", report.Findings)
 	}
 }
@@ -237,7 +237,7 @@ func TestRunDoctorChecksFindsBrokenHomepageLatestEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	monthDir := filepath.Join(dataDir, "2026", "04", "generated")
+	monthDir := filepath.Join(dataDir, "2026", "04", stewardsDirName)
 	if err := os.MkdirAll(monthDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestRunDoctorChecksFindsBrokenHomepageLatestEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	latestDir := filepath.Join(dataDir, "latest", "generated")
+	latestDir := filepath.Join(dataDir, "latest", stewardsDirName)
 	if err := os.MkdirAll(latestDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestRunDoctorChecksFindsBrokenHomepageLatestEvents(t *testing.T) {
 	      "startAt": "2099-04-13T12:00:00Z",
 	      "url": "https://lu.ma/event-1",
 	      "coverImage": "",
-	      "coverImageLocal": "2026/04/generated/events/images/missing.jpg"
+	      "coverImageLocal": "2026/04/public/events/images/missing.jpg"
 	    }
 	  ]
 	}`
@@ -296,7 +296,7 @@ func TestRunDoctorChecksFindsMissingLatestEventsFileWhenMonthlyEventsExist(t *te
 		t.Fatal(err)
 	}
 
-	monthDir := filepath.Join(dataDir, "2026", "04", "generated")
+	monthDir := filepath.Join(dataDir, "2026", "04", stewardsDirName)
 	if err := os.MkdirAll(monthDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRunDoctorChecksFindsMissingLatestEventsFileWhenMonthlyEventsExist(t *te
 	}
 
 	report := runDoctorChecks(dataDir)
-	if !containsDoctorMessage(report.Findings, "latest/generated/events.json is missing") {
+	if !containsDoctorMessage(report.Findings, "latest/stewards/events.json is missing") {
 		t.Fatalf("expected missing latest events finding, got %+v", report.Findings)
 	}
 }

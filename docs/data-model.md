@@ -35,18 +35,17 @@ $DATA_DIR/
 │   ├── providers/<provider>/...        # raw provider archives (one per source)
 │   ├── processors/<processor>/...      # cross-provider enrichment outputs
 │   ├── public/                          # processed data, per audience — see audiences.md
-│   ├── members/                         #   same file names, strictly less in each lower tier
-│   ├── stewards/                        #   (0755 / 0750 / 0700)
-│   └── generated/                       # legacy: today's public tree + private/ (being phased out)
-│       ├── transactions.json
-│       ├── events.json
-│       ├── messages.json
-│       ├── images.json
-│       ├── counterparties.json
-│       └── private/                     # PII layer, requires --with-pii
-│           └── enrichment.json
+│   │   ├── transactions.json            #   same file names in every tier,
+│   │   ├── events.json                  #   strictly less in each lower one
+│   │   ├── events/images/               #   (binary assets live in the lowest tier only)
+│   │   └── …
+│   ├── members/                         # 0750, group chb-members
+│   ├── stewards/                        # 0700 — chb's own working tree (full data, incl. PII)
+│   └── generated/                       # legacy copy of the pre-tier public tree, for consumers
+│                                        #   not yet on a tier; no private/ anymore; CHB_LEGACY_GENERATED=0 stops it
 └── latest/
     ├── {public,members,stewards}/       # the most recent month per audience, mirrored
+    │   └── stewards/cache/              # chb caches (wallet resolution, OG images)
     └── generated/                       # legacy mirror
 ```
 
@@ -76,13 +75,13 @@ Schema: `{ generatedAt, entries: { <txUri>: { accountCode, partnerId, category, 
 
 Nostr's equivalent lives at `$APP_DATA_DIR/nostr/outbox/` for historical reasons (the outbox holds signed-but-unsent events). List with `chb nostr pending`. Both serve the same role — pending changes you can inspect before publishing.
 
-### `generated/`
+### `stewards/`, `members/`, `public/`
 
-Every file `chb generate` produces lives here. Vendor-agnostic — no Odoo IDs, no partner-IDs, no Stripe-internal handles beyond what's needed to round-trip. Push paths *load* from here, then enrich with the target-specific `pending/` entries.
+Every file `chb generate` produces lives in the three tiers. `stewards/` is the full dataset chb itself reads (push paths load from here, then enrich with the target-specific `pending/` entries); `members/` and `public/` are projections of the same files with less in them. Vendor-agnostic — no Odoo IDs, no partner-IDs, no Stripe-internal handles beyond what's needed to round-trip.
 
 ### `latest/`
 
-A mirror of the most recent month's `generated/` files, plus aggregated multi-month files (e.g. `latest/generated/events.json` covers everything upcoming, not just one month). Convenient for downstream consumers that want "current state" without computing month bounds.
+A mirror of the most recent month's tier files (`latest/<tier>/`), plus aggregated multi-month files (e.g. `latest/generated/events.json` covers everything upcoming, not just one month). Convenient for downstream consumers that want "current state" without computing month bounds.
 
 ## URIs (NIP-73)
 

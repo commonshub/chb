@@ -53,7 +53,7 @@ SUMMARY:Private source
 DTSTART:20260413T100000Z
 END:VEVENT
 END:VCALENDAR`)
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", "generated", "events.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "04", stewardsDirName, "events.json"), `{
 	  "events": [
 	    {"id":"room-public-1","name":"Room public","calendarSource":"ostrom","startAt":"2026-04-12T10:00:00Z"},
 	    {"id":"luma-1","name":"Luma 1","calendarSource":"luma","startAt":"2026-04-14T10:00:00Z"},

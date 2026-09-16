@@ -10,7 +10,7 @@ func TestRebuildInboundSpreadsAndAccrualAggregation(t *testing.T) {
 
 	// Natural-month tx in 2025-12 with a spread targeting 2026-01..2026-03.
 	// (€900 paid in December, recognized as €300/month in Jan/Feb/Mar.)
-	writeJSONFixture(t, filepath.Join(dataDir, "2025", "12", "generated", "transactions.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2025", "12", stewardsDirName, "transactions.json"), `{
 	  "year": "2025", "month": "12",
 	  "transactions": [{
 	    "id": "stripe:ch_aaa",
@@ -48,7 +48,7 @@ func TestRebuildInboundSpreadsAndAccrualAggregation(t *testing.T) {
 	}`)
 
 	// 2026-01 has a regular tx + the inbound projection should add €300.
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "01", "generated", "transactions.json"), `{
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "01", stewardsDirName, "transactions.json"), `{
 	  "year": "2026", "month": "01",
 	  "transactions": [{
 	    "id": "stripe:ch_bbb", "stripeChargeId": "ch_bbb",
@@ -131,7 +131,7 @@ func findFlow(entries []TaggedSummary, slug string) *CurrencyFlow {
 func TestRebuildInboundSpreadsClearsOrphans(t *testing.T) {
 	dataDir := t.TempDir()
 	// Pretend a previous rebuild left an orphan.
-	writeJSONFixture(t, filepath.Join(dataDir, "2026", "06", "generated", "inbound_spreads.json"), `{"inbound":[{"uri":"stripe:old","naturalYM":"2024-01","amount":"-100"}]}`)
+	writeJSONFixture(t, filepath.Join(dataDir, "2026", "06", stewardsDirName, "inbound_spreads.json"), `{"inbound":[{"uri":"stripe:old","naturalYM":"2024-01","amount":"-100"}]}`)
 	// No annotations at all → rebuild should remove the orphan.
 	if err := rebuildInboundSpreads(dataDir); err != nil {
 		t.Fatalf("rebuildInboundSpreads: %v", err)

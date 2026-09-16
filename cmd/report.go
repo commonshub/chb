@@ -67,7 +67,7 @@ func monthlyReport(year, month string) error {
 		return nil
 	}
 
-	fmt.Printf("%sNo generated/summary.json found; using legacy local summary. Run `chb generate %s/%s` to refresh the monthly summary.%s\n\n",
+	fmt.Printf("%sNo stewards/summary.json found; using legacy local summary. Run `chb generate %s/%s` to refresh the monthly summary.%s\n\n",
 		Fmt.Dim, year, month, Fmt.Reset)
 
 	// ── Events ──
@@ -88,7 +88,7 @@ func monthlyReport(year, month string) error {
 }
 
 func loadGeneratedMonthlyReport(dataDir, year, month string) *MonthlyReportFile {
-	path := filepath.Join(dataDir, year, month, "generated", "summary.json")
+	path := filepath.Join(dataDir, year, month, stewardsDirName, "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -747,7 +747,7 @@ func yearlyReport(year string) error {
 // ── Data loading helpers ──
 
 func loadMonthEvents(dataDir, year, month string) []EventEntry {
-	eventsPath := filepath.Join(dataDir, year, month, "generated", "events.json")
+	eventsPath := filepath.Join(dataDir, year, month, stewardsDirName, "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return nil
@@ -802,7 +802,7 @@ func printEventsSummary(events []EventEntry) {
 }
 
 func printMembersSummary(dataDir, year, month string) {
-	membersPath := filepath.Join(dataDir, year, month, "generated", "members.json")
+	membersPath := filepath.Join(dataDir, year, month, stewardsDirName, "members.json")
 	data, err := os.ReadFile(membersPath)
 	if err != nil {
 		return

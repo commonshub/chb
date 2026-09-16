@@ -310,7 +310,7 @@ func TestLiveStripeDonationsCategorized(t *testing.T) {
 		openLetterPlink = "plink_1TGev1FAhaWeDyowQqEek3mT"
 		commonsHubPlink = "plink_1R7tuJFAhaWeDyowGmrFTAYd"
 	)
-	files, _ := filepath.Glob(filepath.Join(dataDir, "*", "*", "generated", "transactions.json"))
+	files, _ := filepath.Glob(filepath.Join(dataDir, "*", "*", stewardsDirName, "transactions.json"))
 	if len(files) == 0 {
 		t.Fatalf("no generated transactions.json under %s — run `chb generate --history` first", dataDir)
 	}

@@ -110,7 +110,7 @@ func ImagesSync(args []string) (int, error) {
 
 // syncDiscordImages reads images.json for a month and downloads Discord attachments.
 func syncDiscordImages(dataDir, year, month, label, token string, force bool) (downloaded, skipped int) {
-	imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
+	imagesPath := filepath.Join(dataDir, year, month, stewardsDirName, "images.json")
 	data, err := os.ReadFile(imagesPath)
 	if err != nil {
 		return 0, 0
@@ -247,7 +247,7 @@ type eventCoverDownloadResult struct {
 // syncLumaImages reads events.json for a month, downloads public event cover images,
 // and writes coverImageLocal back into events.json.
 func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResult {
-	eventsPath := filepath.Join(dataDir, year, month, "generated", "events.json")
+	eventsPath := filepath.Join(dataDir, year, month, stewardsDirName, "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return eventCoverSyncResult{}
@@ -258,8 +258,11 @@ func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResul
 		return eventCoverSyncResult{}
 	}
 
-	imagesDir := filepath.Join(dataDir, year, month, "generated", "events", "images")
-	if err := mkdirAllManagedData(imagesDir); err != nil {
+	// Cover images are public assets: they live in the public tier only and
+	// every tier's events.json points at that path (a higher tier can read
+	// a lower one; binary assets are not duplicated per tier).
+	imagesDir := filepath.Join(dataDir, year, month, AudiencePublic.Dir(), "events", "images")
+	if err := os.MkdirAll(imagesDir, AudiencePublic.DirMode()); err != nil {
 		return eventCoverSyncResult{}
 	}
 
@@ -279,7 +282,7 @@ func syncLumaImages(dataDir, year, month string, force bool) eventCoverSyncResul
 		result.Domains[domain]++
 
 		ext := extFromURL(evt.CoverImage, ".jpg")
-		localRelPath := filepath.ToSlash(filepath.Join(year, month, "generated", "events", "images", evt.ID+ext))
+		localRelPath := filepath.ToSlash(filepath.Join(year, month, AudiencePublic.Dir(), "events", "images", evt.ID+ext))
 		outPath := filepath.Join(imagesDir, evt.ID+ext)
 
 		if !force && evt.CoverImageLocal != "" {

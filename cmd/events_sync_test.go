@@ -175,7 +175,7 @@ func writeFullEventsFixture(t *testing.T, dataDir, year, month string, count int
 	if err != nil {
 		t.Fatalf("marshal events fixture: %v", err)
 	}
-	path := filepath.Join(dataDir, year, month, "generated", "events.json")
+	path := filepath.Join(dataDir, year, month, stewardsDirName, "events.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatalf("mkdir events fixture: %v", err)
 	}

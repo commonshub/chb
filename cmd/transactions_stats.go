@@ -64,7 +64,7 @@ func TransactionsStats(args []string) {
 				continue
 			}
 
-			txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
+			txPath := filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")
 			data, err := os.ReadFile(txPath)
 			if err != nil {
 				continue
