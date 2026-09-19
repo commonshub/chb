@@ -753,16 +753,23 @@ func chooseEventTitle(icsTitle, ogTitle string) string {
 	return strings.TrimSpace(ogTitle)
 }
 
-// dedupeFullEvents collapses events that share (URL, StartAt, EndAt) — for
+// dedupeFullEvents collapses events that describe the same thing — for
 // instance, the same Luma event imported via its public ICS feed and also
-// added manually to a Google Calendar. The "best" record wins: prefer one
-// with a cover image, then the longer description; ties go to the first.
+// added manually to a Google Calendar. Two records match when they share a
+// URL and start on the same day: the room booking behind a Luma event
+// routinely starts earlier (setup) or ends later (teardown) than the event
+// itself, so exact times are not required. Records without a URL only match
+// on identical times. The "best" record wins: prefer one with a cover image,
+// then the longer description; ties go to the first.
 func dedupeFullEvents(events []FullEvent) []FullEvent {
 	type key struct{ url, start, end string }
 	idxByKey := map[key]int{}
 	out := make([]FullEvent, 0, len(events))
 	for _, e := range events {
 		k := key{e.URL, e.StartAt, e.EndAt}
+		if e.URL != "" && len(e.StartAt) >= 10 {
+			k = key{e.URL, e.StartAt[:10], ""}
+		}
 		if idx, ok := idxByKey[k]; ok {
 			if isRicherEvent(e, out[idx]) {
 				out[idx] = e

@@ -38,6 +38,11 @@ func ParseICS(data string) ([]Event, error) {
 	var lines []string
 	var props map[string]string
 	var propParams map[string]map[string]string
+	// The property the last physical line belonged to, so a folded
+	// continuation line can be appended to it (RFC 5545 §3.1: lines longer
+	// than 75 octets are split, each continuation starting with a space or
+	// tab). Google Calendar folds every long DESCRIPTION this way.
+	var lastKey string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -47,6 +52,7 @@ func ParseICS(data string) ([]Event, error) {
 			lines = []string{line}
 			props = make(map[string]string)
 			propParams = make(map[string]map[string]string)
+			lastKey = ""
 			continue
 		}
 
@@ -80,21 +86,21 @@ func ParseICS(data string) ([]Event, error) {
 		if inEvent {
 			lines = append(lines, line)
 
-			// Handle line continuation (folded lines start with space or tab)
+			// A folded continuation line (leading space or tab) carries the
+			// rest of the previous property's value. Dropping it, as this
+			// once did, cut every description at 63 characters and every
+			// long URL mid-way.
 			if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-				// Append to previous property value
-				for k, v := range props {
-					_ = v
-					_ = k
+				if lastKey != "" {
+					props[lastKey] += line[1:]
 				}
-				// Find the last property we set and append
-				// Simple approach: just track current key
 				continue
 			}
 
 			// Parse property
 			key, params, value := parseProperty(line)
 			if key != "" {
+				lastKey = key
 				props[key] = value
 				if len(params) > 0 {
 					propParams[key] = params
