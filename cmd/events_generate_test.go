@@ -119,3 +119,18 @@ func TestGenerateEventsWritesLatestJSONFromSameUpcomingSetAsMarkdown(t *testing.
 		}
 	}
 }
+
+func TestDedupeFullEventsMatchesSameURLOnSameDayDespiteDifferentTimes(t *testing.T) {
+	luma := FullEvent{ID: "evt-1@events.luma.com", URL: "https://luma.com/commons-vzr0", StartAt: "2026-10-16T14:00:00+02:00", EndAt: "2026-10-16T17:20:00+02:00", CoverImage: "https://images.lumacdn.com/x.png", Description: "The real event"}
+	booking := FullEvent{ID: "abc@google.com", URL: "https://luma.com/commons-vzr0", StartAt: "2026-10-16T14:00:00+02:00", EndAt: "2026-10-16T18:00:00+02:00", Description: "Room booking"}
+	nextWeek := FullEvent{ID: "def@google.com", URL: "https://luma.com/commons-vzr0", StartAt: "2026-10-23T14:00:00+02:00", EndAt: "2026-10-23T18:00:00+02:00"}
+	noURL := FullEvent{ID: "ghi@google.com", StartAt: "2026-10-16T14:00:00+02:00", EndAt: "2026-10-16T18:00:00+02:00"}
+
+	got := dedupeFullEvents([]FullEvent{booking, luma, nextWeek, noURL})
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3 (booking folded into the Luma event)", len(got))
+	}
+	if got[0].ID != luma.ID {
+		t.Fatalf("kept %q, want the Luma record with the cover", got[0].ID)
+	}
+}
