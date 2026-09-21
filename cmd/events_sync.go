@@ -277,10 +277,11 @@ func CalendarsSync(args []string) (int, int, error) {
 	var allRoomEvents []roomEvent
 	for _, rf := range fetched {
 		for _, ev := range rf.events {
-			if !calendarEventIsPublic(ev, rf.visibility) {
+			eventURL := calendarEventURL(ev, rf.visibility)
+			if eventURL == "" {
 				continue
 			}
-			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: rf.slug, roomName: rf.name})
+			allRoomEvents = append(allRoomEvents, roomEvent{event: ev, roomSlug: rf.slug, roomName: rf.name, url: eventURL})
 		}
 	}
 
@@ -377,6 +378,26 @@ func extractEventURL(ev ical.Event) string {
 
 func autoCalendarEventHasPublicURL(ev ical.Event) bool {
 	return extractEventURL(ev) != ""
+}
+
+// calendarEventURL is the event page for an entry, given its calendar's
+// visibility. A public calendar (Luma) lists nothing but public events, and
+// Luma's feed carries no URL property: the link sits in the description
+// ("Get up-to-date information at: https://luma.com/…"), so it is read from
+// there. An auto calendar (a Google room calendar) mixes bookings and
+// events, and only an entry's own URL field tells them apart.
+func calendarEventURL(ev ical.Event, visibility string) string {
+	switch normalizeCalendarVisibility(visibility) {
+	case CalendarVisibilityPrivate:
+		return ""
+	case CalendarVisibilityPublic:
+		if u := extractEventURL(ev); u != "" {
+			return u
+		}
+		return extractPublicURLFromText(ev.Description)
+	default:
+		return extractEventURL(ev)
+	}
 }
 
 func extractPublicURLFromText(text string) string {
@@ -560,6 +581,8 @@ type roomEvent struct {
 	event    ical.Event
 	roomSlug string
 	roomName string
+	// The event page, resolved with the calendar's visibility in hand.
+	url string
 }
 
 func countICALEventsInMonthRange(events []ical.Event, sinceMonth, untilMonth string) int {
@@ -624,7 +647,7 @@ func calendarEventIsPublic(ev ical.Event, visibility string) bool {
 	case CalendarVisibilityPrivate:
 		return false
 	case CalendarVisibilityPublic:
-		return extractEventURL(ev) != ""
+		return calendarEventURL(ev, visibility) != ""
 	default:
 		return autoCalendarEventHasPublicURL(ev)
 	}
