@@ -362,21 +362,21 @@ func CalendarsSync(args []string) (int, int, error) {
 
 // ── URL classification helpers ──────────────────────────────────────────────
 
-// extractEventURL returns the public URL for an ICS event, or empty string if none.
+// extractEventURL returns the public URL for an ICS event, or empty string
+// if none. Only the entry's own URL property counts: a room booking whose
+// description happens to mention a caterer's website, a Google Maps pin or
+// a mail thread is not a public event, and the link is not its event page.
+// An organiser who wants a booking listed sets the URL field (or, on Luma,
+// adds the event to the Commons Hub calendar).
 func extractEventURL(ev ical.Event) string {
 	if isAllowedPublicEventURL(ev.URL) {
-		return ev.URL
+		return strings.TrimSpace(ev.URL)
 	}
-	if ev.Location != "" &&
-		(strings.HasPrefix(ev.Location, "http://") || strings.HasPrefix(ev.Location, "https://")) &&
-		isAllowedPublicEventURL(ev.Location) {
-		return ev.Location
-	}
-	return extractPublicURLFromText(ev.Description)
+	return ""
 }
 
 func autoCalendarEventHasPublicURL(ev ical.Event) bool {
-	return isAllowedPublicEventURL(ev.URL) || extractPublicURLFromText(ev.Description) != ""
+	return extractEventURL(ev) != ""
 }
 
 func extractPublicURLFromText(text string) string {
