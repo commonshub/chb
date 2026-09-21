@@ -115,8 +115,8 @@ func TestCalendarVisibilityClassifiesEvents(t *testing.T) {
 	if !calendarEventIsPublic(withURL, CalendarVisibilityAuto) {
 		t.Fatal("auto calendar with URL should be public")
 	}
-	if !calendarEventIsPublic(withDescriptionURL, CalendarVisibilityAuto) {
-		t.Fatal("auto calendar with description URL should be public")
+	if calendarEventIsPublic(withDescriptionURL, CalendarVisibilityAuto) {
+		t.Fatal("a link in the description does not make an auto-calendar entry public; only the URL field does")
 	}
 	if calendarEventIsPublic(withLocationURL, CalendarVisibilityAuto) {
 		t.Fatal("auto calendar with only a location URL should stay private")
