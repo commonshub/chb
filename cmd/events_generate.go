@@ -578,7 +578,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 	needsCoverSync := 0
 	var ogTasks []ogFetchTask
 	for _, re := range roomEvents {
-		eventURL := extractEventURL(re.event)
+		eventURL := re.url
 		if eventURL == "" {
 			continue
 		}
@@ -611,7 +611,7 @@ func processMonthFromRooms(dataDir, year, month string, roomEvents []roomEvent, 
 		icsEv := re.event
 		eventID := icsEv.UID
 		name := icsEv.Summary
-		eventURL := extractEventURL(icsEv)
+		eventURL := re.url
 		location := icsEv.Location
 
 		// If location is a URL, use default address instead

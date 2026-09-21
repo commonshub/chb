@@ -23,3 +23,20 @@ func TestExtractEventURLOnlyTrustsTheURLField(t *testing.T) {
 		t.Fatal("an entry without a URL field is a booking, not a public event")
 	}
 }
+
+func TestCalendarEventURLDependsOnCalendarVisibility(t *testing.T) {
+	luma := ical.Event{Description: "Get up-to-date information at: https://luma.com/nvf0i0xa\n\nAd"}
+	if got := calendarEventURL(luma, CalendarVisibilityPublic); got != "https://luma.com/nvf0i0xa" {
+		t.Fatalf("public calendar: got %q, want the link from the description", got)
+	}
+	if got := calendarEventURL(luma, CalendarVisibilityAuto); got != "" {
+		t.Fatalf("auto calendar: a description link is not an event page, got %q", got)
+	}
+	booking := ical.Event{URL: "https://www.eventbrite.com/e/123", Description: "see https://example.org"}
+	if got := calendarEventURL(booking, CalendarVisibilityAuto); got != "https://www.eventbrite.com/e/123" {
+		t.Fatalf("auto calendar with URL field: got %q", got)
+	}
+	if got := calendarEventURL(booking, CalendarVisibilityPrivate); got != "" {
+		t.Fatalf("private calendar: got %q", got)
+	}
+}
