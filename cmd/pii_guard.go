@@ -68,9 +68,10 @@ func isMonthSegment(s string) bool {
 
 // nameFieldKeys are the JSON fields that must never contain an "@".
 var nameFieldKeys = map[string]struct{}{
-	"firstname": {},
-	"lastname":  {},
-	"name":      {},
+	"firstname":   {},
+	"lastname":    {},
+	"name":        {},
+	"displayname": {},
 }
 
 // piiSoftAllowlist suppresses the "email in <field>" soft warning for known

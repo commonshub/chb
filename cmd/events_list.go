@@ -56,7 +56,7 @@ func loadEventsForList(dataDir string, filter eventListFilter) []EventEntry {
 }
 
 func loadLatestEvents(dataDir string) []EventEntry {
-	eventsPath := filepath.Join(dataDir, "latest", "generated", "events.json")
+	eventsPath := filepath.Join(dataDir, "latest", stewardsDirName, "events.json")
 	data, err := os.ReadFile(eventsPath)
 	if err != nil {
 		return nil
@@ -133,7 +133,7 @@ func loadMonthlyEvents(dataDir string, filter eventListFilter) []EventEntry {
 			if !filter.monthMayMatch(year, month) {
 				continue
 			}
-			eventsPath := filepath.Join(yearPath, month, "generated", "events.json")
+			eventsPath := filepath.Join(yearPath, month, stewardsDirName, "events.json")
 			data, err := os.ReadFile(eventsPath)
 			if err != nil {
 				continue

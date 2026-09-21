@@ -36,20 +36,20 @@ Current providers:
 - `providers/monerium`: Monerium SEPA order archives.
 - `providers/nostr`: Nostr annotations and chain tx/address metadata.
 - `providers/discord`: Discord messages for monitored channels and downloaded
-  Discord image attachments referenced by `generated/images.json`.
+  Discord image attachments referenced by `stewards/images.json`.
 - `providers/odoo`: Odoo invoices, bills, subscriptions, analytic enrichment,
   and private attachment metadata/binaries.
 - `providers/ics`: Monthly ICS calendar archives for room bookings and configured
   calendars.
 
-Monthly generation writes `generated/summary.json` after the other generated
+Monthly generation writes `stewards/summary.json` after the other generated
 files. Each provider can contribute provider-specific record, attachment, and
 summary counts through the monthly report contributor hook in `cmd`. A
 cross-month rollup pass then fills in per-collective `startBalance` /
 `endBalance` and writes the global aggregate to
-`latest/generated/summary.json`.
+`latest/stewards/summary.json`.
 
 Derived public calendar exports and event cover image downloads live under
-`generated/` (for example `generated/calendars/public.ics` and
-`generated/events/images/`) because they are generated/enriched artifacts, not
+`stewards/` (for example `stewards/calendars/public.ics` and
+`stewards/events/images/`) because they are stewards/enriched artifacts, not
 provider archives.

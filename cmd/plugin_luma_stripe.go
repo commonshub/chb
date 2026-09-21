@@ -337,10 +337,10 @@ func (p *lumaStripeProcessor) loadCalendarEventAliases(ctx *ProcessorContext) er
 			if !m.IsDir() || len(m.Name()) != 2 {
 				continue
 			}
-			visit(filepath.Join(ctx.DataDir, y.Name(), m.Name(), "generated", "events.json"))
+			visit(filepath.Join(ctx.DataDir, y.Name(), m.Name(), stewardsDirName, "events.json"))
 		}
 	}
-	visit(filepath.Join(ctx.DataDir, "latest", "generated", "events.json"))
+	visit(filepath.Join(ctx.DataDir, "latest", stewardsDirName, "events.json"))
 	return nil
 }
 

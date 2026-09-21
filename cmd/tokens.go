@@ -138,10 +138,10 @@ func txinfoTokenURL(chain, address string) string {
 	return fmt.Sprintf("https://txinfo.xyz/%s/token/%s", chain, address)
 }
 
-// loadLatestReportTokens reads DATA_DIR/latest/generated/report.json and
+// loadLatestReportTokens reads DATA_DIR/latest/stewards/report.json and
 // returns its tokens slice, or nil when the file is missing or unreadable.
 func loadLatestReportTokens() []MonthlyReportTokenData {
-	path := filepath.Join(DataDir(), "latest", "generated", "summary.json")
+	path := filepath.Join(DataDir(), "latest", stewardsDirName, "summary.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -205,7 +205,7 @@ type tokenTxStatsResult struct {
 
 // tokenTxStats walks the per-month Etherscan provider files for the token and
 // returns total transaction count + first/last timestamp. The aggregated
-// latest/generated/transactions.json is intentionally NOT used — it covers
+// latest/stewards/transactions.json is intentionally NOT used — it covers
 // only the rolling-window report period, so it lags behind the provider files.
 func tokenTxStats(dataDir string, t TokenConfig) tokenTxStatsResult {
 	out := tokenTxStatsResult{}

@@ -74,7 +74,7 @@ func TestGenerateMonthImagesGoUsesOriginalURLAndRelativeFilePath(t *testing.T) {
 				t.Fatalf("generateMonthImagesGo() = %d, want 1", n)
 			}
 
-			outPath := filepath.Join(dataDir, tt.year, tt.month, "generated", "images.json")
+			outPath := filepath.Join(dataDir, tt.year, tt.month, stewardsDirName, "images.json")
 			outData, err := os.ReadFile(outPath)
 			if err != nil {
 				t.Fatalf("read images.json: %v", err)
@@ -131,7 +131,7 @@ func TestGenerateMonthImagesGoIncludesAllSourceDiscordChannels(t *testing.T) {
 		t.Fatalf("generateMonthImagesGo() = %d, want 2", n)
 	}
 
-	outData, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", "generated", "images.json"))
+	outData, err := os.ReadFile(filepath.Join(dataDir, "2026", "04", stewardsDirName, "images.json"))
 	if err != nil {
 		t.Fatalf("read images.json: %v", err)
 	}

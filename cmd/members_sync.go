@@ -244,8 +244,7 @@ func MembersSync(args []string) error {
 			Members:     members,
 		}
 
-		membersData, _ := json.MarshalIndent(out, "", "  ")
-		writeMonthFile(dataDir, yearStr, monthStr, filepath.Join("generated", "members.json"), membersData)
+		writeTiers(dataDir, yearStr, monthStr, "members.json", tierJSON(out, membersFileForAudience))
 		fmt.Printf("  %s✅ %d members (active: %d, MRR: €%.2f)%s\n",
 			Fmt.Green, len(members), summary.ActiveMembers, summary.MRR.Value, Fmt.Reset)
 	}
@@ -543,7 +542,7 @@ func getMemberMonths(args []string) []yearMonth {
 		return yearMonthsFromRange(posStartMonth, posEndMonth)
 	}
 
-	if sinceMonth, isSince := ResolveSinceMonth(args, filepath.Join("generated", "members.json")); isSince {
+	if sinceMonth, isSince := ResolveSinceMonth(args, filepath.Join(stewardsDirName, "members.json")); isSince {
 		start := parseYearMonthValue(sinceMonth)
 		var months []yearMonth
 		y, m := start.year, start.month

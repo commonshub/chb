@@ -94,7 +94,7 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 | Variable | Description |
 |---|---|
 | `APP_DATA_DIR` | App state root (default `~/.chb`) — settings, cached cursors, Nostr outbox. |
-| `DATA_DIR` | Generated data root (default `$APP_DATA_DIR/data`) — `YYYY/MM/providers/` + `YYYY/MM/generated/`. |
+| `DATA_DIR` | Generated data root (default `$APP_DATA_DIR/data`) — `YYYY/MM/providers/` (raw archives) + `YYYY/MM/{public,members,stewards}/` (processed, per audience — see docs/audiences.md). |
 | `LUMA_API_KEY` | Luma API key (enables rich event data). |
 | `ETHERSCAN_API_KEY` | Etherscan / Gnosisscan / Celoscan API key. |
 | `STRIPE_SECRET_KEY` | Stripe API key. |

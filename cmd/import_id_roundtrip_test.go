@@ -18,7 +18,7 @@ func TestImportIDRoundTrip(t *testing.T) {
 		Address:  "0x6fDF0AaE33E313d9C98D2Aa19Bcd8EF777912CBf",
 	}
 
-	// Shape of one entry in generated/transactions.json after the
+	// Shape of one entry in stewards/transactions.json after the
 	// public-projection step in generate.go strips TxHash.
 	publicJSON := `{
 		"id": "ethereum:100:tx:0xabc123def456",

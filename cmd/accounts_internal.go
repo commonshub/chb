@@ -390,7 +390,7 @@ cancel is an orphan — a missing counter-leg or a misclassified external paymen
   %schb accounts internal --csv%s        Orphan legs as CSV
 
 %sNOTES%s
-  Reads generated/transactions.json (run %schb generate%s first). Read-only.
+  Reads stewards/transactions.json (run %schb generate%s first). Read-only.
   %s--verbose%s/%s--csv%s show the counterpart IBAN (fiat) or short 0x (on-chain).
 `,
 		f.Bold, f.Reset,

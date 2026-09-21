@@ -10,7 +10,7 @@ func TestGetMemberMonthsSupportsHistory(t *testing.T) {
 	t.Setenv("DATA_DIR", dataDir)
 
 	if err := writeDataFile(
-		filepath.Join(dataDir, "2025", "01", "generated", "members.json"),
+		filepath.Join(dataDir, "2025", "01", stewardsDirName, "members.json"),
 		[]byte(`{"members":[]}`),
 	); err != nil {
 		t.Fatalf("write cached members file: %v", err)

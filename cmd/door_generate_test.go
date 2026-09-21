@@ -71,7 +71,7 @@ func TestGenerateMonthDoor(t *testing.T) {
 		t.Fatal("expected door.json to be written")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "07", "generated", "door.json"))
+	data, err := os.ReadFile(filepath.Join(dataDir, "2026", "07", stewardsDirName, "door.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

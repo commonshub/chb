@@ -103,7 +103,7 @@ func TestAccountDetailShowsOnchainAndLocalDiagnostics(t *testing.T) {
 			{ID: "local-2", Provider: "etherscan", Chain: &chain, Account: acc.Address, AccountSlug: acc.Slug, Currency: "EURe", Amount: 29.5, NormalizedAmount: 29.5, Type: "DEBIT", Timestamp: 1704153600},
 		},
 	}
-	writeJSONFileForTest(t, filepath.Join(DataDir(), "2024", "01", "generated", "transactions.json"), local)
+	writeJSONFileForTest(t, filepath.Join(DataDir(), "2024", "01", stewardsDirName, "transactions.json"), local)
 
 	out := captureStdout(t, func() {
 		printAccountDetailSummary(&acc, nil)
@@ -226,7 +226,7 @@ func TestAccountSyncVerificationReportsMissingTransfersByMonth(t *testing.T) {
 			{ID: "local-1", TxHash: "0xpresent", Provider: "etherscan", Chain: &chain, Account: acc.Address, AccountSlug: acc.Slug, Currency: "EURe", Amount: 100, NormalizedAmount: 100, Type: "CREDIT", Timestamp: 1704067200},
 		},
 	}
-	writeJSONFileForTest(t, filepath.Join(DataDir(), "2024", "01", "generated", "transactions.json"), local)
+	writeJSONFileForTest(t, filepath.Join(DataDir(), "2024", "01", stewardsDirName, "transactions.json"), local)
 
 	live := 115.0
 	result := verifyAccountLocalAgainstOnchainCache(&acc, &live)

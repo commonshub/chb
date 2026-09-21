@@ -513,7 +513,7 @@ func computeAccountSummaries() map[string]*accountSummary {
 			if !md.IsDir() || len(md.Name()) != 2 {
 				continue
 			}
-			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), "generated", "transactions.json")
+			txPath := filepath.Join(dataDir, yd.Name(), md.Name(), stewardsDirName, "transactions.json")
 			data, err := os.ReadFile(txPath)
 			if err != nil {
 				continue

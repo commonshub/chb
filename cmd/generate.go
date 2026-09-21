@@ -392,7 +392,7 @@ type TransactionPII struct {
 	IBAN  string `json:"iban,omitempty"`
 }
 
-// TransactionsPIIFile is saved to generated/private/enrichment.json.
+// TransactionsPIIFile is saved to stewards/private/enrichment.json.
 type TransactionsPIIFile struct {
 	GeneratedAt string                     `json:"generatedAt"`
 	Enrichments map[string]*TransactionPII `json:"enrichments"` // keyed by transaction ID
@@ -400,7 +400,7 @@ type TransactionsPIIFile struct {
 
 // LoadTransactionsWithPII reads the public transactions file and merges PII from the private enrichment.
 func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
-	txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
+	txPath := filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")
 	data, err := os.ReadFile(txPath)
 	if err != nil {
 		return nil
@@ -411,7 +411,7 @@ func LoadTransactionsWithPII(dataDir, year, month string) *TransactionsFile {
 	}
 
 	// Load PII enrichment
-	piiPath := filepath.Join(dataDir, year, month, "generated", "private", "enrichment.json")
+	piiPath := filepath.Join(dataDir, year, month, stewardsDirName, "private", "enrichment.json")
 	piiData, err := os.ReadFile(piiPath)
 	if err != nil {
 		return &txFile // no PII file, return public data as-is
@@ -742,7 +742,7 @@ func Generate(args []string) error {
 		fmt.Printf("\n  %s%s%s\n", Fmt.Bold, header, Fmt.Reset)
 	}
 
-	// Write latest/generated/ README
+	// Write the README into every tier root under latest/
 	writeGeneratedReadme(dataDir)
 
 	settings, _ := LoadSettings()
@@ -923,7 +923,7 @@ func Generate(args []string) error {
 		for _, scope := range scopes {
 			if generateMonthlyReportGo(dataDir, scope.Year, scope.Month, settings) {
 				if verbose {
-					fmt.Printf("  ✓ %s-%s: generated/summary.json\n", scope.Year, scope.Month)
+					fmt.Printf("  ✓ %s-%s: stewards/summary.json\n", scope.Year, scope.Month)
 				}
 				total++
 			}
@@ -1030,47 +1030,47 @@ func generateTransactionScopes(dataDir string, scopes []generateScope, startedAt
 	for _, scope := range scopes {
 		fmt.Printf("%s/%s\n", scope.Year, scope.Month)
 		status := newStatusLine()
-		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "transactions.json")))
+		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join(stewardsDirName, "transactions.json")))
 		n := generateTransactionsGo(dataDir, scope.Year, scope.Month, settings)
 		status.Clear()
 		if n > 0 {
-			fmt.Printf("  %s✓%s generated/transactions.json (%d transactions)\n", Fmt.Green, Fmt.Reset, n)
+			fmt.Printf("  %s✓%s stewards/transactions.json (%d transactions)\n", Fmt.Green, Fmt.Reset, n)
 			if len(processorNames) > 0 {
 				fmt.Printf("  %s✓%s processors: %s\n", Fmt.Green, Fmt.Reset, strings.Join(processorNames, ", "))
 			}
 			totalTx += n
 		}
-		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "counterparties.json")))
+		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join(stewardsDirName, "counterparties.json")))
 		cpCount := generateCounterpartiesGo(dataDir, scope.Year, scope.Month)
 		status.Clear()
 		if cpCount > 0 {
-			fmt.Printf("  %s✓%s generated/counterparties.json (%d counterparties)\n", Fmt.Green, Fmt.Reset, cpCount)
+			fmt.Printf("  %s✓%s stewards/counterparties.json (%d counterparties)\n", Fmt.Green, Fmt.Reset, cpCount)
 		}
-		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join("generated", "summary.json")))
+		status.Update("Generating %s...", displayMonthRelPath(scope.Year, scope.Month, filepath.Join(stewardsDirName, "summary.json")))
 		reportWritten := generateMonthlyReportGo(dataDir, scope.Year, scope.Month, settings)
 		status.Clear()
 		if reportWritten {
-			fmt.Printf("  %s✓%s generated/summary.json\n", Fmt.Green, Fmt.Reset)
+			fmt.Printf("  %s✓%s stewards/summary.json\n", Fmt.Green, Fmt.Reset)
 		}
 	}
 	if _, err := os.Stat(latestDir); err == nil {
 		fmt.Printf("latest\n")
 		status := newStatusLine()
-		status.Update("Generating %s...", displayMonthRelPath("latest", "", filepath.Join("generated", "transactions.json")))
+		status.Update("Generating %s...", displayMonthRelPath("latest", "", filepath.Join(stewardsDirName, "transactions.json")))
 		n := generateTransactionsGo(dataDir, "latest", "", settings)
 		status.Clear()
 		if n > 0 {
-			fmt.Printf("  %s✓%s generated/transactions.json (%d transactions)\n", Fmt.Green, Fmt.Reset, n)
+			fmt.Printf("  %s✓%s stewards/transactions.json (%d transactions)\n", Fmt.Green, Fmt.Reset, n)
 			if len(processorNames) > 0 {
 				fmt.Printf("  %s✓%s processors: %s\n", Fmt.Green, Fmt.Reset, strings.Join(processorNames, ", "))
 			}
 			totalTx += n
 		}
-		status.Update("Generating %s...", displayMonthRelPath("latest", "", filepath.Join("generated", "counterparties.json")))
+		status.Update("Generating %s...", displayMonthRelPath("latest", "", filepath.Join(stewardsDirName, "counterparties.json")))
 		cpCount := generateCounterpartiesGo(dataDir, "latest", "")
 		status.Clear()
 		if cpCount > 0 {
-			fmt.Printf("  %s✓%s generated/counterparties.json (%d counterparties)\n", Fmt.Green, Fmt.Reset, cpCount)
+			fmt.Printf("  %s✓%s stewards/counterparties.json (%d counterparties)\n", Fmt.Green, Fmt.Reset, cpCount)
 		}
 	}
 
@@ -1372,7 +1372,9 @@ func generateMonthImagesGo(dataDir, year, month string) int {
 
 	out := ImagesFile{Year: year, Month: month, Count: len(images), Images: images}
 	imgData, _ := marshalIndentedNoHTMLEscape(out)
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "images.json"), imgData)
+	membersData, _ := marshalIndentedNoHTMLEscape(imagesFileForAudience(out, AudienceMembers))
+	publicData, _ := marshalIndentedNoHTMLEscape(imagesFileForAudience(out, AudiencePublic))
+	writeTiers(dataDir, year, month, "images.json", tierPayload{Stewards: imgData, Members: membersData, Public: publicData, Legacy: imgData})
 
 	return len(images)
 }
@@ -1427,8 +1429,9 @@ func generateActivityGridGo(dataDir string, years []string) ActivityGridData {
 		grid.Years = append(grid.Years, ActivityGridYear{Year: year, Months: yearMonths})
 	}
 
-	outputPath := filepath.Join(dataDir, "latest", "generated", "activitygrid.json")
-	writeJSONFile(outputPath, grid)
+	if data, err := json.MarshalIndent(grid, "", "  "); err == nil {
+		writeTiersSame(dataDir, "latest", "", "activitygrid.json", data)
+	}
 	fmt.Printf("  ✓ Generated global activity grid\n")
 
 	return grid
@@ -1441,9 +1444,9 @@ func generateYearActivityGridGo(dataDir, year string, grid ActivityGridData) {
 				Year   string              `json:"year"`
 				Months []ActivityGridMonth `json:"months"`
 			}{Year: year, Months: y.Months}
-			outputPath := filepath.Join(dataDir, year, "generated", "activitygrid.json")
-			os.MkdirAll(filepath.Dir(outputPath), 0755)
-			writeJSONFile(outputPath, out)
+			if data, err := json.MarshalIndent(out, "", "  "); err == nil {
+				writeTiersSame(dataDir, year, "", "activitygrid.json", data)
+			}
 			fmt.Printf("  ✓ %s activity grid\n", year)
 			return
 		}
@@ -1480,7 +1483,7 @@ func (c *contributorsRunCache) save() {
 }
 
 func contributorsOutputPath(dataDir, year, month string) string {
-	return filepath.Join(dataDir, year, month, "generated", "contributors.json")
+	return filepath.Join(dataDir, year, month, stewardsDirName, "contributors.json")
 }
 
 func contributorInputPaths(dataDir, year, month string) []string {
@@ -1491,7 +1494,7 @@ func contributorInputPaths(dataDir, year, month string) []string {
 		inputs = append(inputs, settingsPath)
 	}
 
-	imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
+	imagesPath := filepath.Join(dataDir, year, month, stewardsDirName, "images.json")
 	if _, err := os.Stat(imagesPath); err == nil {
 		inputs = append(inputs, imagesPath)
 	}
@@ -1560,7 +1563,7 @@ func readMonthlyContributorCount(path string) int {
 }
 
 // LatestContributorsWindowDays controls the rolling window used when computing
-// latest/generated/contributors.json.
+// latest/<tier>/contributors.json.
 const LatestContributorsWindowDays = 90
 
 // parseMessageTimestamp parses Discord/image timestamps, which are RFC3339 with
@@ -1773,7 +1776,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 
 	// Count images for this month
 	totalImages := 0
-	imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
+	imagesPath := filepath.Join(dataDir, year, month, stewardsDirName, "images.json")
 	if data, err := os.ReadFile(imagesPath); err == nil {
 		var imgFile ImagesFile
 		if json.Unmarshal(data, &imgFile) == nil {
@@ -1828,8 +1831,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 		out.Month = month
 	}
 
-	contribData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "contributors.json"), contribData)
+	writeTiers(dataDir, year, month, "contributors.json", tierJSON(out, contributorsFileForAudience))
 
 	return len(contributors)
 }
@@ -2001,8 +2003,7 @@ func generateTopContributorsGo(dataDir string, settings *Settings) {
 		IsMockData:      false,
 	}
 
-	outputPath := filepath.Join(dataDir, "latest", "generated", "contributors.json")
-	writeJSONFile(outputPath, out)
+	writeTiers(dataDir, "latest", "", "contributors.json", tierJSON(out, topContributorsFileForAudience))
 	fmt.Printf("  ✓ Generated contributors.json (%d contributors, %d active)\n", len(list), len(contributorMap))
 }
 
@@ -2019,7 +2020,7 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 	contributors := map[string]*contribData{}
 
 	// From global contributors.json
-	globalPath := filepath.Join(dataDir, "latest", "generated", "contributors.json")
+	globalPath := filepath.Join(dataDir, "latest", stewardsDirName, "contributors.json")
 	if data, err := os.ReadFile(globalPath); err == nil {
 		var f TopContributorsFile
 		if json.Unmarshal(data, &f) == nil {
@@ -2048,9 +2049,6 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 			introductionsChannel = id
 		}
 	}
-
-	profilesDir := filepath.Join(dataDir, "latest", "generated", "profiles")
-	os.MkdirAll(profilesDir, 0755)
 
 	profileCount := 0
 	years := getAvailableYears(dataDir)
@@ -2110,7 +2108,7 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 				}
 
 				// Images
-				imagesPath := filepath.Join(dataDir, year, month, "generated", "images.json")
+				imagesPath := filepath.Join(dataDir, year, month, stewardsDirName, "images.json")
 				if data, err := os.ReadFile(imagesPath); err == nil {
 					var imf ImagesFile
 					if json.Unmarshal(data, &imf) == nil {
@@ -2136,8 +2134,10 @@ func generateUserProfilesGo(dataDir string, settings *Settings) {
 			return profile.Contributions[i].Timestamp > profile.Contributions[j].Timestamp
 		})
 
-		profilePath := filepath.Join(profilesDir, cd.username+".json")
-		writeJSONFile(profilePath, profile)
+		if data, err := json.MarshalIndent(profile, "", "  "); err == nil {
+			rel := filepath.Join("profiles", cd.username+".json")
+			writeTiers(dataDir, "latest", "", rel, tierPayload{Stewards: data, Members: data, Public: nil, Legacy: data})
+		}
 		profileCount++
 	}
 
@@ -2163,7 +2163,7 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 	}{}
 
 	for _, month := range months {
-		contribPath := filepath.Join(dataDir, year, month, "generated", "contributors.json")
+		contribPath := filepath.Join(dataDir, year, month, stewardsDirName, "contributors.json")
 		data, err := os.ReadFile(contribPath)
 		if err != nil {
 			continue
@@ -2252,9 +2252,7 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 
-	outputPath := filepath.Join(dataDir, year, "generated", "contributors.json")
-	os.MkdirAll(filepath.Dir(outputPath), 0755)
-	writeJSONFile(outputPath, out)
+	writeTiers(dataDir, year, "", "contributors.json", tierJSON(out, yearlyUsersFileForAudience))
 	fmt.Printf("  ✓ %s: %d contributors\n", year, len(contributors))
 }
 
@@ -3217,8 +3215,16 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		Transactions: publicTxs,
 	}
 
-	txData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "transactions.json"), txData)
+	// Tiers (docs/audiences.md): stewards = full entries, members/public =
+	// projections. The legacy generated/transactions.json keeps today's
+	// public projection until the website reads a tier; the legacy
+	// generated/private/enrichment.json is gone — that data lives in
+	// stewards/transactions.json now.
+	writeTransactionsForAudiences(dataDir, year, month, transactions)
+	if legacyGeneratedEnabled() {
+		txData, _ := json.MarshalIndent(out, "", "  ")
+		_ = writeMonthFile(dataDir, year, month, filepath.Join(legacyGeneratedDirName, "transactions.json"), txData)
+	}
 
 	// Write Odoo-specific resolution out to providers/odoo/pending/. The
 	// public transactions.json is now target-agnostic; push paths look up
@@ -3243,14 +3249,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		Warnf("  %s⚠ Could not write Odoo pending file for %s-%s: %v%s", Fmt.Yellow, year, month, err, Fmt.Reset)
 	}
 
-	// Save PII enrichment to private directory
-	if len(piiFile.Enrichments) > 0 {
-		piiData, _ := json.MarshalIndent(piiFile, "", "  ")
-		piiRelPath := filepath.Join("generated", "private", "enrichment.json")
-		_ = writeDataFile(filepath.Join(dataDir, year, month, piiRelPath), piiData)
-		// Also write to latest
-		_ = writeDataFile(filepath.Join(dataDir, "latest", piiRelPath), piiData)
-	}
+	// The PII enrichment layer is no longer a separate file: the stewards
+	// tier carries name/email/IBAN on the transaction itself. A
+	// stewards/private/enrichment.json seeded from a pre-tier tree is still
+	// honoured by LoadTransactionsWithPII for months not regenerated since.
+	_ = piiFile
 
 	return len(transactions)
 }
@@ -3509,7 +3512,7 @@ func chainIDForSourceChain(settings *Settings, chain string) int {
 // ── Counterparties ──────────────────────────────────────────────────────────
 
 func generateCounterpartiesGo(dataDir, year, month string) int {
-	txPath := filepath.Join(dataDir, year, month, "generated", "transactions.json")
+	txPath := filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")
 	data, err := os.ReadFile(txPath)
 	if err != nil {
 		return 0
@@ -3593,8 +3596,7 @@ func generateCounterpartiesGo(dataDir, year, month string) int {
 		Counterparties: counterparties,
 	}
 
-	cpData, _ := json.MarshalIndent(out, "", "  ")
-	writeMonthFile(dataDir, year, month, filepath.Join("generated", "counterparties.json"), cpData)
+	writeTiers(dataDir, year, month, "counterparties.json", tierJSON(out, counterpartiesFileForAudience))
 	return len(counterparties)
 }
 
@@ -3697,20 +3699,28 @@ func generateLatestEventsGo(dataDir string) {
 		})
 	}
 
-	outputPath := filepath.Join(dataDir, "latest", "generated", "events.json")
 	out := LatestEventsFile{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Count:       len(upcoming),
 		Events:      upcoming,
 	}
-	writeJSONFile(outputPath, out)
+	if data, err := json.MarshalIndent(out, "", "  "); err == nil {
+		writeTiersSame(dataDir, "latest", "", "events.json", data)
+	}
 	fmt.Printf("  ✓ latest/events.json: %s\n", Pluralize(len(upcoming), "upcoming event", ""))
 }
 
 // ── Generated README ────────────────────────────────────────────────────────
 
 func writeGeneratedReadme(dataDir string) {
-	readme := `# latest/generated/
+	readme := `# Processed data — three audiences
+
+This directory is one of three tiers written by chb generate (see docs/audiences.md):
+public/ (anyone, no personal data), members/ (Discord members: names and
+narration, nothing that lets you contact or pay someone), stewards/ (everything).
+Every tier has the same file names; each lower tier has strictly less in it.
+Pick the tier your audience is entitled to and read the same relative paths.
+
 
 Files in this folder are produced by ` + "`chb generate`" + `.
 They are derived from raw synced data and can be regenerated at any time.
@@ -3729,8 +3739,7 @@ They are derived from raw synced data and can be regenerated at any time.
 | door.json | Door openings per member (distinct days, from the #door Discord channel) |
 | images.json | Images extracted from Discord messages |
 `
-	readmePath := filepath.Join(dataDir, "latest", "generated", "README.md")
-	_ = writeDataFile(readmePath, []byte(readme))
+	writeTiersSame(dataDir, "latest", "", "README.md", []byte(readme))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -3810,7 +3819,7 @@ to produce derived data files needed by the website:
   • images.json — Discord images with reactions
   • transactions.json — aggregated financial data
   • counterparties.json — transaction counterparties
-  • User profiles in generated/profiles/
+  • User profiles in stewards/profiles/
   • Yearly aggregates
 
 %sOPTIONS%s
@@ -3866,8 +3875,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			Members:     members,
 		}
 
-		data, _ := json.MarshalIndent(out, "", "  ")
-		writeMonthFile(dataDir, year, month, filepath.Join("generated", "members.json"), data)
+		writeTiers(dataDir, year, month, "members.json", tierJSON(out, membersFileForAudience))
 		totalMonths++
 
 		ym := year + "-" + month
@@ -3892,9 +3900,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			Summary:     latestSummary,
 			Members:     latestMembers,
 		}
-		data, _ := json.MarshalIndent(out, "", "  ")
-		latestPath := filepath.Join(dataDir, "latest", "generated", "members.json")
-		_ = writeDataFile(latestPath, data)
+		writeTiers(dataDir, "latest", "", "members.json", tierJSON(out, membersFileForAudience))
 	}
 
 	if totalMonths == 0 {
@@ -3958,4 +3964,85 @@ func fetchDiscordMemberCount(settings *Settings) int {
 	}
 	json.NewDecoder(resp.Body).Decode(&guild)
 	return guild.ApproximateMemberCount
+}
+
+// Per-audience projections of a transaction. Each tier is a strict subset of
+// the one above it — the same file name, the same shape, less data:
+//
+//	stewards: the entry as generated (counterparty, hash, every metadata key).
+//	members:  counterparty names and free-text (memo, bank narration) stay,
+//	          but nothing that lets you contact or pay someone: no email, no
+//	          IBAN/BIC, no Stripe customer/charge ids.
+//	public:   no person at all: no names, no free-text narration, no bank
+//	          references, no donor display names. Amounts, categories,
+//	          collectives, accounts and canonical ids only.
+func transactionForAudience(tx TransactionEntry, a Audience) TransactionEntry {
+	out := tx
+	out.Metadata = make(map[string]interface{}, len(tx.Metadata))
+	for k, v := range tx.Metadata {
+		out.Metadata[k] = v
+	}
+	if a == AudienceStewards {
+		return out
+	}
+	// members and public
+	out.TxHash = ""
+	out.Account = ""
+	out.StripeChargeID = ""
+	out.StripeCustomerID = ""
+	for k, v := range out.Metadata {
+		if s, ok := v.(string); ok && containsEmail(s) {
+			delete(out.Metadata, k)
+		}
+	}
+	for _, k := range []string{"email", "iban", "bic", "counterparty"} {
+		delete(out.Metadata, k)
+	}
+	if containsEmail(out.Counterparty) {
+		out.Counterparty = "" // a mailbox standing in for a name is a contact detail
+	}
+	if a == AudienceMembers {
+		return out
+	}
+	// public
+	out.Counterparty = ""
+	for k := range out.Metadata {
+		if isPublicUnsafeMetadataKey(k) {
+			delete(out.Metadata, k)
+		}
+	}
+	return out
+}
+
+// isPublicUnsafeMetadataKey names metadata that carries people or bank
+// references and therefore stops at the members tier.
+func isPublicUnsafeMetadataKey(k string) bool {
+	switch k {
+	case "name", "firstName", "lastName", "fullDescription", "reference", "freeReference",
+		"statementNumber", "balance", "memo":
+		return true
+	}
+	return strings.HasPrefix(k, "custom_")
+}
+
+func writeTransactionsForAudiences(dataDir, year, month string, transactions []TransactionEntry) {
+	for _, a := range Audiences {
+		projected := make([]TransactionEntry, len(transactions))
+		for i, tx := range transactions {
+			projected[i] = transactionForAudience(tx, a)
+		}
+		out := TransactionsFile{
+			Year:         year,
+			Month:        month,
+			GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+			Transactions: projected,
+		}
+		data, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			continue
+		}
+		if err := writeAudienceFile(dataDir, year, month, a, "transactions.json", data); err != nil {
+			Warnf("  %s⚠ %s%s", Fmt.Yellow, err, Fmt.Reset)
+		}
+	}
 }
