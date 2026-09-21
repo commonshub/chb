@@ -155,4 +155,9 @@ extensions only, no `private` segment).
    [website-migration.md](website-migration.md). Move the Monerium admin
    views out of the web container.
 4. ⬜ `CHB_LEGACY_GENERATED=0` on prod, delete `generated/`.
-5. ⬜ Prod: create group `chb-members`, add the website's runtime uid.
+5. ⬜ Prod: create group `chb-members` (gid 1001 — the gid of the `nodejs`
+   group inside the website image), `usermod -aG chb-members chb`, and run
+   chb with `CHB_MEMBERS_GROUP=chb-members` so every `members/` directory
+   and file is chgrp'ed to it (`applyMembersGroup`). The website container
+   gets the gid with `--group-add 1001` (Coolify custom docker options)
+   until its Dockerfile adds `nextjs` to `nodejs`.

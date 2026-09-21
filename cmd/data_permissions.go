@@ -158,6 +158,9 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 			if err := os.Chmod(current, mode); err != nil && !os.IsNotExist(err) {
 				return err
 			}
+			if tierMode && tier == AudienceMembers {
+				applyMembersGroup(current)
+			}
 		}
 	}
 
@@ -168,6 +171,9 @@ func applyDataPathPolicy(baseDir, targetPath string, isDir bool) error {
 		}
 		if err := os.Chmod(targetPath, fileMode); err != nil && !os.IsNotExist(err) {
 			return err
+		}
+		if inTier && tier == AudienceMembers {
+			applyMembersGroup(targetPath)
 		}
 	}
 

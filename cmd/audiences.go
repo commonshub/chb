@@ -28,8 +28,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -463,4 +465,57 @@ func tierPathScope(dataDir, path string) (year, month string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// ---- members tier unix group ----------------------------------------------
+//
+// members/ is mode 0750: readable by its unix group and nobody else. Which
+// group is a deployment decision, so it comes from the environment:
+// CHB_MEMBERS_GROUP=<name|gid>. When set, every members/ directory and file
+// chb writes (or re-normalises on startup) is chgrp'ed to it; the writing
+// user must belong to that group. Unset → files keep the writer's primary
+// group and only the owner (chb) can read members/.
+var (
+	membersGIDOnce    sync.Once
+	membersGIDVal     int = -1
+	membersGIDForTest *int
+)
+
+func membersGroupGID() int {
+	if membersGIDForTest != nil {
+		return *membersGIDForTest
+	}
+	membersGIDOnce.Do(func() {
+		membersGIDVal = membersGroupGIDFromEnv(os.Getenv("CHB_MEMBERS_GROUP"))
+	})
+	return membersGIDVal
+}
+
+// membersGroupGIDFromEnv resolves a group name or numeric gid; -1 = unset.
+func membersGroupGIDFromEnv(v string) int {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return -1
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return n
+	}
+	g, err := user.LookupGroup(v)
+	if err != nil {
+		Warnf("⚠ CHB_MEMBERS_GROUP=%q: %v — members/ stays owner-only", v, err)
+		return -1
+	}
+	if n, err := strconv.Atoi(g.Gid); err == nil {
+		return n
+	}
+	return -1
+}
+
+// applyMembersGroup chgrps a members-tier path to the configured group.
+func applyMembersGroup(path string) {
+	gid := membersGroupGID()
+	if gid < 0 {
+		return
+	}
+	_ = os.Lchown(path, -1, gid)
 }

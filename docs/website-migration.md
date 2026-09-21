@@ -86,8 +86,12 @@ should therefore treat those fields as optional.
 6. **`/data/*` browser and `/mcp`**: point at the tier the caller is
    entitled to (`public` for Basic-auth-less requests, `members` for the
    MCP key if that is the intent), remove the `private` special-casing.
-7. **Container / Coolify**: the runtime user (uid 1001) must be in the
-   host group `chb-members` to read `members/`; nothing else changes — the
+7. **Container / Coolify**: `members/` is group `chb-members` = **gid 1001**
+   on the host (chb chgrps it, `CHB_MEMBERS_GROUP=chb-members`). The image
+   already has a `nodejs` group with gid 1001 but `nextjs` is not in it:
+   change the Dockerfile to `adduser … -G nodejs nextjs` (primary or
+   supplementary gid 1001). Until that ships, Coolify's custom docker run
+   options carry `--group-add 1001` for the app. Nothing else changes — the
    bind mount stays the whole `/data/commonshub/prod`, and `stewards/`
    (0700, owned by `chb`) is simply unreadable. Keep the existing "never
    chown /data" entrypoint behaviour.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -260,5 +261,38 @@ func TestTierPathScope(t *testing.T) {
 		if y != c.y || m != c.m || ok != c.ok {
 			t.Errorf("tierPathScope(%s) = %q,%q,%v want %q,%q,%v", c.path, y, m, ok, c.y, c.m, c.ok)
 		}
+	}
+}
+
+func TestMembersTierGroupOwnership(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	// Use the caller's own primary gid: chown to it always succeeds, and it
+	// proves the members/ dir and file get the configured group while the
+	// other tiers are left alone.
+	gid := os.Getgid()
+	membersGIDForTest = &gid
+	t.Cleanup(func() { membersGIDForTest = nil })
+
+	if err := writeAudienceFile(dataDir, "2026", "09", AudienceMembers, "door.json", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAudienceFile(dataDir, "2026", "09", AudiencePublic, "door.json", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"2026/09/members", "2026/09/members/door.json", "latest/members/door.json"} {
+		info, err := os.Stat(filepath.Join(dataDir, p))
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if got := int(info.Sys().(*syscall.Stat_t).Gid); got != gid {
+			t.Errorf("%s gid = %d, want %d", p, got, gid)
+		}
+	}
+	if membersGroupGIDFromEnv("") != -1 {
+		t.Error("unset CHB_MEMBERS_GROUP must mean owner-only")
+	}
+	if membersGroupGIDFromEnv("1500") != 1500 {
+		t.Error("numeric CHB_MEMBERS_GROUP is used as the gid")
 	}
 }
