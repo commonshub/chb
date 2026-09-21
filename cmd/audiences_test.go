@@ -156,6 +156,9 @@ func TestWriteAudienceFileModesAndMirror(t *testing.T) {
 }
 
 func TestTransactionForAudience(t *testing.T) {
+	// The fixture's own account URI carries our IBAN, which the policy allows.
+	ownIBANsForTest = map[string]bool{"BE46734072238636": true}
+	t.Cleanup(func() { ownIBANsForTest = nil })
 	tx := TransactionEntry{
 		ID:               "iban:be46734072238636:tx:1",
 		Provider:         "kbcbrussels",
