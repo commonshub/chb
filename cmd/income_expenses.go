@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -154,20 +153,14 @@ func runIncomeExpenseReport(direction string, args []string) error {
 			continue
 		}
 		for _, tx := range txFile.Transactions {
-			if tx.Type == "INTERNAL" {
-				continue
-			}
-			// Defensive: a tx tagged `category: internal_transfer` is
-			// an internal transfer even if the rule that set its
-			// category forgot to coerce the type. Categorizer.Apply
-			// already coerces this at generate time, but old
-			// generated files written before that fix still leak
-			// through — skip on category too so the totals stay
-			// honest regardless of when the file was generated.
-			if strings.EqualFold(tx.Category, "internal_transfer") {
-				continue
-			}
-			if !isEURCurrency(tx.Currency) {
+			// countableEURAmount (cmd/forecast.go) is the shared
+			// definition of "counts as income or expense": EUR family,
+			// internal transfers excluded on both Type and category,
+			// non-zero gross. `chb forecast` applies the same filter so
+			// its actuals equal what this command prints for the
+			// matching date range — keep them on one implementation.
+			amount, countable := countableEURAmount(tx)
+			if !countable {
 				continue
 			}
 			if direction == "income" && !tx.IsIncoming() {
@@ -181,10 +174,6 @@ func runIncomeExpenseReport(direction string, args []string) error {
 				continue
 			}
 			if accountSlug != "" && !accountSlugMatchesTx(accountSlug, tx) {
-				continue
-			}
-			amount := math.Abs(firstNonZeroFloat(tx.GrossAmount, tx.Amount, tx.NormalizedAmount, tx.NetAmount))
-			if amount == 0 {
 				continue
 			}
 			cat := strings.TrimSpace(tx.Category)

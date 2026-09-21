@@ -47,6 +47,7 @@ func PrintHelp(version string) {
   %sreport%s <date-range>  Generate monthly/yearly report
   %sincome%s <date-range>  Income by category for a date range
   %sexpenses%s <date-range>  Expenses by category for a date range
+  %sforecast%s <YYYY>     Project this year's result, with its uncertainty
   %sstatus%s              Show version, data dirs, and last sync at a glance
   %sstats%s               Show data directory size and breakdown
   %sclean%s               Migrate legacy file layouts and prune stale dirs
@@ -84,7 +85,8 @@ func PrintHelp(version string) {
   $ chb providers * pull 2025/11            # pull all providers for Nov 2025
   $ chb report 2025/11                      # monthly report
   $ chb report 202511                       # monthly report
-  $ chb report 2025                         # yearly report%s
+  $ chb report 2025                         # yearly report
+  $ chb forecast                            # project the current year's result%s
 
 %sENVIRONMENT%s
   %sAPP_DATA_DIR%s        App state directory; config is in $APP_DATA_DIR/settings (default: ~/.chb)
@@ -97,11 +99,11 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset, // chb in usage
 		f.Bold, f.Reset, // COMMANDS
-		// 32 command rows (events, calendars, calendars pull, events stats,
+		// 33 command rows (events, calendars, calendars pull, events stats,
 		// rooms, bookings, bookings stats, transactions pull, transactions stats,
 		// search, contacts, nostr pull/push, invoices pull, bills pull, attachments
 		// pull, messages pull, messages stats, images pull, providers, pull,
-		// generate, push, sync, members pull, report, income, expenses,
+		// generate, push, sync, members pull, report, income, expenses, forecast,
 		// status, stats, clean, doctor, tools)
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
@@ -110,6 +112,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, // search + contacts (31st, 32nd rows)
+		f.Cyan, f.Reset, // forecast (33rd row)
 		f.Bold, f.Reset, // OPTIONS
 		// 8 options rows
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

@@ -61,6 +61,7 @@ Inspect along the way:
 chb accounts                       # bank/payment accounts overview
 chb events                         # upcoming events
 chb report 2026/05                 # monthly report
+chb forecast                       # projected result for the current year
 chb odoo journals 28 push --dry-run   # see what would change in Odoo
 chb nostr pending                  # see what would be published to Nostr
 ```
@@ -114,6 +115,7 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 - [docs/testing.md](docs/testing.md) — test layout + smoke tests.
 - [docs/cookbook.md](docs/cookbook.md) — copy-pasteable recipes for common ops.
 - [docs/txspread.md](docs/txspread.md) — `spread` metadata for amortised transactions.
+- [docs/forecast.md](docs/forecast.md) — how `chb forecast` projects the year's result, and how to check it.
 
 ## License
 
