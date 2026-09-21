@@ -37,6 +37,10 @@ func TestIBANChecksum(t *testing.T) {
 	if ibanChecksumValid("GB82WEST12345698765433") || ibanChecksumValid("BE00539007547034") {
 		t.Error("a wrong check digit must not verify")
 	}
+	// Canonical URIs carry IBANs in lower case — still an IBAN.
+	if got := findIBANs([]byte(`{"counterpartyId":"iban:be68539007547034"}`)); len(got) != 1 || got[0] != "BE68539007547034" {
+		t.Errorf("lower-case IBAN in a URI must be found and normalised, got %v", got)
+	}
 	// Shapes that look like IBANs but aren't must not trip the policy.
 	if got := findIBANs([]byte(`{"hash":"AB12CDEF0123456789012345","sku":"FR76ABCDEFGHIJKLMNOPQ"}`)); len(got) != 0 {
 		t.Errorf("false positives: %v", got)

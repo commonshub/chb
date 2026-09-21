@@ -264,12 +264,16 @@ func ownAccountIBANs() map[string]bool {
 // ibanCandidate matches the shape of an IBAN (country, check digits, BBAN);
 // findIBANs keeps only candidates whose mod-97 checksum verifies, so hashes,
 // ids and product codes never trip the policy.
-var ibanCandidate = regexp.MustCompile(`\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b`)
+var ibanCandidate = regexp.MustCompile(`(?i)\b[a-z]{2}[0-9]{2}[a-z0-9]{11,30}\b`)
 
+// findIBANs returns the distinct checksum-valid IBANs in data, normalised
+// to upper case. Case-insensitive on purpose: canonical URIs carry IBANs in
+// lower case (iban:be68…), and those are IBANs all the same.
 func findIBANs(data []byte) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, m := range ibanCandidate.FindAllString(string(data), -1) {
+		m = strings.ToUpper(m)
 		if !seen[m] && ibanChecksumValid(m) {
 			seen[m] = true
 			out = append(out, m)
