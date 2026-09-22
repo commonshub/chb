@@ -939,6 +939,19 @@ func Generate(args []string) error {
 		return fmt.Sprintf("%d collective row%s", n, plural(n))
 	})
 
+	// Content hashes of the raw archives for every completed month that
+	// has none yet (or whose providers changed since) — see cmd/integrity.go.
+	genStep("Integrity", func() string {
+		n, err := generateIntegrity(dataDir, "", force)
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		if n == 0 {
+			return "up to date"
+		}
+		return Pluralize(n, "month hashed", "months hashed")
+	})
+
 	// Stamp cursors for the months we just regenerated so subsequent
 	// runs can skip them when no source file moved.
 	for _, s := range scopes {
@@ -3738,6 +3751,7 @@ They are derived from raw synced data and can be regenerated at any time.
 | members.json | Membership snapshot (Stripe + Odoo) |
 | door.json | Door openings per member (distinct days, from the #door Discord channel) |
 | images.json | Images extracted from Discord messages |
+| integrity.json | Per-provider content hashes + counts for the month, and the month hash (public; compare across instances) |
 `
 	writeTiersSame(dataDir, "latest", "", "README.md", []byte(readme))
 }

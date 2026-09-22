@@ -1,5 +1,7 @@
 # Audiences — three levels of trust for processed data
 
+Consumer reference (what to read, what to publish, for whom): [website.md](website.md).
+
 `chb` produces data for three audiences. Each is a directory; each directory
 is a complete, self-contained dataset for that audience, with the same file
 names as the others but less in them. A consumer is handed one directory and

@@ -520,6 +520,10 @@ func main() {
 		if err := cmd.Doctor(args[1:]); err != nil {
 			exitWithError(err)
 		}
+	case "integrity":
+		if err := cmd.Integrity(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "tools":
 		if err := cmd.Tools(args[1:]); err != nil {
 			exitWithError(err)

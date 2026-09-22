@@ -256,6 +256,7 @@ func PrintDoctorHelp() {
 	f := Fmt
 	fmt.Printf(`
 %schb doctor%s — Audit the local data directory
+$ chb integrity [YYYY/MM]  # content hashes of the raw archives per month (public)
 
 %sUSAGE%s
   %schb doctor%s

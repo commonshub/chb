@@ -49,7 +49,7 @@ $DATA_DIR/
     └── generated/                       # legacy mirror
 ```
 
-Audiences: `public/`, `members/`, `stewards/` are three levels of trust;
+Audiences: `public/`, `members/`, `stewards/` are three levels of trust ([website.md](website.md) is the consumer-facing reference);
 [audiences.md](audiences.md) defines what each may contain, how the policy is
 enforced at write time and on disk, and the migration from `generated/`.
 
