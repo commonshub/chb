@@ -116,15 +116,22 @@ func TestGenerateIntegrityOnlyCompletedAndStaleMonths(t *testing.T) {
 	if n != 1 {
 		t.Errorf("hashed %d months, want 1 (only the completed one)", n)
 	}
+	st, err := os.Stat(filepath.Join(dataDir, "2024", "03", integrityFile))
+	if err != nil {
+		t.Fatal("2024/03/hashes.json missing")
+	}
+	if st.Mode().Perm() != 0o644 {
+		t.Errorf("hashes.json mode = %o, want 644 (public)", st.Mode().Perm())
+	}
 	for _, tier := range []string{"public", "members", "stewards"} {
-		if _, err := os.Stat(filepath.Join(dataDir, "2024", "03", tier, integrityFile)); err != nil {
-			t.Errorf("%s/integrity.json missing", tier)
+		if _, err := os.Stat(filepath.Join(dataDir, "2024", "03", tier, integrityFile)); err == nil {
+			t.Errorf("%s/hashes.json must not exist: the manifest lives once at the month root", tier)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, current[:4], current[5:], "public", integrityFile)); err == nil {
+	if _, err := os.Stat(filepath.Join(dataDir, current[:4], current[5:], integrityFile)); err == nil {
 		t.Error("the current month must not get a manifest")
 	}
-	idx, err := os.ReadFile(filepath.Join(dataDir, "latest", "public", integrityFile))
+	idx, err := os.ReadFile(filepath.Join(dataDir, "latest", integrityFile))
 	if err != nil {
 		t.Fatal("index missing")
 	}
@@ -147,5 +154,29 @@ func TestGenerateIntegrityOnlyCompletedAndStaleMonths(t *testing.T) {
 	}
 	if n, _ := generateIntegrity(dataDir, "", false); n != 1 {
 		t.Errorf("a newer provider file must trigger a rehash, got %d", n)
+	}
+}
+
+func TestGenerateIntegrityRemovesLegacyPerTierCopies(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	seedMonth(t, dataDir, "2024", "03", "2024-04-01T00:00:00Z", "k")
+	// v3.12.0 wrote the manifest once per tier, month and latest/.
+	for _, tier := range []string{"public", "members", "stewards", legacyGeneratedDirName} {
+		writeFile(t, filepath.Join(dataDir, "2024", "03", tier, legacyIntegrityFile), `{}`)
+		writeFile(t, filepath.Join(dataDir, "latest", tier, legacyIntegrityFile), `{}`)
+	}
+	if _, err := generateIntegrity(dataDir, "", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, tier := range []string{"public", "members", "stewards", legacyGeneratedDirName} {
+		for _, p := range []string{
+			filepath.Join(dataDir, "2024", "03", tier, legacyIntegrityFile),
+			filepath.Join(dataDir, "latest", tier, legacyIntegrityFile),
+		} {
+			if _, err := os.Stat(p); err == nil {
+				t.Errorf("legacy %s still present", p)
+			}
+		}
 	}
 }

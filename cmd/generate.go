@@ -3751,7 +3751,10 @@ They are derived from raw synced data and can be regenerated at any time.
 | members.json | Membership snapshot (Stripe + Odoo) |
 | door.json | Door openings per member (distinct days, from the #door Discord channel) |
 | images.json | Images extracted from Discord messages |
-| integrity.json | Per-provider content hashes + counts for the month, and the month hash (public; compare across instances) |
+
+Outside the tiers, once per month: YYYY/MM/hashes.json — per-provider content
+hashes + counts and the month hash (public; compare across instances); the
+index of every completed month is latest/hashes.json.
 `
 	writeTiersSame(dataDir, "latest", "", "README.md", []byte(readme))
 }

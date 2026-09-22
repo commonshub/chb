@@ -2,12 +2,15 @@ package cmd
 
 // Integrity manifests.
 //
-// Every completed month gets an integrity.json: one entry per provider
+// Every completed month gets a hashes.json: one entry per provider
 // archive (what the raw data contains, how big it is, and a content hash),
 // plus one hash for the whole month. Two chb instances that hold the same
 // raw data produce the same hashes, so "do we have the right data?" is one
 // comparison — and because a hash reveals nothing about its input, the
-// manifest is public and can sit on the website.
+// manifest is public. It lives once at the month root (YYYY/MM/hashes.json,
+// world-readable like the tier-less month directory itself) rather than in
+// each audience tier: the tiers separate what people may *read*, and a
+// hash is the same for everyone.
 //
 // Instance-independent by construction: JSON archives are canonicalised
 // before hashing (keys sorted, no whitespace, and the keys that only record
@@ -29,7 +32,19 @@ import (
 	"time"
 )
 
-const integrityFile = "integrity.json"
+const integrityFile = "hashes.json"
+
+// legacyIntegrityFile is where v3.12.0 wrote the manifest, once per tier;
+// generateIntegrity removes those copies.
+const legacyIntegrityFile = "integrity.json"
+
+// integrityPath is YYYY/MM/hashes.json, or latest/hashes.json when year is "latest".
+func integrityPath(dataDir, year, month string) string {
+	if year == "latest" {
+		return filepath.Join(dataDir, "latest", integrityFile)
+	}
+	return filepath.Join(dataDir, year, month, integrityFile)
+}
 
 // ProviderIntegrity describes one provider archive for one month.
 type ProviderIntegrity struct {
@@ -41,7 +56,7 @@ type ProviderIntegrity struct {
 	Hash     string         `json:"hash"` // sha256, hex
 }
 
-// MonthIntegrityFile is YYYY/MM/<tier>/integrity.json.
+// MonthIntegrityFile is YYYY/MM/hashes.json.
 type MonthIntegrityFile struct {
 	Month       string              `json:"month"`
 	GeneratedAt string              `json:"generatedAt"`
@@ -53,7 +68,7 @@ type MonthIntegrityFile struct {
 	Entries     []ProviderIntegrity `json:"entries"`
 }
 
-// IntegrityIndexFile is latest/<tier>/integrity.json: every month's hash.
+// IntegrityIndexFile is latest/hashes.json: every month's hash.
 type IntegrityIndexFile struct {
 	GeneratedAt string                `json:"generatedAt"`
 	Algorithm   string                `json:"algorithm"`
@@ -361,7 +376,7 @@ func computeMonthIntegrity(dataDir, year, month string) (MonthIntegrityFile, err
 // integrityIsStale reports whether a month's manifest is missing or older
 // than any provider file (a backfill or a re-sync changes the data).
 func integrityIsStale(dataDir, year, month string) bool {
-	manifest := audiencePath(dataDir, year, month, AudienceStewards, integrityFile)
+	manifest := integrityPath(dataDir, year, month)
 	info, err := os.Stat(manifest)
 	if err != nil {
 		return true
@@ -416,9 +431,9 @@ func completedMonths(dataDir string) []string {
 	return months
 }
 
-// generateIntegrity writes integrity.json for every completed month whose
+// generateIntegrity writes hashes.json for every completed month whose
 // manifest is missing or stale (all of them with force), then rebuilds the
-// latest/<tier>/integrity.json index. Returns the number of months hashed.
+// latest/hashes.json index. Returns the number of months hashed.
 func generateIntegrity(dataDir string, only string, force bool) (int, error) {
 	months := completedMonths(dataDir)
 	if only != "" {
@@ -438,9 +453,12 @@ func generateIntegrity(dataDir string, only string, force bool) (int, error) {
 		if err != nil {
 			return hashed, err
 		}
-		writeTiersSame(dataDir, year, month, integrityFile, data)
+		if err := writeDataFile(integrityPath(dataDir, year, month), data); err != nil {
+			return hashed, fmt.Errorf("%s: %w", ym, err)
+		}
 		hashed++
 	}
+	removeLegacyIntegrityFiles(dataDir, months)
 	if err := rebuildIntegrityIndex(dataDir); err != nil {
 		return hashed, err
 	}
@@ -453,8 +471,7 @@ func rebuildIntegrityIndex(dataDir string) error {
 		Algorithm:   integrityAlgorithm,
 	}
 	for _, ym := range completedMonths(dataDir) {
-		p := audiencePath(dataDir, ym[:4], ym[5:], AudienceStewards, integrityFile)
-		data, err := os.ReadFile(p)
+		data, err := os.ReadFile(integrityPath(dataDir, ym[:4], ym[5:]))
 		if err != nil {
 			continue
 		}
@@ -473,8 +490,23 @@ func rebuildIntegrityIndex(dataDir string) error {
 	if err != nil {
 		return err
 	}
-	writeTiersSame(dataDir, "latest", "", integrityFile, data)
-	return nil
+	return writeDataFile(integrityPath(dataDir, "latest", ""), data)
+}
+
+// removeLegacyIntegrityFiles deletes the integrity.json copies that v3.12.0
+// wrote in each tier and in the legacy generated/ mirror (month and
+// latest/), now that the manifest lives once at the month root.
+func removeLegacyIntegrityFiles(dataDir string, months []string) {
+	for _, ym := range months {
+		for _, a := range Audiences {
+			os.Remove(audiencePath(dataDir, ym[:4], ym[5:], a, legacyIntegrityFile))
+		}
+		os.Remove(filepath.Join(dataDir, ym[:4], ym[5:], legacyGeneratedDirName, legacyIntegrityFile))
+	}
+	for _, a := range Audiences {
+		os.Remove(audiencePath(dataDir, "latest", "", a, legacyIntegrityFile))
+	}
+	os.Remove(filepath.Join(dataDir, "latest", legacyGeneratedDirName, legacyIntegrityFile))
 }
 
 // Integrity is `chb integrity [YYYY/MM] [--force] [--json]`.
@@ -535,7 +567,7 @@ func Integrity(args []string) error {
 }
 
 func readMonthIntegrity(dataDir, ym string) (MonthIntegrityFile, bool) {
-	data, err := os.ReadFile(audiencePath(dataDir, ym[:4], ym[5:], AudienceStewards, integrityFile))
+	data, err := os.ReadFile(integrityPath(dataDir, ym[:4], ym[5:]))
 	if err != nil {
 		return MonthIntegrityFile{}, false
 	}
@@ -560,10 +592,11 @@ chb integrity — content hashes of the raw provider archives, per month
 USAGE
   chb integrity [YYYY/MM] [--force] [--json]
 
-Writes <tier>/integrity.json for every completed month whose manifest is
+Writes YYYY/MM/hashes.json for every completed month whose manifest is
 missing or older than its provider files (--force: all of them), and
-latest/<tier>/integrity.json with every month's hash. Also runs at the end
-of 'chb generate'.
+latest/hashes.json with every month's hash. Also runs at the end of
+'chb generate'. Hashes are public, so the file sits once at the month
+root instead of in each audience tier.
 
 Two instances holding the same raw data produce the same hashes: JSON is
 canonicalised (sorted keys, fetch timestamps dropped) before hashing, and

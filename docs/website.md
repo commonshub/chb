@@ -18,9 +18,11 @@ construction — the runtime user cannot write anywhere under it):
 │   ├── public/                  anyone                       0755
 │   ├── members/                 Discord `member` role        0750, group chb-members (gid 1001)
 │   ├── stewards/                stewards / chb only          0700 — the website cannot open it
+│   ├── hashes.json              content hashes of the month's raw archives (public, §4)   0644
 │   └── generated/               legacy copy of the old public tree; disappears once the site reads tiers
 ├── YYYY/{public,members,stewards}/       yearly rollups
-└── latest/{public,members,stewards}/     the current state: newest month + lifetime files
+├── latest/{public,members,stewards}/     the current state: newest month + lifetime files
+└── latest/hashes.json                    index: every completed month's hash
 ```
 
 **One rule:** a page picks the tier its audience is entitled to and reads the
@@ -49,7 +51,10 @@ Same file names in every tier; each lower tier has strictly less.
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photo, author identity, reactions — `message` is empty | + message text | month, `latest/` |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
-| `integrity.json` | per-provider counts + content hashes and the month hash — **meant to be published** (§4) | = | month, `latest/` (index of every month) |
+
+Outside the tiers, once per month: `YYYY/MM/hashes.json` (per-provider counts
++ content hashes and the month hash — **meant to be published**, §4) and
+`latest/hashes.json` (index of every completed month).
 
 Treat Discord identity fields (`username`, `displayName`, `avatar`) as
 optional in `public/`: whether display identity is public-by-consent is an
@@ -85,13 +90,15 @@ page belongs in steward tooling, not on the website.
 
 ## 4. Integrity manifests — publish them
 
-`YYYY/MM/public/integrity.json` describes the raw archives of a completed
-month without revealing them: one entry per provider (Odoo per database
+`YYYY/MM/hashes.json` describes the raw archives of a completed month
+without revealing them. It sits once at the month root, not in each tier —
+the tiers separate what people may read, and a hash is the same for
+everyone (the file and the month directory are world-readable): one entry per provider (Odoo per database
 namespace) with counts, size and a sha256 hash, plus the month hash. Two
 `chb` instances holding the same raw data produce the same hashes (JSON is
 canonicalised — sorted keys, fetch timestamps dropped — before hashing, the
-per-instance Odoo outbox is excluded). `latest/public/integrity.json` lists
-every month's hash.
+per-instance Odoo outbox is excluded). `latest/hashes.json` lists every
+month's hash.
 
 ```json
 {
