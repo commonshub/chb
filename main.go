@@ -236,6 +236,10 @@ func main() {
 			if err := cmd.MovePushCommandBills(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "pending":
+			if err := cmd.BillsPending(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "publish":
 			exitWithUsage("%s`chb bills publish` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:

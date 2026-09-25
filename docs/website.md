@@ -53,6 +53,8 @@ Same file names in every tier; each lower tier has strictly less.
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photo, author identity, reactions — `message` is empty | + message text | month, `latest/` |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
+| `bills.json` | the month's posted vendor bills, paid or not: amounts, dates, status, category; business vendors by name with line descriptions; private individuals anonymous | + individuals' names and line descriptions | month only |
+| `pending-bills.json` | every bill still to pay, same projection as `bills.json` — **the "help us pay" list** (§6) | same, with individuals named | `latest/` only |
 
 Outside the tiers, because they are public and the same for everyone, each
 file exists once instead of as three identical copies:
@@ -149,7 +151,17 @@ Declarations are imported by hand after each quarter's filing, so a missing
 recent quarter means "not imported yet". Schema, grid meanings and suggested
 views: [vat.md](vat.md).
 
-## 6. Checklist for a new page
+## 6. Pending bills — the "help us pay" list
+
+`latest/public/pending-bills.json` lists every vendor bill the Hub still
+has to pay, with totals, so a page can publish what is owed and invite
+people to cover a bill. Covering a bill goes through the Hub's own payment
+flow with the bill `number` as reference, never to the vendor directly.
+The list is only as accurate as Odoo's reconciliation: a bill paid by
+direct debit stays pending until its bank line is reconciled. Schema, tier
+differences and page guidance: [bills.md](bills.md).
+
+## 7. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

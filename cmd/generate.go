@@ -939,6 +939,16 @@ func Generate(args []string) error {
 		return fmt.Sprintf("%d collective row%s", n, plural(n))
 	})
 
+	// Vendor bills → YYYY/MM/<tier>/bills.json + latest/<tier>/pending-bills.json
+	// (cmd/bills_generate.go).
+	genStep("Bills", func() string {
+		months, pending := generateBills(dataDir, "")
+		if months == 0 {
+			return "no bill cache (chb bills pull)"
+		}
+		return fmt.Sprintf("%s, %s", Pluralize(months, "month", ""), Pluralize(pending, "pending bill", ""))
+	})
+
 	// Belgian VAT declarations → public vat.json — see cmd/vat_generate.go.
 	genStep("VAT declarations", func() string {
 		n, err := generateVAT(dataDir)
