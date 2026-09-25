@@ -69,7 +69,7 @@ chb nostr pending                  # see what would be published to Nostr
 
 Providers split into two roles ([philosophy.md § Sources vs targets](docs/philosophy.md#sources-vs-targets)):
 
-- **Sources** (pull-only): Stripe, KBC Brussels, Etherscan-backed wallets, Monerium, ICS calendars, Discord.
+- **Sources** (pull-only): Stripe, KBC Brussels, Etherscan-backed wallets, Monerium, ICS calendars, Discord. KBC statements and VAT declarations (`chb vat import`, [docs/vat.md](docs/vat.md)) are imported by hand.
 - **Targets** (pull + push, with pending changes): Odoo, Nostr.
 
 `chb pull` runs every source. `chb <target> push` publishes ready changes; the pending entries that drive each push are inspectable as files under `providers/<target>/pending/` (Odoo) or `$APP_DATA_DIR/nostr/outbox/` (Nostr).
@@ -114,6 +114,7 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 - [docs/testing.md](docs/testing.md) — test layout + smoke tests.
 - [docs/cookbook.md](docs/cookbook.md) — copy-pasteable recipes for common ops.
 - [docs/txspread.md](docs/txspread.md) — `spread` metadata for amortised transactions.
+- [docs/vat.md](docs/vat.md) — Belgian VAT declarations: import, archive, public `vat.json`.
 
 ## License
 

@@ -21,8 +21,10 @@ construction — the runtime user cannot write anywhere under it):
 │   ├── hashes.json              content hashes of the month's raw archives (public, §4)   0644
 │   └── generated/               legacy copy of the old public tree; disappears once the site reads tiers
 ├── YYYY/{public,members,stewards}/       yearly rollups
+├── YYYY/vat.json                         that year's VAT declarations (public, §5)   0644
 ├── latest/{public,members,stewards}/     the current state: newest month + lifetime files
-└── latest/hashes.json                    index: every completed month's hash
+├── latest/hashes.json                    index: every completed month's hash
+└── latest/vat.json                       every VAT declaration ever filed
 ```
 
 **One rule:** a page picks the tier its audience is entitled to and reads the
@@ -52,9 +54,15 @@ Same file names in every tier; each lower tier has strictly less.
 | `images.json` | photo, author identity, reactions — `message` is empty | + message text | month, `latest/` |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
 
-Outside the tiers, once per month: `YYYY/MM/hashes.json` (per-provider counts
-+ content hashes and the month hash — **meant to be published**, §4) and
-`latest/hashes.json` (index of every completed month).
+Outside the tiers, because they are public and the same for everyone, each
+file exists once instead of as three identical copies:
+
+| file | what | where |
+|---|---|---|
+| `hashes.json` | per-provider counts + content hashes and the month hash — **meant to be published** (§4) | `YYYY/MM/`; `latest/` has the index of every completed month |
+| `vat.json` | the organisation's periodic VAT declarations — **meant to be published** (§5) | `YYYY/` (that year), `latest/` (every period) |
+
+Every page may read these, whatever tier it otherwise reads.
 
 Treat Discord identity fields (`username`, `displayName`, `avatar`) as
 optional in `public/`: whether display identity is public-by-consent is an
@@ -131,7 +139,17 @@ changes the month hash, but not the production entry). Manifests are
 written by `chb generate` for every completed month that has none yet or
 whose providers changed since, and by `chb integrity [--force]`.
 
-## 5. Checklist for a new page
+## 5. VAT declarations — publish them
+
+`latest/vat.json` lists every quarterly VAT return filed with the Belgian
+State through Intervat: per period, the amount of every grid of the official
+form, the control totals (output VAT, input VAT, net paid or refunded), and
+every filing including corrections. `YYYY/vat.json` holds one year's.
+Declarations are imported by hand after each quarter's filing, so a missing
+recent quarter means "not imported yet". Schema, grid meanings and suggested
+views: [vat.md](vat.md).
+
+## 6. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

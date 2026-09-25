@@ -45,6 +45,8 @@ func PrintHelp(version string) {
   %ssync%s                Full cron loop: chb pull && chb push
   %smembers pull%s        Fetch membership data from Stripe/Odoo
   %sreport%s <date-range>  Generate monthly/yearly report
+  %svat import%s <files>  Archive Belgian VAT declarations (Intervat XML exports)
+  %sintegrity%s           Content hashes of the raw archives per month (public)
   %sincome%s <date-range>  Income by category for a date range
   %sexpenses%s <date-range>  Expenses by category for a date range
   %sstatus%s              Show version, data dirs, and last sync at a glance
@@ -110,6 +112,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, // search + contacts (31st, 32nd rows)
+		f.Cyan, f.Reset, f.Cyan, f.Reset, // vat import + integrity
 		f.Bold, f.Reset, // OPTIONS
 		// 8 options rows
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,
@@ -256,7 +259,6 @@ func PrintDoctorHelp() {
 	f := Fmt
 	fmt.Printf(`
 %schb doctor%s — Audit the local data directory
-$ chb integrity [YYYY/MM]  # content hashes of the raw archives per month (public)
 
 %sUSAGE%s
   %schb doctor%s

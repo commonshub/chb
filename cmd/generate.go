@@ -939,6 +939,19 @@ func Generate(args []string) error {
 		return fmt.Sprintf("%d collective row%s", n, plural(n))
 	})
 
+	// Belgian VAT declarations → public vat.json — see cmd/vat_generate.go.
+	genStep("VAT declarations", func() string {
+		n, err := generateVAT(dataDir)
+		if err != nil {
+			Warnf("⚠ VAT declarations: %v", err)
+			return "failed"
+		}
+		if n == 0 {
+			return "none archived"
+		}
+		return Pluralize(n, "period", "") + " → latest/vat.json"
+	})
+
 	// Content hashes of the raw archives for every completed month that
 	// has none yet (or whose providers changed since) — see cmd/integrity.go.
 	genStep("Integrity", func() string {

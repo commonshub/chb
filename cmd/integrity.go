@@ -216,6 +216,9 @@ func countProviderStats(unit, rel string, data []byte, isJSON bool, stats map[st
 	base := filepath.Base(rel)
 	ext := strings.ToLower(filepath.Ext(base))
 	switch {
+	case ext == ".xml" && unit == "intervat":
+		stats["declarations"]++
+		return
 	case ext == ".ics":
 		stats["calendars"]++
 		stats["events"] += bytes.Count(data, []byte("BEGIN:VEVENT"))
@@ -298,6 +301,7 @@ func providerSummary(unit string, stats map[string]int, files int) string {
 		"monerium":  {"accounts", "orders"},
 		"ics":       {"calendars", "events"},
 		"nostr":     {"annotations"},
+		"intervat":  {"declarations"},
 	}
 	keys, ok := order[strings.SplitN(unit, "/", 2)[0]]
 	if !ok {
