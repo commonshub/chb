@@ -171,6 +171,16 @@ func providerCommandSpecs() []providerCommandSpec {
 			Generate: GenerateMembers,
 		},
 		{
+			Name:        "intervat",
+			Description: "Belgian VAT declarations (Intervat XML), imported from the drop folder latest/providers/intervat/.",
+			Commands:    []string{"pull", "generate"},
+			Sync:        pullVATInbox,
+			Generate: func(args []string) error {
+				_, err := generateVAT(DataDir())
+				return err
+			},
+		},
+		{
 			Name:        "nostr",
 			Description: "Nostr annotations and metadata archives.",
 			Commands:    []string{"pull", "generate"},

@@ -244,7 +244,8 @@ USAGE
 Download the declarations from MyMinfin → Intervat as XML (one file per
 filed declaration, e.g. TVA_25092026_12_00_15_STATEMENT_1_69272513.xml)
 and import them. With no argument, import reads the drop folder
-$DATA_DIR/latest/providers/intervat/ and empties it.
+$DATA_DIR/latest/providers/intervat/ and empties it; 'chb pull' (the
+hourly job) does the same, so dropping the files there is enough.
 
 Each file is archived unchanged as YYYY/MM/providers/intervat/<statement>.xml
 (MM = last month of the period). A correction for a period supersedes the
@@ -252,4 +253,45 @@ earlier filing. vat.json is regenerated right away (and by chb generate):
 latest/vat.json has every period, YYYY/vat.json that year's. Both are
 public; the filer's email and phone stay in the raw archive.
 `)
+}
+
+// pullVATInbox is the intervat provider's pull step (part of `chb pull`,
+// hence of the hourly cron): it archives whatever sits in the drop folder,
+// quietly. There is no remote to fetch from.
+func pullVATInbox(args []string) (string, error) {
+	dataDir := DataDir()
+	files, err := collectVATFiles([]string{vatInboxDir(dataDir)})
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "drop folder empty", nil
+	}
+	imported, failed := 0, 0
+	var firstErr error
+	for _, src := range files {
+		r := importVATFile(dataDir, src, false, false)
+		if r.err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", filepath.Base(src), r.err)
+			}
+			Warnf("⚠ VAT import %s: %v", filepath.Base(src), r.err)
+			continue
+		}
+		if r.status == "imported" {
+			imported++
+		}
+		os.Remove(src)
+	}
+	if imported > 0 {
+		if _, err := generateVAT(dataDir); err != nil {
+			return "", err
+		}
+	}
+	summary := Pluralize(imported, "new declaration", "")
+	if failed > 0 {
+		summary += fmt.Sprintf(", %d refused", failed)
+	}
+	return summary, firstErr
 }

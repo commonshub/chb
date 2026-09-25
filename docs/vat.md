@@ -22,6 +22,11 @@ There is no API, so this is a manual import, like the KBC statements.
    ```
 
    With no argument the command reads that drop folder and empties it.
+   `chb pull` does the same as its `intervat` step, so on prod it is
+   enough to copy the files into
+   `/data/commonshub/prod/latest/providers/intervat/`: the next hourly run
+   archives them and republishes `vat.json`. A file that cannot be
+   imported stays in the folder and is reported as a warning.
 3. Check what is archived: `chb vat` (or `chb vat --json`).
 
 Importing is idempotent: the same file again is reported as already

@@ -113,3 +113,31 @@ func TestVATImportDropFolderIsEmptied(t *testing.T) {
 		t.Error("drop-folder file not archived under 2026/03")
 	}
 }
+
+func TestPullVATInboxIsPartOfPull(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	if _, ok := providerSpec("intervat"); !ok {
+		t.Fatal("intervat must be a provider so chb pull (the hourly cron) imports the drop folder")
+	}
+	if s, err := pullVATInbox(nil); err != nil || s != "drop folder empty" {
+		t.Errorf("empty inbox: %q %v", s, err)
+	}
+	inbox := vatInboxDir(dataDir)
+	os.MkdirAll(inbox, 0o755)
+	os.WriteFile(filepath.Join(inbox, "TVA_1_STATEMENT_1_42.xml"), []byte(vatXML("3", "2024", "", `<Amount GridNumber="72">5.00</Amount><Amount GridNumber="59">5.00</Amount>`)), 0o644)
+	os.WriteFile(filepath.Join(inbox, "junk.xml"), []byte(`<foo/>`), 0o644)
+	s, err := pullVATInbox(nil)
+	if err == nil || !strings.Contains(s, "1 new declaration") || !strings.Contains(s, "1 refused") {
+		t.Errorf("summary %q err %v", s, err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "2024", "09", "providers", "intervat", "42.xml")); err != nil {
+		t.Error("declaration not archived")
+	}
+	if _, err := os.Stat(filepath.Join(inbox, "junk.xml")); err != nil {
+		t.Error("a refused file stays in the drop folder for a human to look at")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "latest", vatFile)); err != nil {
+		t.Error("vat.json not regenerated")
+	}
+}
