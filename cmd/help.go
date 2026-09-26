@@ -32,6 +32,7 @@ func PrintHelp(version string) {
   %ssearch%s              Spotlight search across txs, invoices & bills (-i for TUI)
   %scontacts%s            Look up a contact + its invoices, bills & transactions
   %snostr pull/push%s     Fetch/publish Nostr annotations
+  %smobilizon pull/push%s Publish public Luma events to Mobilizon
   %sinvoices pull%s       Fetch outgoing invoices from Odoo
   %sbills pull%s          Fetch vendor bills from Odoo
   %sattachments pull%s    Download invoice and bill attachments from Odoo
@@ -97,9 +98,9 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset, // chb in usage
 		f.Bold, f.Reset, // COMMANDS
-		// 32 command rows (events, calendars, calendars pull, events stats,
+		// 33 command rows (events, calendars, calendars pull, events stats,
 		// rooms, bookings, bookings stats, transactions pull, transactions stats,
-		// search, contacts, nostr pull/push, invoices pull, bills pull, attachments
+		// search, contacts, nostr pull/push, mobilizon pull/push, invoices pull, bills pull, attachments
 		// pull, messages pull, messages stats, images pull, providers, pull,
 		// generate, push, sync, members pull, report, income, expenses,
 		// status, stats, clean, doctor, tools)
@@ -110,6 +111,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, // search + contacts (31st, 32nd rows)
+		f.Cyan, f.Reset, // mobilizon pull/push
 		f.Bold, f.Reset, // OPTIONS
 		// 8 options rows
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,
@@ -157,7 +159,7 @@ func PrintProvidersHelp() {
   %schb providers * generate%s
 
 %sNote%s
-  %sProviders are pull-only sources. Push to targets via: chb odoo journals push / chb nostr push.
+  %sProviders are pull-only sources. Push to targets via: chb odoo journals push / chb nostr push / chb mobilizon push.
   Or run the full loop in one shot: chb sync (= chb pull && chb push).%s
 `,
 		f.Bold, f.Reset,

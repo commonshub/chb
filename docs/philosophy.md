@@ -117,7 +117,8 @@ Providers split into two roles:
 
 - **Sources** (pull-only): Stripe, KBC, Etherscan, Monerium, ICS, Discord.
   We read their state into `providers/<source>/`; we never push back.
-- **Targets** (pull + push, with pending changes): Odoo, Nostr. We pull
+- **Targets** (pull + push, with pending changes): Odoo, Nostr, Mobilizon
+  (see [mobilizon.md](mobilizon.md)). We pull
   current state into `providers/<target>/`, accumulate changes to push as
   `providers/<target>/pending/<YYYY-MM>.json`, then `chb <target> push`
   publishes them and clears the pending entries.
