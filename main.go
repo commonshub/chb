@@ -236,6 +236,10 @@ func main() {
 			if err := cmd.MovePushCommandBills(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "pending":
+			if err := cmd.BillsPending(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		case "publish":
 			exitWithUsage("%s`chb bills publish` was removed. Use `chb nostr sync bills`.%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
 		default:
@@ -488,6 +492,12 @@ func main() {
 		}
 	case "accounts":
 		cmd.AccountsCommand(args[1:])
+	case "vat":
+		// `chb vat [import …]` — Belgian VAT declarations (Intervat XML
+		// exports), a manual import like the KBC statements.
+		if err := cmd.VATCommand(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "wise":
 		// `chb wise sync [slug] [--apply]` — import Wise statement CSVs into
 		// their linked Odoo journals (the CSV-only analogue of kbcbrussels).
@@ -522,6 +532,10 @@ func main() {
 		}
 	case "doctor":
 		if err := cmd.Doctor(args[1:]); err != nil {
+			exitWithError(err)
+		}
+	case "integrity":
+		if err := cmd.Integrity(args[1:]); err != nil {
 			exitWithError(err)
 		}
 	case "tools":

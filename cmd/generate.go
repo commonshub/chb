@@ -951,6 +951,42 @@ func Generate(args []string) error {
 		return fmt.Sprintf("%d collective row%s", n, plural(n))
 	})
 
+	// Vendor bills → YYYY/MM/<tier>/bills.json + latest/<tier>/pending-bills.json
+	// (cmd/bills_generate.go).
+	genStep("Bills", func() string {
+		months, pending := generateBills(dataDir, "")
+		if months == 0 {
+			return "no bill cache (chb bills pull)"
+		}
+		return fmt.Sprintf("%s, %s", Pluralize(months, "month", ""), Pluralize(pending, "pending bill", ""))
+	})
+
+	// Belgian VAT declarations → public vat.json — see cmd/vat_generate.go.
+	genStep("VAT declarations", func() string {
+		n, err := generateVAT(dataDir)
+		if err != nil {
+			Warnf("⚠ VAT declarations: %v", err)
+			return "failed"
+		}
+		if n == 0 {
+			return "none archived"
+		}
+		return Pluralize(n, "period", "") + " → latest/vat.json"
+	})
+
+	// Content hashes of the raw archives for every completed month that
+	// has none yet (or whose providers changed since) — see cmd/integrity.go.
+	genStep("Integrity", func() string {
+		n, err := generateIntegrity(dataDir, "", force)
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		if n == 0 {
+			return "up to date"
+		}
+		return Pluralize(n, "month hashed", "months hashed")
+	})
+
 	// Stamp cursors for the months we just regenerated so subsequent
 	// runs can skip them when no source file moved.
 	for _, s := range scopes {
@@ -3750,6 +3786,10 @@ They are derived from raw synced data and can be regenerated at any time.
 | members.json | Membership snapshot (Stripe + Odoo) |
 | door.json | Door openings per member (distinct days, from the #door Discord channel) |
 | images.json | Images extracted from Discord messages |
+
+Outside the tiers, once per month: YYYY/MM/hashes.json — per-provider content
+hashes + counts and the month hash (public; compare across instances); the
+index of every completed month is latest/hashes.json.
 `
 	writeTiersSame(dataDir, "latest", "", "README.md", []byte(readme))
 }

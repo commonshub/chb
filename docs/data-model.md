@@ -43,13 +43,16 @@ $DATA_DIR/
 │   ├── stewards/                        # 0700 — chb's own working tree (full data, incl. PII)
 │   └── generated/                       # legacy copy of the pre-tier public tree, for consumers
 │                                        #   not yet on a tier; no private/ anymore; CHB_LEGACY_GENERATED=0 stops it
+├── YYYY/MM/hashes.json                  # public: content hashes of the month's raw archives
+├── YYYY/vat.json                        # public: that year's VAT declarations (docs/vat.md)
 └── latest/
+    ├── hashes.json, vat.json            # public: index of every month / every VAT period
     ├── {public,members,stewards}/       # the most recent month per audience, mirrored
     │   └── stewards/cache/              # chb caches (wallet resolution, OG images)
     └── generated/                       # legacy mirror
 ```
 
-Audiences: `public/`, `members/`, `stewards/` are three levels of trust;
+Audiences: `public/`, `members/`, `stewards/` are three levels of trust ([website.md](website.md) is the consumer-facing reference);
 [audiences.md](audiences.md) defines what each may contain, how the policy is
 enforced at write time and on disk, and the migration from `generated/`.
 
@@ -62,6 +65,7 @@ Examples:
 - `providers/etherscan/gnosis/<slug>.<symbol>.json` — Etherscan-format transfers per (chain, account, token).
 - `providers/ics/<slug>.ics` — raw ICS feed bytes.
 - `providers/odoo/<entity>.json` — Odoo journal/move/partner caches.
+- `providers/intervat/<statementId>.xml` — a filed VAT declaration, imported by hand with `chb vat import`, archived under the last month of its period ([vat.md](vat.md)).
 
 ### `providers/<target>/pending/`
 

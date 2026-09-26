@@ -46,6 +46,8 @@ func PrintHelp(version string) {
   %ssync%s                Full cron loop: chb pull && chb push
   %smembers pull%s        Fetch membership data from Stripe/Odoo
   %sreport%s <date-range>  Generate monthly/yearly report
+  %svat import%s <files>  Archive Belgian VAT declarations (Intervat XML exports)
+  %sintegrity%s           Content hashes of the raw archives per month (public)
   %sincome%s <date-range>  Income by category for a date range
   %sexpenses%s <date-range>  Expenses by category for a date range
   %sstatus%s              Show version, data dirs, and last sync at a glance
@@ -98,11 +100,12 @@ func PrintHelp(version string) {
 		f.Bold, f.Reset, // USAGE
 		f.Cyan, f.Reset, // chb in usage
 		f.Bold, f.Reset, // COMMANDS
-		// 33 command rows (events, calendars, calendars pull, events stats,
+		// 35 command rows (events, calendars, calendars pull, events stats,
 		// rooms, bookings, bookings stats, transactions pull, transactions stats,
 		// search, contacts, nostr pull/push, mobilizon pull/push, invoices pull, bills pull, attachments
 		// pull, messages pull, messages stats, images pull, providers, pull,
-		// generate, push, sync, members pull, report, income, expenses,
+		// generate, push, sync, members pull, report, vat import, integrity,
+		// income, expenses,
 		// status, stats, clean, doctor, tools)
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
@@ -112,6 +115,7 @@ func PrintHelp(version string) {
 		f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset, f.Cyan, f.Reset,
 		f.Cyan, f.Reset, f.Cyan, f.Reset, // search + contacts (31st, 32nd rows)
 		f.Cyan, f.Reset, // mobilizon pull/push
+		f.Cyan, f.Reset, f.Cyan, f.Reset, // vat import + integrity
 		f.Bold, f.Reset, // OPTIONS
 		// 8 options rows
 		f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset, f.Yellow, f.Reset,

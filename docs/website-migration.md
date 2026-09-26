@@ -1,7 +1,9 @@
 # Website: reading the audience tiers
 
 Hand this to whoever adapts `commonshub.brussels` (the Next.js site). It is
-self-contained; the design is in [audiences.md](audiences.md).
+self-contained; the design is in [audiences.md](audiences.md) and the durable
+consumer reference (files, audiences, publishing rules, integrity manifests)
+is [website.md](website.md).
 
 ## What changed in the dataset
 

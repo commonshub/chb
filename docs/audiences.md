@@ -1,5 +1,7 @@
 # Audiences — three levels of trust for processed data
 
+Consumer reference (what to read, what to publish, for whom): [website.md](website.md).
+
 `chb` produces data for three audiences. Each is a directory; each directory
 is a complete, self-contained dataset for that audience, with the same file
 names as the others but less in them. A consumer is handed one directory and
@@ -57,6 +59,7 @@ in that tier; "= members" means the same projection as the tier below.
 |---|---|---|---|
 | `transactions.json` | amounts, categories, collectives, canonical ids, plain `description`; no counterparty, no `memo`/`fullDescription`/`reference`/`balance`/`custom_*`/`name` | + counterparty names, memo, bank narration, reference | + IBAN, email, BIC, Stripe customer/charge ids, tx hashes (replaces `generated/private/enrichment.json`) |
 | `door.json` | counts only: openers, open days, token opens, total opens | who (id, username, name, avatar), days, opens, via | + exact dates |
+| `bills.json`, `pending-bills.json` | amounts, dates, status, category; business vendors (company or VAT-registered) by name, VAT number, invoice number and line descriptions; private individuals anonymous | + individuals' names, references and line descriptions | + vendor contact details, bank account, payments, attachments, Odoo links ([bills.md](bills.md)) |
 | `events.json` | today's `LatestEvent` projection for every month: no `guests`, `lumaData`, `metadata.host`, `ticketSales` | + host, ticket sales, attendance, income metadata | + guest lists, raw `lumaData` |
 | `events.csv` (yearly) | without Host | = full | = full |
 | `calendars/public.ics` | booking titles only if they carry no person (room + activity) | = today's file | = today's file |

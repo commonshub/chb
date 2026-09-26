@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -98,6 +99,22 @@ func BillsSync(args []string) (int, error) {
 		return 0, err
 	}
 
+	// Open bills from any month: the date window above never revisits an
+	// old unpaid bill, so without this it would stay "pending" forever
+	// after being paid (see cmd/bills_generate.go, pending-bills.json).
+	openRefresh, err := refreshOpenBills(creds, uid, DataDir(), rawBills)
+	if err != nil {
+		Warnf("%s⚠ open bills refresh: %v%s", Fmt.Yellow, err, Fmt.Reset)
+	}
+	refreshedIDs := map[int]bool{}
+	for _, raw := range openRefresh {
+		refreshedIDs[odooInt(raw["id"])] = true
+	}
+	if len(openRefresh) > 0 {
+		odooLog("  %sRefreshing %s whose payment state changed%s\n", Fmt.Dim, Pluralize(len(openRefresh), "open bill", ""), Fmt.Reset)
+	}
+	rawBills = append(rawBills, openRefresh...)
+
 	if incremental && len(rawBills) == 0 {
 		if quietOdooContext() {
 			odooSyncLine("bills", odooItemSyncStatus(countCachedOdooDocs(cachedByMonth), "bill", "already in sync"))
@@ -124,10 +141,25 @@ func BillsSync(args []string) (int, error) {
 		}
 	}
 
+	outsideWindow := map[string]bool{}
 	for _, bill := range enriched {
 		ym := invoiceYearMonth(bill)
-		if ym == "" || ym < startMonth || ym > endMonth {
+		if ym == "" {
 			continue
+		}
+		if ym < startMonth || ym > endMonth {
+			if !refreshedIDs[bill.ID] {
+				continue
+			}
+			// A refreshed open bill from an older month: rewrite that
+			// month from its cache plus this bill, never from this bill alone.
+			if byMonth[ym] == nil {
+				byMonth[ym] = map[int]OdooOutgoingInvoice{}
+				for _, cached := range loadCachedBillMonth(DataDir(), ym[:4], ym[5:]) {
+					byMonth[ym][cached.ID] = cached
+				}
+			}
+			outsideWindow[ym] = true
 		}
 		if byMonth[ym] == nil {
 			byMonth[ym] = map[int]OdooOutgoingInvoice{}
@@ -145,8 +177,12 @@ func BillsSync(args []string) (int, error) {
 		for ym := range monthsTouched {
 			monthsToWrite = append(monthsToWrite, ym)
 		}
-		sort.Strings(monthsToWrite)
+	} else {
+		for ym := range outsideWindow {
+			monthsToWrite = append(monthsToWrite, ym)
+		}
 	}
+	sort.Strings(monthsToWrite)
 
 	savedBills := 0
 	for _, ym := range monthsToWrite {
@@ -238,16 +274,101 @@ func fetchVendorBillsFromOdoo(creds *OdooCredentials, uid int, startDate, endDat
 		domain = append(domain, []interface{}{"write_date", ">=", lastSyncTime.UTC().Format("2006-01-02 15:04:05")})
 	}
 
-	fields := []string{
-		"id", "name", "ref", "move_type", "state", "payment_state",
-		"invoice_date", "date", "invoice_date_due", "payment_reference",
-		"amount_untaxed", "amount_tax", "amount_total", "amount_residual", "amount_total_signed",
-		"currency_id", "partner_id", "commercial_partner_id", "partner_bank_id", "journal_id",
-		"invoice_origin", "narration", "invoice_line_ids",
-		"write_date", "create_date", "invoice_payments_widget",
-	}
+	return odooSearchReadAllMaps(creds, uid, "account.move", domain, vendorBillFields, "date desc, id desc")
+}
 
-	return odooSearchReadAllMaps(creds, uid, "account.move", domain, fields, "date desc, id desc")
+var vendorBillFields = []string{
+	"id", "name", "ref", "move_type", "state", "payment_state",
+	"invoice_date", "date", "invoice_date_due", "payment_reference",
+	"amount_untaxed", "amount_tax", "amount_total", "amount_residual", "amount_total_signed",
+	"currency_id", "partner_id", "commercial_partner_id", "partner_bank_id", "journal_id",
+	"invoice_origin", "narration", "invoice_line_ids",
+	"write_date", "create_date", "invoice_payments_widget",
+}
+
+// billIsOpen: a posted bill with money still to move. in_payment (payment
+// registered, bank line not reconciled yet) counts as open for refreshing,
+// not for the pending list.
+func billIsOpen(state, paymentState string) bool {
+	if state != "posted" {
+		return false
+	}
+	switch paymentState {
+	case "not_paid", "partial", "in_payment":
+		return true
+	}
+	return false
+}
+
+// loadAllCachedBills reads every month's bill cache of the current Odoo
+// database namespace, keyed by bill id.
+func loadAllCachedBills(dataDir string) map[int]OdooOutgoingInvoice {
+	out := map[int]OdooOutgoingInvoice{}
+	pattern := filepath.Join(dataDir, "[0-9][0-9][0-9][0-9]", "[0-9][0-9]", odoosource.RelPath(odoosource.BillsFile))
+	paths, _ := filepath.Glob(pattern)
+	for _, p := range paths {
+		rel, err := filepath.Rel(dataDir, p)
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		for _, b := range loadCachedBillMonth(dataDir, parts[0], parts[1]) {
+			out[b.ID] = b
+		}
+	}
+	return out
+}
+
+// refreshOpenBills returns the full records of bills, from any month, that
+// are open in Odoo or open in our cache and whose state moved since we
+// cached them. One light query finds candidates; only changed ones are
+// fetched in full. Bills already in `already` are skipped.
+func refreshOpenBills(creds *OdooCredentials, uid int, dataDir string, already []map[string]interface{}) ([]map[string]interface{}, error) {
+	cached := loadAllCachedBills(dataDir)
+	var cachedOpen []interface{}
+	for id, b := range cached {
+		if billIsOpen(b.State, b.PaymentState) {
+			cachedOpen = append(cachedOpen, id)
+		}
+	}
+	openClause := []interface{}{"&",
+		[]interface{}{"state", "=", "posted"},
+		[]interface{}{"payment_state", "in", []interface{}{"not_paid", "partial", "in_payment"}},
+	}
+	domain := []interface{}{[]interface{}{"move_type", "in", []interface{}{"in_invoice", "in_refund"}}}
+	if len(cachedOpen) > 0 {
+		domain = append(domain, "|")
+		domain = append(domain, openClause...)
+		domain = append(domain, []interface{}{"id", "in", cachedOpen})
+	} else {
+		domain = append(domain, openClause...)
+	}
+	lite, err := odooSearchReadAllMaps(creds, uid, "account.move", domain,
+		[]string{"id", "state", "payment_state", "write_date"}, "id")
+	if err != nil {
+		return nil, err
+	}
+	skip := map[int]bool{}
+	for _, raw := range already {
+		skip[odooInt(raw["id"])] = true
+	}
+	var need []interface{}
+	for _, l := range lite {
+		id := odooInt(l["id"])
+		if id == 0 || skip[id] {
+			continue
+		}
+		c, ok := cached[id]
+		if !ok || c.State != odooString(l["state"]) || c.PaymentState != odooString(l["payment_state"]) ||
+			(c.WriteDate != "" && c.WriteDate != odooString(l["write_date"])) {
+			need = append(need, id)
+		}
+	}
+	if len(need) == 0 {
+		return nil, nil
+	}
+	return odooSearchReadAllMaps(creds, uid, "account.move",
+		[]interface{}{[]interface{}{"id", "in", need}}, vendorBillFields, "id")
 }
 
 func loadCachedBillMonths(dataDir, startMonth, endMonth string) map[string]map[int]OdooOutgoingInvoice {
