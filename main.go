@@ -450,6 +450,10 @@ func main() {
 				cmd.PrintOdooHelp()
 			}
 		}
+	case "mobilizon":
+		if err := cmd.Mobilizon(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "nostr":
 		if len(args) <= 1 {
 			exitWithUsage("%sUsage: chb nostr <pull|push|pending|sync> [scope] [options]%s", cmd.Fmt.Yellow, cmd.Fmt.Reset)
