@@ -248,9 +248,9 @@ type EventInput struct {
 	Status                   string // CONFIRMED or CANCELLED
 	// Timezone the event is shown in (e.g. Europe/Brussels). Mobilizon
 	// falls back to UTC, not to the address's time zone.
-	Timezone string
-	OrganizerActorID         string
-	AttributedToID           string
+	Timezone         string
+	OrganizerActorID string
+	AttributedToID   string
 	// Draft is nil to leave the draft state alone, true to keep the event
 	// a draft, false to publish it.
 	Draft *bool
