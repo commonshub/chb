@@ -246,6 +246,9 @@ type EventInput struct {
 	Tags                     []string
 	PictureMediaUUID         string
 	Status                   string // CONFIRMED or CANCELLED
+	// Timezone the event is shown in (e.g. Europe/Brussels). Mobilizon
+	// falls back to UTC, not to the address's time zone.
+	Timezone string
 	OrganizerActorID         string
 	AttributedToID           string
 	// Draft is nil to leave the draft state alone, true to keep the event
@@ -277,6 +280,9 @@ func (in EventInput) variables() map[string]interface{} {
 	if in.Address != nil {
 		v["physicalAddress"] = in.Address
 	}
+	if in.Timezone != "" {
+		v["options"] = map[string]string{"timezone": in.Timezone}
+	}
 	if in.PictureMediaUUID != "" {
 		v["picture"] = map[string]string{"mediaUuid": in.PictureMediaUUID}
 	}
@@ -285,13 +291,14 @@ func (in EventInput) variables() map[string]interface{} {
 
 const eventVarDefs = `$title: String, $description: String, $beginsOn: DateTime, $endsOn: DateTime,
 	$organizerActorId: ID, $attributedToId: ID, $externalParticipationUrl: String, $tags: [String],
-	$physicalAddress: AddressInput, $picture: MediaInput, $draft: Boolean, $status: EventStatus`
+	$physicalAddress: AddressInput, $picture: MediaInput, $draft: Boolean, $status: EventStatus,
+	$options: EventOptionsInput`
 
 const eventArgs = `title: $title, description: $description, beginsOn: $beginsOn, endsOn: $endsOn,
 	organizerActorId: $organizerActorId, attributedToId: $attributedToId,
 	externalParticipationUrl: $externalParticipationUrl, joinOptions: EXTERNAL,
 	tags: $tags, physicalAddress: $physicalAddress, picture: $picture,
-	draft: $draft, status: $status, visibility: PUBLIC`
+	draft: $draft, status: $status, options: $options, visibility: PUBLIC`
 
 // CreateEvent creates an event and returns it.
 func (c *Client) CreateEvent(in EventInput) (*Event, error) {

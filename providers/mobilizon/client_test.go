@@ -62,7 +62,7 @@ func TestLoginThenAuthorizedCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	draft := true
-	ev, err := c.CreateEvent(EventInput{Title: "T", Description: "<p>D</p>", BeginsOn: "2026-10-02T10:00:00Z", OrganizerActorID: "1", AttributedToID: "2", Draft: &draft})
+	ev, err := c.CreateEvent(EventInput{Title: "T", Description: "<p>D</p>", BeginsOn: "2026-10-02T10:00:00Z", OrganizerActorID: "1", AttributedToID: "2", Draft: &draft, Timezone: "Europe/Brussels"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +78,9 @@ func TestLoginThenAuthorizedCreate(t *testing.T) {
 	}
 	if create.variables["draft"] != true || create.variables["attributedToId"] != "2" {
 		t.Errorf("variables = %v", create.variables)
+	}
+	if opts, _ := create.variables["options"].(map[string]interface{}); opts["timezone"] != "Europe/Brussels" {
+		t.Errorf("options = %v, want the event's time zone", create.variables["options"])
 	}
 	if _, ok := create.variables["endsOn"]; ok {
 		t.Error("empty endsOn should be left out")

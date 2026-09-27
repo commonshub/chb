@@ -175,12 +175,13 @@ func clip(s string, n int) string {
 func applyMobilizonAction(client *mobilizon.Client, a MobilizonAction, pub MobilizonPublished, actorID, groupID string, draft bool, sl *StatusLine) (MobilizonPublished, error) {
 	switch a.Action {
 	case "cancel":
-		_, err := client.UpdateEvent(a.MobilizonID, mobilizon.EventInput{Status: "CANCELLED"})
+		// Every update resends the picture: one without it removes the cover.
+		_, err := client.UpdateEvent(a.MobilizonID, mobilizon.EventInput{Status: "CANCELLED", PictureMediaUUID: pub.PictureUUID})
 		pub.Cancelled = true
 		return pub, err
 	case "publish":
 		published := false
-		_, err := client.UpdateEvent(a.MobilizonID, mobilizon.EventInput{Draft: &published})
+		_, err := client.UpdateEvent(a.MobilizonID, mobilizon.EventInput{Draft: &published, PictureMediaUUID: pub.PictureUUID})
 		pub.Draft = false
 		return pub, err
 	}
@@ -194,6 +195,7 @@ func applyMobilizonAction(client *mobilizon.Client, a MobilizonAction, pub Mobil
 		ExternalParticipationURL: a.Key,
 		Tags:                     a.Tags,
 		Status:                   "CONFIRMED",
+		Timezone:                 "Europe/Brussels",
 		OrganizerActorID:         actorID,
 		AttributedToID:           groupID,
 	}
