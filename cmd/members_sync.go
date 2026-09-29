@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -477,14 +478,15 @@ func mergeProviderSnapshots(snapshots []providerSnapshot) []Member {
 		result = append(result, m)
 	}
 
-	// Sort by createdAt
-	for i := range result {
-		for j := i + 1; j < len(result); j++ {
-			if result[i].CreatedAt > result[j].CreatedAt {
-				result[i], result[j] = result[j], result[i]
-			}
+	// Sort by createdAt, then id: map order must not leak into the file
+	// (members sharing a creation day would swap between runs and move the
+	// tier hashes in hashes.json).
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt != result[j].CreatedAt {
+			return result[i].CreatedAt < result[j].CreatedAt
 		}
-	}
+		return result[i].ID < result[j].ID
+	})
 
 	return result
 }

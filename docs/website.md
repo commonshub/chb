@@ -100,19 +100,30 @@ page belongs in steward tooling, not on the website.
 
 ## 4. Integrity manifests — publish them
 
-`YYYY/MM/hashes.json` describes the raw archives of a completed month
-without revealing them. It sits once at the month root, not in each tier —
-the tiers separate what people may read, and a hash is the same for
-everyone (the file and the month directory are world-readable): one entry per provider (Odoo per database
-namespace) with counts, size and a sha256 hash, plus the month hash. Two
-`chb` instances holding the same raw data produce the same hashes (JSON is
-canonicalised — sorted keys, fetch timestamps dropped — before hashing, the
-per-instance Odoo outbox is excluded). `latest/hashes.json` lists every
-month's hash.
+`YYYY/MM/hashes.json` describes a completed month without revealing it. It
+sits once at the month root, not in each tier: a hash is the same for
+everyone, and the file and the month directory are world-readable.
+
+It holds three kinds of hash:
+
+- **Raw data**: one entry per provider archive (Odoo per database
+  namespace) with counts, size and a sha256 hash, and the month `hash` over
+  those entries. Two `chb` instances holding the same raw data produce the
+  same hashes, whatever `chb` version they run: JSON is canonicalised
+  (sorted keys, fetch timestamps dropped) and the per-instance Odoo outbox
+  is excluded.
+- **Processed data**: `tiers.public` and `tiers.members` hash the month's
+  `public/` and `members/` trees, canonicalised the same way. They match
+  across instances only when the raw data, the `chb` version **and** the
+  settings match (the categorisation rules include the private
+  `rules.local.json`). `stewards/` is never hashed.
+- **`chb`**: the version and commit of the binary that wrote the manifest.
+  Compare tier hashes only between instances on the same version.
 
 ```json
 {
   "month": "2026-08", "algorithm": "sha256/canonical-json-v1",
+  "chb": { "version": "3.15.0", "commit": "0c1d2e3f…" },
   "providers": 7, "files": 41, "bytes": 14707712,
   "hash": "f2a14a51d689a940…",
   "entries": [
@@ -121,9 +132,18 @@ month's hash.
       "files": 4, "bytes": 812345, "hash": "597d674a44c782a7…" },
     { "provider": "discord", "summary": "8 channels, 766 messages, 4 attachments", "…": "…" },
     { "provider": "odoo/commonshub", "summary": "8 journals, 6,936 lines, 13 invoices, 7 bills, 4,246 partners", "…": "…" }
-  ]
+  ],
+  "tiers": {
+    "public":  { "files": 10, "bytes": 263168, "hash": "66782f20a3e41700…" },
+    "members": { "files": 10, "bytes": 282624, "hash": "6391c3825bacb48d…" }
+  }
 }
 ```
+
+`latest/hashes.json` is the index: `chb`, one row per completed month
+(`month`, `providers`, `files`, `bytes`, `hash`, `tiers` as tier → hash),
+and a top-level `hash` over every month's raw-data hash. That single value
+answers "do we hold the same dataset?". Any month changing changes it.
 
 Suggested rendering (one line per month, expandable):
 
@@ -132,6 +152,8 @@ Suggested rendering (one line per month, expandable):
    stripe            115 transactions, 70 charges, 9 customers, 3 products   597d674a…
    discord           8 channels, 766 messages, 4 attachments                110cdbd3…
    odoo/commonshub   8 journals, 6,936 lines, 13 invoices, 7 bills           7ec74325…
+   public/           10 files, 257 KB                                       66782f20…
+   members/          10 files, 276 KB                                       6391c382…
 ```
 
 Another instance checks itself with `chb integrity 2026/08 --json` and
@@ -139,7 +161,19 @@ compares hashes provider by provider; only compare the provider entries both
 instances track (a mirror of an extra Odoo test database adds an entry and
 changes the month hash, but not the production entry). Manifests are
 written by `chb generate` for every completed month that has none yet or
-whose providers changed since, and by `chb integrity [--force]`.
+whose providers or tier files changed since, and by `chb integrity
+[--force]`. A manifest is rewritten only when a hash or the `chb` version
+changes, so its `generatedAt` is when the data last changed.
+
+**Why the months are not chained.** Past months are not frozen: a bill paid
+today rewrites the Odoo archive of the month it was issued, a late import
+(a VAT declaration, a bank statement) or a new provider adds files to old
+months. With each month's hash including the previous one, any such change
+would change every later month and the chain would say nothing useful. The
+index `hash` gives the one-value comparison without claiming immutability.
+To prove *when* the data looked like this, publish the index `hash`
+somewhere append-only and timestamped (for example a signed Nostr event
+per day) rather than chaining the months themselves.
 
 ## 5. VAT declarations — publish them
 

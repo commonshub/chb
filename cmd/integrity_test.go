@@ -180,3 +180,66 @@ func TestGenerateIntegrityRemovesLegacyPerTierCopies(t *testing.T) {
 		}
 	}
 }
+
+func TestIntegrityTiersChbAndRootHash(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("DATA_DIR", dataDir)
+	oldV, oldC := Version, CommitSHA
+	Version, CommitSHA = "9.9.9", "abc123"
+	defer func() { Version, CommitSHA = oldV, oldC }()
+
+	seedMonth(t, dataDir, "2024", "03", "2024-04-01T00:00:00Z", "k")
+	pub := filepath.Join(dataDir, "2024", "03", "public", "summary.json")
+	writeFile(t, pub, `{"generatedAt":"2024-04-01T00:00:00Z","total":10}`)
+	writeFile(t, filepath.Join(dataDir, "2024", "03", "members", "summary.json"), `{"generatedAt":"x","total":10,"names":["a"]}`)
+	writeFile(t, filepath.Join(dataDir, "2024", "03", "stewards", "summary.json"), `{"secret":true}`)
+
+	if _, err := generateIntegrity(dataDir, "", false); err != nil {
+		t.Fatal(err)
+	}
+	mf, ok := readMonthIntegrity(dataDir, "2024-03")
+	if !ok {
+		t.Fatal("manifest missing")
+	}
+	if mf.Chb.Version != "9.9.9" || mf.Chb.Commit != "abc123" {
+		t.Errorf("chb = %+v", mf.Chb)
+	}
+	if mf.Tiers["public"].Files != 1 || mf.Tiers["members"].Hash == "" || mf.Tiers["public"].Hash == mf.Tiers["members"].Hash {
+		t.Errorf("tiers = %+v", mf.Tiers)
+	}
+	if _, ok := mf.Tiers["stewards"]; ok {
+		t.Error("stewards/ is never hashed into a public manifest")
+	}
+	var idx IntegrityIndexFile
+	raw, _ := os.ReadFile(filepath.Join(dataDir, "latest", integrityFile))
+	json.Unmarshal(raw, &idx)
+	if idx.Hash == "" || idx.Hash != indexRootHash(idx.Months) || idx.Months[0].Tiers["public"] != mf.Tiers["public"].Hash || idx.Chb.Version != "9.9.9" {
+		t.Errorf("index = %s", raw)
+	}
+
+	// generate rewrites a tier file with a new timestamp only: the month is
+	// re-checked but its manifest (and generatedAt) stays as it was.
+	before, _ := os.ReadFile(integrityPath(dataDir, "2024", "03"))
+	later := timeNowPlus(5)
+	writeFile(t, pub, `{"generatedAt":"2026-01-01T00:00:00Z","total":10}`)
+	os.Chtimes(pub, later, later)
+	if n, _ := generateIntegrity(dataDir, "", false); n != 0 {
+		t.Errorf("unchanged content counted as %d rehashed months", n)
+	}
+	after, _ := os.ReadFile(integrityPath(dataDir, "2024", "03"))
+	if string(before) != string(after) {
+		t.Error("manifest rewritten although no hash changed")
+	}
+
+	// Real change in a public file: new tier hash, same raw-data hash.
+	writeFile(t, pub, `{"generatedAt":"2026-01-01T00:00:00Z","total":11}`)
+	later = timeNowPlus(10)
+	os.Chtimes(pub, later, later)
+	if n, _ := generateIntegrity(dataDir, "", false); n != 1 {
+		t.Errorf("changed public data rehashed %d months, want 1", n)
+	}
+	mf2, _ := readMonthIntegrity(dataDir, "2024-03")
+	if mf2.Tiers["public"].Hash == mf.Tiers["public"].Hash || mf2.Hash != mf.Hash {
+		t.Error("a public-only change moves the public hash, not the raw-data hash")
+	}
+}

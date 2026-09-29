@@ -61,26 +61,61 @@ type MonthIntegrityFile struct {
 	Month       string              `json:"month"`
 	GeneratedAt string              `json:"generatedAt"`
 	Algorithm   string              `json:"algorithm"` // "sha256/canonical-json-v1"
+	Chb         ChbBuild            `json:"chb"`       // the chb that wrote this manifest
 	Providers   int                 `json:"providers"`
 	Files       int                 `json:"files"`
 	Bytes       int64               `json:"bytes"`
-	Hash        string              `json:"hash"`
+	Hash        string              `json:"hash"` // raw provider archives only
 	Entries     []ProviderIntegrity `json:"entries"`
+	// Tiers hashes the processed public/ and members/ trees of the month.
+	// They match across instances only when the raw data, the chb version
+	// and the settings (rules) match too.
+	Tiers map[string]TreeIntegrity `json:"tiers,omitempty"`
 }
+
+// ChbBuild identifies the chb binary.
+type ChbBuild struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"`
+}
+
+// TreeIntegrity is the hash of one processed tier directory.
+type TreeIntegrity struct {
+	Files int    `json:"files"`
+	Bytes int64  `json:"bytes"`
+	Hash  string `json:"hash"`
+}
+
+// integrityTiers are the processed trees hashed per month. stewards/ is
+// left out: it is never published.
+var integrityTiers = []Audience{AudiencePublic, AudienceMembers}
 
 // IntegrityIndexFile is latest/hashes.json: every month's hash.
 type IntegrityIndexFile struct {
-	GeneratedAt string                `json:"generatedAt"`
-	Algorithm   string                `json:"algorithm"`
-	Months      []IntegrityIndexEntry `json:"months"`
+	GeneratedAt string   `json:"generatedAt"`
+	Algorithm   string   `json:"algorithm"`
+	Chb         ChbBuild `json:"chb"`
+	// Hash covers every completed month's raw-data hash: one value to
+	// compare a whole dataset. Any month changing changes it.
+	Hash   string                `json:"hash"`
+	Months []IntegrityIndexEntry `json:"months"`
 }
 
 type IntegrityIndexEntry struct {
-	Month     string `json:"month"`
-	Providers int    `json:"providers"`
-	Files     int    `json:"files"`
-	Bytes     int64  `json:"bytes"`
-	Hash      string `json:"hash"`
+	Month     string            `json:"month"`
+	Providers int               `json:"providers"`
+	Files     int               `json:"files"`
+	Bytes     int64             `json:"bytes"`
+	Hash      string            `json:"hash"`
+	Tiers     map[string]string `json:"tiers,omitempty"` // tier → hash
+}
+
+func currentChbBuild() ChbBuild {
+	v := Version
+	if v == "" {
+		v = "dev"
+	}
+	return ChbBuild{Version: v, Commit: CommitSHA}
 }
 
 const integrityAlgorithm = "sha256/canonical-json-v1"
@@ -207,6 +242,46 @@ func hashProviderUnit(providersDir, unit string) (ProviderIntegrity, error) {
 		entry.Stats = nil
 	}
 	return entry, nil
+}
+
+// hashTree hashes every file under root (dot files excluded), JSON
+// canonicalised like the provider archives. A missing root hashes to
+// ok=false.
+func hashTree(root string) (TreeIntegrity, bool, error) {
+	var out TreeIntegrity
+	if _, err := os.Stat(root); err != nil {
+		return out, false, nil
+	}
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		if integrityExcluded(rel) {
+			return nil
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil {
+		return out, false, err
+	}
+	sort.Strings(files)
+	h := sha256.New()
+	for _, rel := range files {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			return out, false, err
+		}
+		out.Files++
+		out.Bytes += int64(len(data))
+		content, _ := canonicalJSON(data)
+		sum := sha256.Sum256(content)
+		fmt.Fprintf(h, "%s\n%s\n", filepath.ToSlash(rel), hex.EncodeToString(sum[:]))
+	}
+	out.Hash = hex.EncodeToString(h.Sum(nil))
+	return out, out.Files > 0, nil
 }
 
 // countProviderStats accumulates what a file contributes to the unit's
@@ -374,7 +449,28 @@ func computeMonthIntegrity(dataDir, year, month string) (MonthIntegrityFile, err
 	}
 	out.Providers = len(out.Entries)
 	out.Hash = hex.EncodeToString(h.Sum(nil))
+	out.Chb = currentChbBuild()
+	for _, a := range integrityTiers {
+		t, ok, err := hashTree(audiencePath(dataDir, year, month, a, ""))
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			if out.Tiers == nil {
+				out.Tiers = map[string]TreeIntegrity{}
+			}
+			out.Tiers[string(a)] = t
+		}
+	}
 	return out, nil
+}
+
+// sameIntegrity compares two manifests ignoring when they were written.
+func sameIntegrity(a, b MonthIntegrityFile) bool {
+	a.GeneratedAt, b.GeneratedAt = "", ""
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	return bytes.Equal(ja, jb)
 }
 
 // integrityIsStale reports whether a month's manifest is missing or older
@@ -386,23 +482,28 @@ func integrityIsStale(dataDir, year, month string) bool {
 		return true
 	}
 	stale := false
-	providersDir := filepath.Join(dataDir, year, month, "providers")
-	_ = filepath.WalkDir(providersDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || stale {
+	roots := []string{filepath.Join(dataDir, year, month, "providers")}
+	for _, a := range integrityTiers {
+		roots = append(roots, audiencePath(dataDir, year, month, a, ""))
+	}
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || stale {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel, _ := filepath.Rel(root, path)
+			if integrityExcluded(rel) {
+				return nil
+			}
+			if fi, err := d.Info(); err == nil && fi.ModTime().After(info.ModTime()) {
+				stale = true
+			}
 			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, _ := filepath.Rel(providersDir, path)
-		if integrityExcluded(rel) {
-			return nil
-		}
-		if fi, err := d.Info(); err == nil && fi.ModTime().After(info.ModTime()) {
-			stale = true
-		}
-		return nil
-	})
+		})
+	}
 	return stale
 }
 
@@ -453,6 +554,14 @@ func generateIntegrity(dataDir string, only string, force bool) (int, error) {
 		if err != nil {
 			return hashed, fmt.Errorf("%s: %w", ym, err)
 		}
+		// generate rewrites processed files with fresh timestamps even
+		// when nothing changed; keep the manifest (and its generatedAt)
+		// when the hashes are the same, and only mark it checked.
+		if prev, ok := readMonthIntegrity(dataDir, ym); ok && !force && sameIntegrity(prev, mf) {
+			now := time.Now()
+			_ = os.Chtimes(integrityPath(dataDir, year, month), now, now)
+			continue
+		}
 		data, err := json.MarshalIndent(mf, "", "  ")
 		if err != nil {
 			return hashed, err
@@ -473,6 +582,7 @@ func rebuildIntegrityIndex(dataDir string) error {
 	index := IntegrityIndexFile{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Algorithm:   integrityAlgorithm,
+		Chb:         currentChbBuild(),
 	}
 	for _, ym := range completedMonths(dataDir) {
 		data, err := os.ReadFile(integrityPath(dataDir, ym[:4], ym[5:]))
@@ -483,18 +593,48 @@ func rebuildIntegrityIndex(dataDir string) error {
 		if json.Unmarshal(data, &mf) != nil {
 			continue
 		}
-		index.Months = append(index.Months, IntegrityIndexEntry{
+		entry := IntegrityIndexEntry{
 			Month: mf.Month, Providers: mf.Providers, Files: mf.Files, Bytes: mf.Bytes, Hash: mf.Hash,
-		})
+		}
+		for tier, t := range mf.Tiers {
+			if entry.Tiers == nil {
+				entry.Tiers = map[string]string{}
+			}
+			entry.Tiers[tier] = t.Hash
+		}
+		index.Months = append(index.Months, entry)
 	}
 	if len(index.Months) == 0 {
 		return nil
+	}
+	index.Hash = indexRootHash(index.Months)
+	// Same as for months: an unchanged index keeps its generatedAt.
+	if prevData, err := os.ReadFile(integrityPath(dataDir, "latest", "")); err == nil {
+		var prev IntegrityIndexFile
+		if json.Unmarshal(prevData, &prev) == nil {
+			cur := index
+			prev.GeneratedAt, cur.GeneratedAt = "", ""
+			a, _ := json.Marshal(prev)
+			b, _ := json.Marshal(cur)
+			if bytes.Equal(a, b) {
+				return nil
+			}
+		}
 	}
 	data, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeDataFile(integrityPath(dataDir, "latest", ""), data)
+}
+
+// indexRootHash is sha256 over "month\nhash\n" for every month, in order.
+func indexRootHash(months []IntegrityIndexEntry) string {
+	h := sha256.New()
+	for _, m := range months {
+		fmt.Fprintf(h, "%s\n%s\n", m.Month, m.Hash)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // removeLegacyIntegrityFiles deletes the integrity.json copies that v3.12.0
@@ -562,6 +702,11 @@ func Integrity(args []string) error {
 			Pluralize(mf.Providers, "provider", ""), formatKB(mf.Bytes), Fmt.Dim, mf.Hash, Fmt.Reset)
 		for _, e := range mf.Entries {
 			fmt.Printf("   %-18s %-48s %s%s%s\n", e.Provider, e.Summary, Fmt.Dim, e.Hash[:16]+"…", Fmt.Reset)
+		}
+		for _, a := range integrityTiers {
+			if t, ok := mf.Tiers[string(a)]; ok {
+				fmt.Printf("   %-18s %-48s %s%s%s\n", string(a)+"/", Pluralize(t.Files, "file", "")+", "+formatKB(t.Bytes), Fmt.Dim, t.Hash[:16]+"…", Fmt.Reset)
+			}
 		}
 	}
 	if hashed > 0 {

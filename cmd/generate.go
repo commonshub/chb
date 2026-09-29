@@ -1392,7 +1392,10 @@ func generateMonthImagesGo(dataDir, year, month string) int {
 
 	// Sort by totalReactions desc
 	sort.Slice(images, func(i, j int) bool {
-		return images[i].TotalReactions > images[j].TotalReactions
+		if images[i].TotalReactions != images[j].TotalReactions {
+			return images[i].TotalReactions > images[j].TotalReactions
+		}
+		return images[i].ID < images[j].ID // stable output: hashes.json tier hashes
 	})
 
 	// De-duplicate by ID
@@ -1807,7 +1810,10 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 
 	// Sort by messages desc
 	sort.Slice(contributors, func(i, j int) bool {
-		return contributors[i].Discord.Messages > contributors[j].Discord.Messages
+		if contributors[i].Discord.Messages != contributors[j].Discord.Messages {
+			return contributors[i].Discord.Messages > contributors[j].Discord.Messages
+		}
+		return contributors[i].ID < contributors[j].ID // stable output
 	})
 
 	// Count images for this month
@@ -2025,7 +2031,10 @@ func generateTopContributorsGo(dataDir string, settings *Settings) {
 		})
 	}
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].ContributionCount > list[j].ContributionCount
+		if list[i].ContributionCount != list[j].ContributionCount {
+			return list[i].ContributionCount > list[j].ContributionCount
+		}
+		return list[i].ID < list[j].ID // stable output (and a stable top 24)
 	})
 	if len(list) > 24 {
 		list = list[:24]
@@ -2264,7 +2273,10 @@ func generateYearlyUsersGo(dataDir, year string, settings *Settings) {
 	}
 
 	sort.Slice(contributors, func(i, j int) bool {
-		return contributors[i].Tokens.In > contributors[j].Tokens.In
+		if contributors[i].Tokens.In != contributors[j].Tokens.In {
+			return contributors[i].Tokens.In > contributors[j].Tokens.In
+		}
+		return contributors[i].ID < contributors[j].ID // stable output
 	})
 
 	summary := YearlyUsersSummary{TotalContributors: len(contributors)}
@@ -3150,7 +3162,10 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 
 	// Sort by timestamp
 	sort.Slice(transactions, func(i, j int) bool {
-		return transactions[i].Timestamp < transactions[j].Timestamp
+		if transactions[i].Timestamp != transactions[j].Timestamp {
+			return transactions[i].Timestamp < transactions[j].Timestamp
+		}
+		return transactions[i].ID < transactions[j].ID // stable output
 	})
 
 	// Drop transactions explicitly flagged ["t", "ignore"] via a Nostr
