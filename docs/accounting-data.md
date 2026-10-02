@@ -48,7 +48,8 @@ is. `chb` classifies every Odoo partner:
 
 | | public | members | stewards |
 |---|---|---|---|
-| vendors that are organisations or sole traders | name, VAT number, what they sold | = | + contact details, bank account, payments, attachments, Odoo links |
+| vendors that are organisations | name, VAT number, what they sold (line text), the event a bill is tagged with | = | + contact details, bank account, payments, attachments, Odoo links |
+| vendors that are sole traders | name, VAT number, product names; **no** line text, vendor reference or event tag | + line text, reference, event | + contact details, bank account, payments, attachments, Odoo links |
 | vendors that are individuals (reimbursements, freelancers without VAT) | type only, merged into one row per category (`individuals`: how many); lines keep the product name, not the free text | name and texts | everything |
 | customers that are organisations | name, VAT number, products | = | + contact details and every invoice (`invoiceList`) |
 | customers that are sole traders or individuals | type only (`member: true` when they hold a membership), merged into one row per income type | name and products | everything |
@@ -57,8 +58,13 @@ is. `chb` classifies every Odoo partner:
 | general-ledger accounts | code and class ("Services and other goods") | + account name | = |
 
 Anonymous rows carry no `id`, so nobody can be followed from month to
-month. Below stewards, emails are removed, bank account numbers and BICs
-are masked, and Belgian national register numbers are removed, wherever
+month. **Public never links a natural person to an event**: a bill from an
+individual or a sole trader loses its `event` tag and its free text ("photos
+of the Open Commons Day, 20/09") in public, because together with the name
+they would place a person at a date and a place. Organisations keep both.
+
+Below stewards, emails are removed, bank account numbers and BICs are
+masked, and Belgian national register numbers are removed, wherever
 they appear.
 
 **When a vendor shows as anonymous but should not**, the fix is in Odoo:

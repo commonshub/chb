@@ -94,7 +94,9 @@ Both files share one schema:
 | | public | members | stewards |
 |---|---|---|---|
 | amounts, dates, status, category, number, id | ✓ | ✓ | ✓ |
-| business vendor: name, VAT number, their invoice number, line descriptions | ✓ | ✓ | ✓ |
+| business vendor that is a company: name, VAT number, their invoice number, line descriptions, `event` | ✓ | ✓ | ✓ |
+| business vendor that is a VAT-registered sole trader: name, VAT number, line products | ✓ | ✓ | ✓ |
+| sole trader: their invoice number, line free text, `event` (a natural person tied to a date and a place) | — (lines show the `product`) | ✓ | ✓ |
 | private individual (a volunteer's reimbursement, a freelancer without VAT): name, their reference, line descriptions | — (`vendor: {"type": "individual"}`, lines keep only amounts) | ✓ | ✓ |
 | vendor contact details (email, phone, address), vendor bank account, payments, attachment links, Odoo links | — | — | ✓ under `stewards` |
 

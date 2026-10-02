@@ -301,3 +301,35 @@ func TestBookingsFromRoomCalendars(t *testing.T) {
 		t.Errorf("room summary = %+v", pub.Rooms)
 	}
 }
+
+func TestNaturalPersonExpenseDoesNotLinkToEvent(t *testing.T) {
+	for _, vendor := range []Party{
+		{ID: "p-1", Type: "sole_trader", Name: "Sam Lens", VAT: "BE0712345678"},
+		{ID: "p-2", Type: "individual", Name: "Andrea Doe"},
+	} {
+		e := Expense{ID: "b-1", Kind: "bill", Date: "2026-09-21", Vendor: vendor, VendorRef: "2026-014", Event: "luma:evt-ocd2026",
+			Description: "Photos of the Open Commons Day",
+			Lines:       []ExpenseLine{{Description: "Photos of the Open Commons Day", Product: "Photography", Total: 363}}}
+		pub := expenseForAudience(e, AudiencePublic)
+		raw, _ := json.Marshal(pub)
+		for _, leak := range []string{"Open Commons Day", "evt-ocd2026", "2026-014"} {
+			if strings.Contains(string(raw), leak) {
+				t.Errorf("%s: public expense leaks %q: %s", vendor.Type, leak, raw)
+			}
+		}
+		if pub.Description != "Photography" || pub.Lines[0].Product != "Photography" {
+			t.Errorf("%s: public keeps the product: %s", vendor.Type, raw)
+		}
+		if (vendor.Type == "sole_trader") != (pub.Vendor.Name == "Sam Lens") {
+			t.Errorf("%s: vendor = %+v", vendor.Type, pub.Vendor)
+		}
+		if mem := expenseForAudience(e, AudienceMembers); mem.Event == "" || mem.Lines[0].Description == "" {
+			t.Errorf("%s: members keep the event and the text", vendor.Type)
+		}
+	}
+	org := Expense{Vendor: Party{Type: "organisation", Name: "DelivCo SRL"}, Event: "luma:evt-ocd2026",
+		Lines: []ExpenseLine{{Description: "Club-Mate for the Open Commons Day"}}}
+	if pub := expenseForAudience(org, AudiencePublic); pub.Event == "" || pub.Lines[0].Description == "" {
+		t.Error("organisations keep the event and the text")
+	}
+}

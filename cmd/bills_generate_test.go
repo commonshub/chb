@@ -170,3 +170,32 @@ func TestLoadAllCachedBillsAcrossMonths(t *testing.T) {
 		t.Error("billIsOpen")
 	}
 }
+
+// A VAT-registered sole trader is named in public, but neither their free
+// text nor the event the bill is tagged with: that would place a person at
+// a date and a place.
+func TestSoleTraderBillDoesNotLinkPersonToEvent(t *testing.T) {
+	b := billFromInvoice(OdooOutgoingInvoice{
+		ID: 110, Number: "CHB-S/2026/09/0020", Ref: "2026-014", MoveType: "in_invoice", State: "posted", PaymentState: "not_paid",
+		InvoiceDate: "2026-09-21", TotalAmount: 363, UntaxedAmount: 300, ResidualAmount: 363, Currency: "EUR", Event: "luma:evt-ocd2026",
+		Partner:   OdooInvoicePartner{ID: 11, Name: "Sam Lens", VAT: "BE0712345678"},
+		LineItems: []OdooInvoiceLineItem{{ID: 1, Title: "Photos of the Open Commons Day, Sam Lens, 20/09", ProductName: "Photography", DisplayType: "product", SubtotalAmount: 300, TotalAmount: 363}},
+	})
+	pub := billForAudience(b, AudiencePublic)
+	raw, _ := json.Marshal(pub)
+	if pub.Vendor.Name != "Sam Lens" || pub.Vendor.Type != "business" {
+		t.Errorf("public vendor = %+v", pub.Vendor)
+	}
+	for _, leak := range []string{"Open Commons Day", "20/09", "evt-ocd2026", "2026-014"} {
+		if strings.Contains(string(raw), leak) {
+			t.Errorf("public sole-trader bill leaks %q: %s", leak, raw)
+		}
+	}
+	if pub.Description != "Photography" || pub.Lines[0].Description != "Photography" {
+		t.Errorf("public keeps what was sold: %s", raw)
+	}
+	mem := billForAudience(b, AudienceMembers)
+	if mem.Event == "" || !strings.Contains(mem.Lines[0].Description, "Open Commons Day") {
+		t.Error("members keep the event and the text")
+	}
+}

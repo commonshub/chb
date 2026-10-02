@@ -4078,6 +4078,7 @@ func transactionForAudience(tx TransactionEntry, a Audience) TransactionEntry {
 	public := a == AudiencePublic
 	if public {
 		out.Counterparty = ""
+		out.CounterpartyID = publicCounterpartyID(out.CounterpartyID)
 		for k := range out.Metadata {
 			if isPublicUnsafeMetadataKey(k) {
 				delete(out.Metadata, k)
@@ -4146,6 +4147,28 @@ func transactionHasBankNarration(tx TransactionEntry) bool {
 
 // isPublicUnsafeMetadataKey names metadata that carries people or bank
 // references and therefore stops at the members tier.
+// publicCounterpartyID keeps a counterparty id in public only when it names
+// no person: a blockchain address or token contract (public on chain
+// anyway), or one of our own bank accounts. Bank counterparty ids embed the
+// payer's name ("kbcbrussels:counterparty:Jane Doe"), a Stripe customer id
+// follows one buyer from event to event, and a third party's IBAN is theirs:
+// those go.
+func publicCounterpartyID(id string) string {
+	switch {
+	case id == "":
+		return ""
+	case strings.HasPrefix(id, "address:") || strings.Contains(id, ":address:") || strings.Contains(id, ":token:"):
+		return id
+	case strings.HasPrefix(id, "iban:"):
+		if ownAccountIBANs()[normalizeIBAN(strings.TrimPrefix(id, "iban:"))] {
+			return id
+		}
+	case strings.HasPrefix(id, "stripe:acct_"):
+		return id // a connected Stripe account: an organisation's, not a buyer's
+	}
+	return ""
+}
+
 func isPublicUnsafeMetadataKey(k string) bool {
 	switch k {
 	case "name", "firstName", "lastName", "fullDescription", "reference", "freeReference",
