@@ -39,7 +39,7 @@ Same file names in every tier; each lower tier has strictly less.
 
 | file | public (anyone) | members (Discord `member` role) | where |
 |---|---|---|---|
-| `transactions.json` | amounts, direction, category, collective, account ids, canonical tx ids, `description` only when we wrote it — no bank narration (KBC/Wise/CSV, incoming SEPA memos), no counterparty, no memo, no bank reference, no donor display names | + counterparty names, `memo`, narration (`fullDescription`), `reference` — account numbers and BICs masked | month, `latest/` |
+| `transactions.json` | amounts, direction, category, collective, account ids, canonical tx ids, `description` only when we wrote it — no bank narration (KBC/Wise/CSV, incoming SEPA memos), no counterparty, no memo, no bank reference, no donor display names; `counterpartyId` only when it names nobody (blockchain address, our own accounts) | + counterparty names, `memo`, narration (`fullDescription`), `reference` — account numbers and BICs masked | month, `latest/` |
 | `counterparties.json` | our own accounts only (entries with `slug`) | every counterparty by display name | month, `latest/` |
 | `summary.json` | per-account / per-collective / per-category aggregates (identical in all tiers) | = | month (`latest/` holds the lifetime rollup) |
 | `commissions.json`, `inbound_spreads.json`, `activitygrid.json` | aggregates (spreads: no counterparty) | = (+ counterparty on spreads) | month / year / `latest/` |
@@ -53,7 +53,7 @@ Same file names in every tier; each lower tier has strictly less.
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photo, author identity, reactions — `message` is empty | + message text | month, `latest/` |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
-| `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; individuals typed only, their free text dropped; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
+| `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; sole traders' and individuals' free text and event tags dropped (no person linked to an event); individuals typed only; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
 | `vendors.json` | one row per vendor: category, documents, total, paid, due; individuals merged per category | one row per vendor, all named | month, year (§7) |
 | `customers.json` | one row per customer: income types, invoices, total, received, due; only organisations named, everyone else merged per income type | all named | month, year (§7) |
 | `bookings.json` | room bookings (room, times, hours; title only for public events), room-rental invoice lines, per-room summary | + booking titles, rental descriptions, customer names | month, year (§7) |

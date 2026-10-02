@@ -464,6 +464,10 @@ func expenseForAudience(e Expense, a Audience) Expense {
 	}
 	e.Stewards = nil
 	individual := e.Vendor.Type == "individual"
+	// A sole trader is a natural person: public keeps their business name
+	// and what they sold, but never their free text or the event the bill
+	// is tagged with, which would place a person at a date and a place.
+	person := individual || e.Vendor.Type == "sole_trader"
 	e.Vendor = partyForAudience(e.Vendor, a)
 	lines := make([]ExpenseLine, len(e.Lines))
 	for i, l := range e.Lines {
@@ -478,14 +482,15 @@ func expenseForAudience(e Expense, a Audience) Expense {
 				ref.Name = ""
 				l.Account = &ref
 			}
-			if individual {
+			if person {
 				l.Description = "" // free text about a person; the product name stays
 			}
 		}
 		lines[i] = l
 	}
 	e.Lines = lines
-	if a == AudiencePublic && individual {
+	if a == AudiencePublic && person {
+		e.Event = ""
 		e.VendorRef = ""
 		var products []string
 		for _, l := range lines {

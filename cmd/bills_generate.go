@@ -77,6 +77,7 @@ type BillVendor struct {
 
 type BillLine struct {
 	Description string  `json:"description"`
+	Product     string  `json:"product,omitempty"` // catalogue item
 	Quantity    float64 `json:"quantity,omitempty"`
 	Untaxed     float64 `json:"untaxedAmount"`
 	Total       float64 `json:"totalAmount"`
@@ -91,6 +92,11 @@ type BillStewards struct {
 	Payments    []OdooInvoicePayment     `json:"payments,omitempty"`
 	Attachments []OdooDocumentAttachment `json:"attachments,omitempty"`
 	Reference   string                   `json:"paymentReference,omitempty"`
+	// VendorType is the vendor's party type (organisation | sole_trader |
+	// individual), resolved to the company when the bill is addressed to
+	// one of its contacts. Public projection reads it; it never leaves
+	// stewards.
+	VendorType string `json:"vendorType,omitempty"`
 }
 
 type BillsTotals struct {
@@ -174,7 +180,7 @@ func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 			continue
 		}
 		d := strings.TrimSpace(firstNonEmpty(li.Title, li.ProductName))
-		line := BillLine{Description: d, Quantity: li.Quantity, Untaxed: li.SubtotalAmount, Total: li.TotalAmount}
+		line := BillLine{Description: d, Product: strings.TrimSpace(li.ProductName), Quantity: li.Quantity, Untaxed: li.SubtotalAmount, Total: li.TotalAmount}
 		if len(li.Taxes) == 1 && li.Taxes[0].AmountType == "percent" {
 			line.VATRate = fmt.Sprintf("%g%%", li.Taxes[0].Amount)
 		}
@@ -190,6 +196,7 @@ func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 	b.Stewards = &BillStewards{
 		OdooID: inv.ID, OdooURL: inv.InvoiceURL, Partner: inv.Partner, PartnerBank: inv.PartnerBank,
 		Payments: inv.Payments, Attachments: inv.Attachments, Reference: inv.Reference,
+		VendorType: party.Type,
 	}
 	return b
 }
@@ -199,17 +206,42 @@ func billForAudience(b Bill, a Audience) Bill {
 	if a == AudienceStewards {
 		return b
 	}
+	// A VAT-registered sole trader is a "business" vendor but a natural
+	// person: public keeps the name and what was sold (the product), not the
+	// free text or the event tag, which would place a person at a date and a
+	// place.
+	soleTrader := b.Stewards != nil && b.Stewards.VendorType == "sole_trader"
 	b.Stewards = nil
-	if a == AudiencePublic && b.Vendor.Type == "individual" {
+	if a != AudiencePublic {
+		return b
+	}
+	switch {
+	case b.Vendor.Type == "individual":
 		b.Vendor = BillVendor{Type: "individual"}
 		b.VendorRef = ""
 		b.Description = ""
+		b.Event = ""
 		lines := make([]BillLine, len(b.Lines))
 		for i, l := range b.Lines {
 			l.Description = ""
+			l.Product = ""
 			lines[i] = l
 		}
 		b.Lines = lines
+	case soleTrader:
+		b.VendorRef = ""
+		b.Event = ""
+		var products []string
+		lines := make([]BillLine, len(b.Lines))
+		for i, l := range b.Lines {
+			l.Description = l.Product
+			if l.Product != "" && !containsString(products, l.Product) {
+				products = append(products, l.Product)
+			}
+			lines[i] = l
+		}
+		b.Lines = lines
+		b.Description = strings.Join(products, ", ")
 	}
 	return b
 }

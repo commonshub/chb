@@ -349,3 +349,30 @@ func TestTransactionNarrationNeverReachesPublic(t *testing.T) {
 		t.Error("a spaced third-party IBAN must refuse the write")
 	}
 }
+
+// A counterparty id can carry a person: bank ids embed the payer's name and
+// a Stripe customer id follows one buyer across events. Public keeps only ids
+// that name nobody.
+func TestPublicCounterpartyIDNamesNobody(t *testing.T) {
+	ownIBANsForTest = map[string]bool{"BE46734072238636": true}
+	defer func() { ownIBANsForTest = nil }()
+	cases := map[string]string{
+		"kbcbrussels:counterparty:Jane Doe": "",
+		"text:Jane Doe":                     "",
+		"stripe:cus_123":                    "",
+		"iban:BE68539007547034":             "",
+		"iban:be46734072238636":             "iban:be46734072238636",
+		"ethereum:42220:address:0xdead000000000000000000000000000000000000": "ethereum:42220:address:0xdead000000000000000000000000000000000000",
+		"ethereum:42220:token:0x65dd32834927de9e57e72a3e2130a19f81c6371d":   "ethereum:42220:token:0x65dd32834927de9e57e72a3e2130a19f81c6371d",
+		"stripe:acct_1ABC": "stripe:acct_1ABC",
+	}
+	for in, want := range cases {
+		tx := TransactionEntry{ID: "x", Provider: "kbcbrussels", CounterpartyID: in}
+		if got := transactionForAudience(tx, AudiencePublic).CounterpartyID; got != want {
+			t.Errorf("public counterpartyId(%q) = %q, want %q", in, got, want)
+		}
+		if got := transactionForAudience(tx, AudienceMembers).CounterpartyID; got == "" {
+			t.Errorf("members keep counterpartyId %q", in)
+		}
+	}
+}

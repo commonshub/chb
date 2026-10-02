@@ -170,3 +170,44 @@ func TestLoadAllCachedBillsAcrossMonths(t *testing.T) {
 		t.Error("billIsOpen")
 	}
 }
+
+// A VAT-registered sole trader is named in public, but neither their free
+// text nor the event the bill is tagged with: that would place a person at
+// a date and a place.
+func TestSoleTraderBillDoesNotLinkPersonToEvent(t *testing.T) {
+	b := billFromInvoice(OdooOutgoingInvoice{
+		ID: 110, Number: "CHB-S/2026/09/0020", Ref: "2026-014", MoveType: "in_invoice", State: "posted", PaymentState: "not_paid",
+		InvoiceDate: "2026-09-21", TotalAmount: 363, UntaxedAmount: 300, ResidualAmount: 363, Currency: "EUR", Event: "luma:evt-ocd2026",
+		Partner:   OdooInvoicePartner{ID: 11, Name: "Sam Lens", VAT: "BE0712345678"},
+		LineItems: []OdooInvoiceLineItem{{ID: 1, Title: "Photos of the Open Commons Day, Sam Lens, 20/09", ProductName: "Photography", DisplayType: "product", SubtotalAmount: 300, TotalAmount: 363}},
+	})
+	pub := billForAudience(b, AudiencePublic)
+	raw, _ := json.Marshal(pub)
+	if pub.Vendor.Name != "Sam Lens" || pub.Vendor.Type != "business" {
+		t.Errorf("public vendor = %+v", pub.Vendor)
+	}
+	for _, leak := range []string{"Open Commons Day", "20/09", "evt-ocd2026", "2026-014"} {
+		if strings.Contains(string(raw), leak) {
+			t.Errorf("public sole-trader bill leaks %q: %s", leak, raw)
+		}
+	}
+	if pub.Description != "Photography" || pub.Lines[0].Description != "Photography" {
+		t.Errorf("public keeps what was sold: %s", raw)
+	}
+	mem := billForAudience(b, AudienceMembers)
+	if mem.Event == "" || !strings.Contains(mem.Lines[0].Description, "Open Commons Day") {
+		t.Error("members keep the event and the text")
+	}
+
+	// A contact who inherits their company's VAT number is not a sole
+	// trader: the bill is the company's and keeps its text and event.
+	co := billForAudience(billFromInvoice(OdooOutgoingInvoice{
+		ID: 111, Number: "CHB-S/2026/09/0021", MoveType: "in_invoice", State: "posted", PaymentState: "not_paid",
+		InvoiceDate: "2026-09-21", TotalAmount: 121, Currency: "EUR", Event: "luma:evt-ocd2026",
+		Partner:   OdooInvoicePartner{ID: 1261, Name: "Leen Schelfhout", DisplayName: "XL Collective SRL, Leen Schelfhout", VAT: "BE0720836593", CompanyType: "person"},
+		LineItems: []OdooInvoiceLineItem{{ID: 1, Title: "Sound system for the Open Commons Day", ProductName: "Sound", DisplayType: "product", SubtotalAmount: 100, TotalAmount: 121}},
+	}), AudiencePublic)
+	if co.Vendor.Name != "XL Collective SRL" || co.Event == "" || !strings.Contains(co.Lines[0].Description, "Open Commons Day") {
+		t.Errorf("company bill via a contact = %+v", co)
+	}
+}
