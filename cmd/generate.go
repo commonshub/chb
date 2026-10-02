@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	mobilizonsource "github.com/CommonsHub/chb/providers/mobilizon"
 	"math"
 	"net/http"
 	"os"
@@ -880,6 +881,17 @@ func Generate(args []string) error {
 		generateMarkdownFiles(dataDir)
 		return ""
 	})
+
+	// Only once `chb mobilizon pull` has run: the plan needs the group's state.
+	if _, err := os.Stat(mobilizonsource.EventsPath(dataDir)); err == nil {
+		genStep("Mobilizon plan", func() string {
+			pending, err := generateMobilizonPending(dataDir, time.Now())
+			if err != nil {
+				return err.Error()
+			}
+			return summarizeMobilizonPending(pending)
+		})
+	}
 
 	genStep("Counterparties", func() string {
 		for _, scope := range scopes {
