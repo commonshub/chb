@@ -162,16 +162,11 @@ func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 	if b.Status == "paid" || b.Status == "reversed" {
 		b.AmountDue = 0
 	}
-	name := strings.TrimSpace(firstNonEmpty(inv.Partner.Name, inv.Partner.DisplayName, inv.PartnerDisplayName))
-	if at := strings.LastIndex(name, "@"); at >= 0 {
-		// A partner named after a mailbox ("billing@example.org"): the
-		// domain says who it is, the mailbox is contact data.
-		name = strings.TrimSpace(name[at+1:])
-	}
-	b.Vendor = BillVendor{Type: "individual", Name: name}
-	if billVendorIsBusiness(inv.Partner) {
+	party := documentParty(inv) // the company, when addressed to one of its contacts
+	b.Vendor = BillVendor{Type: "individual", Name: party.Name}
+	if party.Type != "individual" {
 		b.Vendor.Type = "business"
-		b.Vendor.VAT = strings.TrimSpace(inv.Partner.VAT)
+		b.Vendor.VAT = party.VAT
 	}
 	var descs []string
 	for _, li := range inv.LineItems {
