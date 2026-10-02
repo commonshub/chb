@@ -26,13 +26,14 @@ is missing, surface the exact `pull`/`sync` command and let it run first.
 
 ## 2. Writes go to an outbox, never straight to the remote
 
-Odoo and Nostr are the only writable systems (**targets**). We never write to them
+Odoo, Nostr and Mobilizon are the writable systems (**targets**). We never write to them
 as a side effect of any other command. Instead, changes accumulate locally:
 
 | Target | Outbox (pending changes) | Resolved when |
 |---|---|---|
 | Odoo | `providers/odoo/pending/<YYYY-MM>.json` (one entry per tx URI) | at `generate` (rules.json + odoo_mapping.json) |
 | Nostr | the `outbox/` (signed-but-unsent events) | when an event is queued |
+| Mobilizon | `latest/providers/mobilizon/pending/events.json` | at `generate` / `chb mobilizon generate` |
 
 - `push` is the **only** verb that writes to a remote. It publishes the
   outbox/pending and then clears the entries it sent.

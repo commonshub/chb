@@ -46,6 +46,12 @@ is. `chb` classifies every Odoo partner:
 | `sole_trader` | a person registered for VAT (their business identity is public in the company register) |
 | `individual` | anyone else |
 
+A bill or invoice addressed to a **contact inside a company** belongs to the
+company: "XL Collective SRL, Leen Schelfhout" is published as XL Collective
+SRL. In Odoo the contact inherits the company's VAT number, but the person
+is not the business. The contact's name is kept for stewards only
+(`contact.person`).
+
 | | public | members | stewards |
 |---|---|---|---|
 | vendors that are organisations | name, VAT number, what they sold (line text), the event a bill is tagged with | = | + contact details, bank account, payments, attachments, Odoo links |

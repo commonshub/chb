@@ -258,6 +258,7 @@ func TestPartyTypeLegalForms(t *testing.T) {
 		"STICHTING LODEWIJK DE RAET":     "organisation",
 		"BG DIGITAL MARKETING SDN. BHD.": "organisation",
 		"Open Org ASBL":                  "organisation",
+		"Promo Direct s.r.o.":            "organisation",
 		"Johan Van As":                   "individual",
 		"Sarah Sanders":                  "individual",
 	}
@@ -331,5 +332,40 @@ func TestNaturalPersonExpenseDoesNotLinkToEvent(t *testing.T) {
 		Lines: []ExpenseLine{{Description: "Club-Mate for the Open Commons Day"}}}
 	if pub := expenseForAudience(org, AudiencePublic); pub.Event == "" || pub.Lines[0].Description == "" {
 		t.Error("organisations keep the event and the text")
+	}
+}
+
+// Bills addressed to a contact inside a company belong to the company:
+// "XL Collective SRL, Leen Schelfhout" is XL Collective SRL, whose VAT the
+// contact merely inherits.
+func TestDocumentPartyIsTheContactsCompany(t *testing.T) {
+	contact := OdooInvoicePartner{ID: 1261, Name: "Leen Schelfhout", DisplayName: "XL Collective SRL, Leen Schelfhout", VAT: "BE0720836593", CompanyType: "person", Email: "leen@example.com"}
+
+	// Cache pulled before v3.16.1: only the display name tells.
+	p := documentParty(OdooOutgoingInvoice{Partner: contact})
+	if p.Type != "organisation" || p.Name != "XL Collective SRL" || p.VAT != "BE0720836593" || p.Contact.Person != "Leen Schelfhout" {
+		t.Errorf("fallback party = %+v %+v", p, p.Contact)
+	}
+	if got := partyForAudience(p, AudiencePublic); strings.Contains(got.Name, "Leen") || got.Contact != nil {
+		t.Errorf("public = %+v", got)
+	}
+
+	// Stored commercial partner: its id, so bills to the company itself and
+	// to its contacts land on one vendor row.
+	company := OdooInvoicePartner{ID: 900, Name: "XL Collective SRL", VAT: "BE0720836593", IsCompany: true}
+	p2 := documentParty(OdooOutgoingInvoice{Partner: contact, CommercialPartner: &company})
+	p3 := documentParty(OdooOutgoingInvoice{Partner: company})
+	if p2.ID != p3.ID || p2.Name != "XL Collective SRL" || p2.Contact.Person != "Leen Schelfhout" {
+		t.Errorf("commercial party = %+v vs %+v", p2, p3)
+	}
+
+	// A person on their own stays a person.
+	solo := documentParty(OdooOutgoingInvoice{Partner: OdooInvoicePartner{ID: 5, Name: "Sam Roe", DisplayName: "Sam Roe"}})
+	if solo.Type != "individual" || solo.Name != "Sam Roe" {
+		t.Errorf("solo = %+v", solo)
+	}
+	b := billFromInvoice(OdooOutgoingInvoice{ID: 9, State: "posted", Partner: contact})
+	if b.Vendor.Name != "XL Collective SRL" || b.Vendor.Type != "business" {
+		t.Errorf("pending-bills vendor = %+v", b.Vendor)
 	}
 }

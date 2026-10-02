@@ -198,4 +198,16 @@ func TestSoleTraderBillDoesNotLinkPersonToEvent(t *testing.T) {
 	if mem.Event == "" || !strings.Contains(mem.Lines[0].Description, "Open Commons Day") {
 		t.Error("members keep the event and the text")
 	}
+
+	// A contact who inherits their company's VAT number is not a sole
+	// trader: the bill is the company's and keeps its text and event.
+	co := billForAudience(billFromInvoice(OdooOutgoingInvoice{
+		ID: 111, Number: "CHB-S/2026/09/0021", MoveType: "in_invoice", State: "posted", PaymentState: "not_paid",
+		InvoiceDate: "2026-09-21", TotalAmount: 121, Currency: "EUR", Event: "luma:evt-ocd2026",
+		Partner:   OdooInvoicePartner{ID: 1261, Name: "Leen Schelfhout", DisplayName: "XL Collective SRL, Leen Schelfhout", VAT: "BE0720836593", CompanyType: "person"},
+		LineItems: []OdooInvoiceLineItem{{ID: 1, Title: "Sound system for the Open Commons Day", ProductName: "Sound", DisplayType: "product", SubtotalAmount: 100, TotalAmount: 121}},
+	}), AudiencePublic)
+	if co.Vendor.Name != "XL Collective SRL" || co.Event == "" || !strings.Contains(co.Lines[0].Description, "Open Commons Day") {
+		t.Errorf("company bill via a contact = %+v", co)
+	}
 }

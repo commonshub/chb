@@ -55,6 +55,7 @@ type Party struct {
 
 type PartyContact struct {
 	PartnerID int    `json:"partnerId,omitempty"`
+	Person    string `json:"person,omitempty"` // the contact the document was addressed to, inside the company
 	Email     string `json:"email,omitempty"`
 	Phone     string `json:"phone,omitempty"`
 	Street    string `json:"street,omitempty"`
@@ -89,11 +90,37 @@ func partyType(p OdooInvoicePartner) string {
 
 // legalFormPattern matches the legal-form abbreviations of registered
 // entities (Belgian, Dutch, French, German, English) as whole words.
-var legalFormPattern = regexp.MustCompile(`(?i)(^|[\s(,])(srl|sprl|scrl|sa|nv|bv|bvba|cvba|vof|asbl|vzw|aisbl|ivzw|stichting|fondation|foundation|vereniging|gmbh|bhd|sdn\.? bhd\.?|ltd|limited|llc|inc|plc|sas|sarl|eurl|sasu|s\.r\.l\.?|b\.v\.?|n\.v\.?|s\.a\.?)($|[\s),.])`)
+var legalFormPattern = regexp.MustCompile(`(?i)(^|[\s(,])(srl|sprl|scrl|sa|nv|bv|bvba|cvba|vof|asbl|vzw|aisbl|ivzw|stichting|fondation|foundation|vereniging|gmbh|bhd|sdn\.? bhd\.?|ltd|limited|llc|inc|plc|sas|sarl|eurl|sasu|s\.r\.l\.?|s\.r\.o\.?|sro|b\.v\.?|n\.v\.?|s\.a\.?)($|[\s),.])`)
 
 // nameHasLegalForm reports whether a partner name carries a legal form.
 func nameHasLegalForm(name string) bool {
 	return legalFormPattern.MatchString(strings.TrimSpace(name))
+}
+
+// documentParty is who a bill or invoice is really with: the company when
+// it was addressed to one of its contacts ("XL Collective SRL, Leen
+// Schelfhout" is XL Collective SRL, not Leen). Uses the stored commercial
+// partner, else Odoo's "Company, Contact" display name for caches pulled
+// before v3.16.1.
+func documentParty(inv OdooOutgoingInvoice) Party {
+	if cp := inv.CommercialPartner; cp != nil && cp.ID != 0 && cp.ID != inv.Partner.ID {
+		party := partyFromPartner(*cp, "")
+		party.Contact.Person = inv.Partner.Name
+		return party
+	}
+	p := inv.Partner
+	display := strings.TrimSpace(firstNonEmpty(p.DisplayName, inv.PartnerDisplayName))
+	if name := strings.TrimSpace(p.Name); name != "" && !p.IsCompany && strings.HasSuffix(display, ", "+name) {
+		if company := strings.TrimSpace(strings.TrimSuffix(display, ", "+name)); company != "" {
+			parent := p
+			parent.ID, parent.Name, parent.DisplayName = 0, company, company
+			parent.IsCompany, parent.CompanyType = true, "company"
+			party := partyFromPartner(parent, "")
+			party.Contact.Person = name
+			return party
+		}
+	}
+	return partyFromPartner(p, inv.PartnerDisplayName)
 }
 
 func partyFromPartner(p OdooInvoicePartner, fallbackName string) Party {
@@ -341,7 +368,7 @@ func expenseFromBill(inv OdooOutgoingInvoice, claim *OdooExpense) Expense {
 	e := Expense{
 		ID: docID("b-", inv.ID), Number: inv.Number, Kind: "bill", Status: docStatus(inv),
 		Date: firstNonEmpty(inv.InvoiceDate, inv.Date), DueDate: inv.DueDate,
-		Vendor: partyFromPartner(inv.Partner, inv.PartnerDisplayName), VendorRef: firstNonEmpty(inv.Ref, inv.Title),
+		Vendor: documentParty(inv), VendorRef: firstNonEmpty(inv.Ref, inv.Title),
 		Category: inv.Category, Collective: inv.Collective, Event: inv.Event,
 		Currency: firstNonEmpty(inv.Currency, "EUR"), Untaxed: inv.UntaxedAmount, VAT: inv.VATAmount,
 		Total: inv.TotalAmount, TotalEUR: round2(inv.TotalAmount * f), AmountDue: inv.ResidualAmount,
@@ -927,10 +954,10 @@ func publicEventsByDay(dataDir, year, month string) map[string][]FullEvent {
 	return out
 }
 
-var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+var titleNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
 func normTitle(s string) string {
-	return strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(s), " "), " ")
+	return strings.Trim(titleNonAlnum.ReplaceAllString(strings.ToLower(s), " "), " ")
 }
 
 // matchPublicEvent finds the public event a room booking hosts: same day,
@@ -1011,11 +1038,11 @@ func generateAccountingFiles(dataDir string) (int, error) {
 	}
 
 	// Who is a member: any customer invoice with a membership line.
-	members := map[int]bool{}
+	members := map[string]bool{}
 	for _, inv := range invoices {
 		for _, li := range inv.LineItems {
 			if incomeType(li.AccountCode) == "membership" {
-				members[inv.Partner.ID] = true
+				members[documentParty(inv).ID] = true
 			}
 		}
 	}
@@ -1027,12 +1054,12 @@ func generateAccountingFiles(dataDir string) (int, error) {
 		if len(date) < 7 {
 			continue
 		}
-		d := customerDoc{inv: inv, party: partyFromPartner(inv.Partner, inv.PartnerDisplayName),
+		d := customerDoc{inv: inv, party: documentParty(inv),
 			types: map[string]float64{}, sign: 1, f: eurFactor(inv), date: date}
 		if inv.MoveType == "out_refund" {
 			d.sign = -1
 		}
-		d.party.Member = d.party.Type == "individual" && members[inv.Partner.ID]
+		d.party.Member = d.party.Type != "organisation" && members[d.party.ID]
 		for _, li := range inv.LineItems {
 			if li.SubtotalAmount == 0 {
 				continue

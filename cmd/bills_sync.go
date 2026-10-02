@@ -513,6 +513,7 @@ func loadCachedBillMonth(dataDir, year, month string) []OdooOutgoingInvoice {
 					ResidualAmount:     bill.ResidualAmount,
 					TotalSignedAmount:  bill.TotalSignedAmount,
 					Partner:            bill.Partner,
+					CommercialPartner:  bill.CommercialPartner,
 					PartnerBank:        bill.PartnerBank,
 					Transactions:       bill.Transactions,
 					Payments:           bill.Payments,

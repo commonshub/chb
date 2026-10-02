@@ -68,6 +68,7 @@ type OdooOutgoingInvoice struct {
 	Currency              string                     `json:"currency,omitempty"`
 	Journal               OdooInvoiceJournal         `json:"journal"`
 	Partner               OdooInvoicePartner         `json:"partner"`
+	CommercialPartner     *OdooInvoicePartner        `json:"commercialPartner,omitempty"` // the company a contact belongs to
 	PartnerBank           *OdooInvoiceBankAccount    `json:"partnerBank,omitempty"`
 	LineItems             []OdooInvoiceLineItem      `json:"lineItems"`
 	Transactions          []OdooInvoiceTx            `json:"transactions,omitempty"`
@@ -86,17 +87,17 @@ type OdooOutgoingInvoice struct {
 }
 
 type OdooOutgoingInvoicePublic struct {
-	ID                    int                        `json:"id"`
-	Title                 string                     `json:"title,omitempty"`
-	MoveType              string                     `json:"moveType,omitempty"`
-	State                 string                     `json:"state,omitempty"`
-	PaymentState          string                     `json:"paymentState,omitempty"`
-	Date                  string                     `json:"date,omitempty"`
-	Sent                  bool                       `json:"sent,omitempty"`
-	SentAt                string                     `json:"sentAt,omitempty"`
-	UntaxedAmount         float64                    `json:"untaxedAmount"`
-	VATAmount             float64                    `json:"vatAmount"`
-	TotalAmount           float64                    `json:"totalAmount"`
+	ID            int     `json:"id"`
+	Title         string  `json:"title,omitempty"`
+	MoveType      string  `json:"moveType,omitempty"`
+	State         string  `json:"state,omitempty"`
+	PaymentState  string  `json:"paymentState,omitempty"`
+	Date          string  `json:"date,omitempty"`
+	Sent          bool    `json:"sent,omitempty"`
+	SentAt        string  `json:"sentAt,omitempty"`
+	UntaxedAmount float64 `json:"untaxedAmount"`
+	VATAmount     float64 `json:"vatAmount"`
+	TotalAmount   float64 `json:"totalAmount"`
 	// AmountResidual is the still-owed balance (0 when fully paid). For a
 	// partially-paid move it's the remaining amount — what reconcile should match
 	// the next bank line against. omitempty + a re-pull populates it; older
@@ -128,6 +129,7 @@ type OdooOutgoingInvoicePrivate struct {
 	ResidualAmount     float64                  `json:"residualAmount,omitempty"`
 	TotalSignedAmount  float64                  `json:"totalSignedAmount,omitempty"`
 	Partner            OdooInvoicePartner       `json:"partner"`
+	CommercialPartner  *OdooInvoicePartner      `json:"commercialPartner,omitempty"`
 	PartnerBank        *OdooInvoiceBankAccount  `json:"partnerBank,omitempty"`
 	Transactions       []OdooInvoiceTx          `json:"transactions,omitempty"`
 	Payments           []OdooInvoicePayment     `json:"payments,omitempty"`
@@ -836,6 +838,14 @@ func enrichOutgoingInvoices(creds *OdooCredentials, uid int, rawInvoices []map[s
 		}
 		inv.Partner = buildInvoicePartner(partnerRow)
 		inv.PartnerDisplayName = inv.Partner.DisplayName
+		// A bill addressed to a contact person inside a company: keep the
+		// company too, it is who we actually deal with.
+		if cid := odooFieldID(raw["commercial_partner_id"]); cid > 0 && cid != inv.Partner.ID {
+			if row := partnersByID[cid]; row != nil {
+				cp := buildInvoicePartner(row)
+				inv.CommercialPartner = &cp
+			}
+		}
 
 		if includePartnerBank {
 			if bankRow := banksByID[odooFieldID(raw["partner_bank_id"])]; bankRow != nil {
@@ -1611,6 +1621,7 @@ func toPrivateInvoice(inv OdooOutgoingInvoice) OdooOutgoingInvoicePrivate {
 		ResidualAmount:     inv.ResidualAmount,
 		TotalSignedAmount:  inv.TotalSignedAmount,
 		Partner:            inv.Partner,
+		CommercialPartner:  inv.CommercialPartner,
 		PartnerBank:        inv.PartnerBank,
 		Transactions:       inv.Transactions,
 		Payments:           inv.Payments,
@@ -1641,6 +1652,7 @@ func privateInvoiceToInternal(inv *OdooOutgoingInvoicePrivate) *OdooOutgoingInvo
 		ResidualAmount:     inv.ResidualAmount,
 		TotalSignedAmount:  inv.TotalSignedAmount,
 		Partner:            inv.Partner,
+		CommercialPartner:  inv.CommercialPartner,
 		PartnerBank:        inv.PartnerBank,
 		Transactions:       inv.Transactions,
 		Payments:           inv.Payments,
@@ -1706,6 +1718,7 @@ func loadCachedInvoiceMonth(dataDir, year, month string) []OdooOutgoingInvoice {
 					ResidualAmount:     inv.ResidualAmount,
 					TotalSignedAmount:  inv.TotalSignedAmount,
 					Partner:            inv.Partner,
+					CommercialPartner:  inv.CommercialPartner,
 					PartnerBank:        inv.PartnerBank,
 					Transactions:       inv.Transactions,
 					Payments:           inv.Payments,
@@ -1782,6 +1795,9 @@ func mergePrivateOdooDocument(dst *OdooOutgoingInvoice, src OdooOutgoingInvoice)
 	}
 	if src.Partner.ID != 0 || src.Partner.Name != "" {
 		dst.Partner = src.Partner
+	}
+	if src.CommercialPartner != nil {
+		dst.CommercialPartner = src.CommercialPartner
 	}
 	if src.PartnerBank != nil {
 		dst.PartnerBank = src.PartnerBank

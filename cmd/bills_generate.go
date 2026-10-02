@@ -92,6 +92,11 @@ type BillStewards struct {
 	Payments    []OdooInvoicePayment     `json:"payments,omitempty"`
 	Attachments []OdooDocumentAttachment `json:"attachments,omitempty"`
 	Reference   string                   `json:"paymentReference,omitempty"`
+	// VendorType is the vendor's party type (organisation | sole_trader |
+	// individual), resolved to the company when the bill is addressed to
+	// one of its contacts. Public projection reads it; it never leaves
+	// stewards.
+	VendorType string `json:"vendorType,omitempty"`
 }
 
 type BillsTotals struct {
@@ -163,16 +168,11 @@ func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 	if b.Status == "paid" || b.Status == "reversed" {
 		b.AmountDue = 0
 	}
-	name := strings.TrimSpace(firstNonEmpty(inv.Partner.Name, inv.Partner.DisplayName, inv.PartnerDisplayName))
-	if at := strings.LastIndex(name, "@"); at >= 0 {
-		// A partner named after a mailbox ("billing@example.org"): the
-		// domain says who it is, the mailbox is contact data.
-		name = strings.TrimSpace(name[at+1:])
-	}
-	b.Vendor = BillVendor{Type: "individual", Name: name}
-	if billVendorIsBusiness(inv.Partner) {
+	party := documentParty(inv) // the company, when addressed to one of its contacts
+	b.Vendor = BillVendor{Type: "individual", Name: party.Name}
+	if party.Type != "individual" {
 		b.Vendor.Type = "business"
-		b.Vendor.VAT = strings.TrimSpace(inv.Partner.VAT)
+		b.Vendor.VAT = party.VAT
 	}
 	var descs []string
 	for _, li := range inv.LineItems {
@@ -196,6 +196,7 @@ func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 	b.Stewards = &BillStewards{
 		OdooID: inv.ID, OdooURL: inv.InvoiceURL, Partner: inv.Partner, PartnerBank: inv.PartnerBank,
 		Payments: inv.Payments, Attachments: inv.Attachments, Reference: inv.Reference,
+		VendorType: party.Type,
 	}
 	return b
 }
@@ -209,7 +210,7 @@ func billForAudience(b Bill, a Audience) Bill {
 	// person: public keeps the name and what was sold (the product), not the
 	// free text or the event tag, which would place a person at a date and a
 	// place.
-	soleTrader := b.Stewards != nil && partyType(b.Stewards.Partner) == "sole_trader"
+	soleTrader := b.Stewards != nil && b.Stewards.VendorType == "sole_trader"
 	b.Stewards = nil
 	if a != AudiencePublic {
 		return b
