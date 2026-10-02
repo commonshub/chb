@@ -949,10 +949,10 @@ func publicEventsByDay(dataDir, year, month string) map[string][]FullEvent {
 	return out
 }
 
-var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+var titleNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
 func normTitle(s string) string {
-	return strings.Trim(nonAlnum.ReplaceAllString(strings.ToLower(s), " "), " ")
+	return strings.Trim(titleNonAlnum.ReplaceAllString(strings.ToLower(s), " "), " ")
 }
 
 // matchPublicEvent finds the public event a room booking hosts: same day,
