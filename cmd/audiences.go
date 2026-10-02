@@ -181,6 +181,9 @@ func enforceAudiencePolicy(a Audience, rel string, data []byte) ([]byte, error) 
 	// mailbox is gone. Opaque ids that merely look like emails (Luma /
 	// Google Calendar UIDs) and role mailboxes (hello@, info@) are kept.
 	cleaned = maskEmails(cleaned)
+	// Belgian national register numbers (YY.MM.DD-XXX.XX) sometimes end up
+	// in partner names or memos; they never leave the stewards tier.
+	cleaned = nationalNumberPattern.ReplaceAll(cleaned, []byte("[national number removed]"))
 
 	var problems []string
 	if strings.HasSuffix(rel, ".json") {
@@ -266,17 +269,69 @@ func ownAccountIBANs() map[string]bool {
 // ids and product codes never trip the policy.
 var ibanCandidate = regexp.MustCompile(`(?i)\b[a-z]{2}[0-9]{2}[a-z0-9]{11,30}\b`)
 
+// ibanSpacedCandidate matches the printed form banks use in narrations
+// ("BE56 0016 9232 9088"): groups of four separated by single spaces.
+var ibanSpacedCandidate = regexp.MustCompile(`(?i)\b[a-z]{2}[0-9]{2}(?: [a-z0-9]{4}){2,7}(?: [a-z0-9]{1,4})?\b`)
+
+// bicPattern matches a BIC announced as such in a bank narration.
+var bicPattern = regexp.MustCompile(`(?i)\b(BIC|SWIFT)( ?: ?| )[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b`)
+
+// validIBANPrefix returns the longest checksum-valid IBAN at the start of
+// a candidate match (spaces removed, upper case) and how many bytes of the
+// match it spans. A spaced match can run into the next word ("… 9088 BIC"),
+// so whole trailing groups are dropped until the checksum verifies.
+func validIBANPrefix(m string) (string, int) {
+	end := len(m)
+	for end > 0 {
+		cand := strings.ToUpper(strings.ReplaceAll(m[:end], " ", ""))
+		if ibanChecksumValid(cand) {
+			return cand, end
+		}
+		i := strings.LastIndex(m[:end], " ")
+		if i <= 0 {
+			break
+		}
+		end = i
+	}
+	return "", 0
+}
+
+// nationalNumberPattern matches a Belgian national register number,
+// dotted or not (84.05.18-647.30, 84051864730 is too generic to match).
+var nationalNumberPattern = regexp.MustCompile(`\b\d{2}\.\d{2}\.\d{2}[- ]\d{3}\.\d{2}\b`)
+
+// ibanMask replaces a third-party IBAN in free text below stewards.
+const ibanMask = "[IBAN]"
+
+// maskBankDetails replaces third-party IBANs (compact or spaced) and
+// announced BICs in free text. Our own accounts stay readable.
+func maskBankDetails(s string) string {
+	own := ownAccountIBANs()
+	replace := func(m string) string {
+		iban, n := validIBANPrefix(m)
+		if iban == "" || own[iban] {
+			return m
+		}
+		return ibanMask + m[n:]
+	}
+	s = ibanSpacedCandidate.ReplaceAllStringFunc(s, replace)
+	s = ibanCandidate.ReplaceAllStringFunc(s, replace)
+	return bicPattern.ReplaceAllString(s, "$1: [BIC]")
+}
+
 // findIBANs returns the distinct checksum-valid IBANs in data, normalised
 // to upper case. Case-insensitive on purpose: canonical URIs carry IBANs in
 // lower case (iban:be68…), and those are IBANs all the same.
 func findIBANs(data []byte) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, m := range ibanCandidate.FindAllString(string(data), -1) {
-		m = strings.ToUpper(m)
-		if !seen[m] && ibanChecksumValid(m) {
-			seen[m] = true
-			out = append(out, m)
+	matches := ibanCandidate.FindAllString(string(data), -1)
+	matches = append(matches, ibanSpacedCandidate.FindAllString(string(data), -1)...)
+	for _, m := range matches {
+		iban, _ := validIBANPrefix(m)
+		if iban != "" && !seen[iban] {
+			seen[iban] = true
+			out = append(out, iban)
 		}
 	}
 	return out

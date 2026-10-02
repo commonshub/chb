@@ -212,8 +212,13 @@ func TestTransactionForAudience(t *testing.T) {
 			t.Errorf("public must not carry %s", k)
 		}
 	}
-	if pu.Metadata["description"] != "coworking" || pu.Amount != 121 || pu.Category != "coworking" {
-		t.Errorf("public keeps amounts, categories and the plain description: %+v", pu)
+	if _, ok := pu.Metadata["description"]; ok || pu.Amount != 121 || pu.Category != "coworking" {
+		t.Errorf("public keeps amounts and categories, never a bank narration: %+v", pu)
+	}
+	stripeTx := tx
+	stripeTx.Provider = "stripe"
+	if transactionForAudience(stripeTx, AudiencePublic).Metadata["description"] != "coworking" {
+		t.Error("public keeps a description we wrote ourselves (non-bank providers)")
 	}
 	// The projection must not mutate the source.
 	if _, ok := tx.Metadata["iban"]; !ok {
@@ -301,5 +306,46 @@ func TestMembersTierGroupOwnership(t *testing.T) {
 	}
 	if membersGroupGIDFromEnv("1500") != 1500 {
 		t.Error("numeric CHB_MEMBERS_GROUP is used as the gid")
+	}
+}
+
+// The prod leak of 2026-10-02: KBC narrations with a payer's name, a spaced
+// IBAN and a BIC reached public/transactions.json through metadata.description
+// and the fullDescription tag.
+func TestTransactionNarrationNeverReachesPublic(t *testing.T) {
+	ownIBANsForTest = map[string]bool{"BE46734072238636": true}
+	defer func() { ownIBANsForTest = nil }()
+	narr := "DOE JOHN Credit transfer BE56 0016 9232 9088 BIC: GEBABEBB CP-ORDER-48516"
+	tx := TransactionEntry{
+		ID: "iban:be46734072238636:tx:1", Provider: "kbcbrussels", Type: "CREDIT",
+		Tags:     [][]string{{"category", "drinks"}, {"fullDescription", narr}, {"description", narr}, {"source", "kbcbrussels"}},
+		Metadata: map[string]interface{}{"category": "drinks", "description": narr},
+	}
+	pub := transactionForAudience(tx, AudiencePublic)
+	raw, _ := json.Marshal(pub)
+	for _, leak := range []string{"DOE JOHN", "BE56", "0016 9232", "GEBABEBB", "fullDescription"} {
+		if strings.Contains(string(raw), leak) {
+			t.Errorf("public leaks %q: %s", leak, raw)
+		}
+	}
+	if !strings.Contains(string(raw), `"drinks"`) {
+		t.Error("public keeps the category")
+	}
+	mem := transactionForAudience(tx, AudienceMembers)
+	mraw, _ := json.Marshal(mem)
+	if !strings.Contains(string(mraw), "DOE JOHN") {
+		t.Error("members keep the narration (names are allowed there)")
+	}
+	for _, leak := range []string{"BE56 0016", "GEBABEBB"} {
+		if strings.Contains(string(mraw), leak) {
+			t.Errorf("members leak bank detail %q: %s", leak, mraw)
+		}
+	}
+	if _, err := enforceAudiencePolicy(AudienceMembers, "transactions.json", mraw); err != nil {
+		t.Errorf("members file must pass the policy after masking: %v", err)
+	}
+	// And the policy itself now catches a spaced IBAN that slipped through.
+	if _, err := enforceAudiencePolicy(AudiencePublic, "x.json", []byte(`{"d":"`+narr+`"}`)); err == nil {
+		t.Error("a spaced third-party IBAN must refuse the write")
 	}
 }

@@ -14,6 +14,7 @@ const (
 	BillsFile              = "bills.json"
 	PartnersFile           = "partners.json"
 	SubscriptionsFile      = "subscriptions.json"
+	ExpensesFile           = "expenses.json"
 	AnalyticEnrichmentFile = "analytic-enrichment.json"
 	AnalyticPlansFile      = "analytic-plans.json"
 )
@@ -31,6 +32,7 @@ func (SourceProvider) Files() []providers.File {
 		{Name: PartnersFile, Description: "Odoo partner snapshot for local matching.", Private: true},
 		{Name: "journals/<journal-id>.json", Description: "Odoo bank journal line snapshots for staged local processing.", Private: true},
 		{Name: SubscriptionsFile, Description: "Monthly Odoo membership subscription snapshot.", Private: true},
+		{Name: ExpensesFile, Description: "Monthly Odoo expense reports (hr.expense), by expense date.", Private: true},
 		{Name: AnalyticEnrichmentFile, Description: "Monthly Odoo analytic/category enrichment for transactions.", Private: false},
 		{Name: "private/invoices.json", Description: "Monthly Odoo customer invoices with PII.", Private: true},
 		{Name: "private/bills.json", Description: "Monthly Odoo vendor bills with PII.", Private: true},

@@ -99,6 +99,13 @@ func BillsSync(args []string) (int, error) {
 		return 0, err
 	}
 
+	// Expense reports: a handful of records, fetched whole every pull.
+	if n, err := syncOdooExpenses(creds, uid, DataDir()); err != nil {
+		odooLog("  %s(expense reports skipped: %v)%s\n", Fmt.Dim, err, Fmt.Reset)
+	} else if n > 0 {
+		odooLog("  %sExpense reports: %d%s\n", Fmt.Dim, n, Fmt.Reset)
+	}
+
 	// Open bills from any month: the date window above never revisits an
 	// old unpaid bill, so without this it would stay "pending" forever
 	// after being paid (see cmd/bills_generate.go, pending-bills.json).
@@ -304,9 +311,7 @@ func billIsOpen(state, paymentState string) bool {
 // database namespace, keyed by bill id.
 func loadAllCachedBills(dataDir string) map[int]OdooOutgoingInvoice {
 	out := map[int]OdooOutgoingInvoice{}
-	pattern := filepath.Join(dataDir, "[0-9][0-9][0-9][0-9]", "[0-9][0-9]", odoosource.RelPath(odoosource.BillsFile))
-	paths, _ := filepath.Glob(pattern)
-	for _, p := range paths {
+	for _, p := range globOdooMonthFiles(dataDir, odoosource.BillsFile) {
 		rel, err := filepath.Rel(dataDir, p)
 		if err != nil {
 			continue
@@ -317,6 +322,15 @@ func loadAllCachedBills(dataDir string) map[int]OdooOutgoingInvoice {
 		}
 	}
 	return out
+}
+
+// globOdooMonthFiles lists YYYY/MM/providers/odoo/<db>/<file> for the
+// current Odoo database namespace.
+func globOdooMonthFiles(dataDir, file string) []string {
+	pattern := filepath.Join(dataDir, "[0-9][0-9][0-9][0-9]", "[0-9][0-9]", odoosource.RelPath(file))
+	paths, _ := filepath.Glob(pattern)
+	sort.Strings(paths)
+	return paths
 }
 
 // refreshOpenBills returns the full records of bills, from any month, that

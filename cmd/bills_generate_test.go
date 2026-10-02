@@ -74,21 +74,17 @@ func TestGenerateBillsTiers(t *testing.T) {
 	t.Setenv("DATA_DIR", dataDir)
 	seedBills(t, dataDir, "2026", "04", testBills())
 
+	stale := filepath.Join(dataDir, "2026", "04", "public", billsFile)
+	os.MkdirAll(filepath.Dir(stale), 0o755)
+	os.WriteFile(stale, []byte(`{}`), 0o644)
 	months, pending := generateBills(dataDir, "")
 	if months != 1 || pending != 2 {
 		t.Fatalf("months=%d pending=%d, want 1 and 2", months, pending)
 	}
 
-	// Month file: posted bills only (no draft), paid and unpaid.
-	month, _ := readBillsFile(t, filepath.Join(dataDir, "2026", "04", "public", billsFile))
-	if len(month.Bills) != 4 || month.Scope != "month" || month.Month != "2026-04" {
-		t.Fatalf("month file = %+v", month)
-	}
-	if month.Totals.Count != 3 || month.Totals.Total != 251 || month.Totals.AmountDue != 151 {
-		t.Errorf("month totals = %+v (credit notes are not summed)", month.Totals)
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, "latest", "public", billsFile)); err == nil {
-		t.Error("month bills.json must not be mirrored to latest/")
+	// Month bill lists moved to expenses.json; a stale bills.json is removed.
+	if _, err := os.Stat(filepath.Join(dataDir, "2026", "04", "public", billsFile)); err == nil {
+		t.Error("month bills.json is retired (see expenses.json)")
 	}
 
 	pub, pubRaw := readBillsFile(t, filepath.Join(dataDir, "latest", "public", pendingBillsFile))

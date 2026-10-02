@@ -29,8 +29,11 @@ promoting the list: `chb odoo journals <id> reconcile`.
 
 | path | contents |
 |---|---|
-| `YYYY/MM/<tier>/bills.json` | every **posted** bill and vendor credit note dated that month, paid or not |
 | `latest/<tier>/pending-bills.json` | every posted bill **still to pay**, whatever its month, newest first |
+
+The month list of every bill, paid or not, moved to
+`YYYY/MM/<tier>/expenses.json` in v3.16, together with vendors, customers
+and bookings: see [accounting-data.md](accounting-data.md).
 
 Drafts are left out because they are not bills yet: they may be
 duplicates, have no amount, or still await validation. Cancelled bills are
@@ -116,5 +119,6 @@ register (KBO/BCE), so they are published.
   list at the next pull.
 - Show the freshness: `generatedAt`. The list follows Odoo within the hour,
   but a bill only disappears once it is reconciled (see the caveat above).
-- The month files feed an expense history: `YYYY/MM/public/bills.json`
-  lists what was bought that month and what is still open.
+- For the expense history, what was bought each month and from whom, use
+  `YYYY/MM/public/expenses.json` and `vendors.json`
+  ([accounting-data.md](accounting-data.md)).

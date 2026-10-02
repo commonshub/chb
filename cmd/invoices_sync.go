@@ -182,6 +182,8 @@ type OdooInvoiceLineItem struct {
 	SubtotalAmount       float64                    `json:"subtotalAmount,omitempty"`
 	TotalAmount          float64                    `json:"totalAmount,omitempty"`
 	Taxes                []OdooInvoiceTax           `json:"taxes,omitempty"`
+	AccountCode          string                     `json:"accountCode,omitempty"` // general ledger account, e.g. 700100
+	AccountName          string                     `json:"accountName,omitempty"`
 	AnalyticDistribution []OdooInvoiceAnalyticSplit `json:"analyticDistribution,omitempty"`
 	Category             string                     `json:"category,omitempty"`
 	Categories           []string                   `json:"categories,omitempty"`
@@ -694,7 +696,7 @@ func enrichOutgoingInvoices(creds *OdooCredentials, uid int, rawInvoices []map[s
 
 	lineRows, err := odooReadMapsByIDs(creds, uid, "account.move.line", sortedIDSet(lineIDs), []string{
 		"id", "move_id", "product_id", "name", "quantity", "price_unit",
-		"price_subtotal", "price_total", "tax_ids", "analytic_distribution", "display_type",
+		"price_subtotal", "price_total", "tax_ids", "analytic_distribution", "display_type", "account_id",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch invoice lines: %w", err)
@@ -1091,6 +1093,7 @@ func buildInvoiceLineItems(lines []map[string]interface{}, analyticsByID, taxesB
 			SubtotalAmount: odooFloat(row["price_subtotal"]),
 			TotalAmount:    odooFloat(row["price_total"]),
 		}
+		item.AccountCode, item.AccountName = splitOdooAccountName(odooFieldName(row["account_id"]))
 
 		for _, taxID := range odooIDList(row["tax_ids"]) {
 			if tax := taxesByID[taxID]; tax != nil {
@@ -2053,4 +2056,15 @@ func printInvoicesSyncHelp() {
 		f.Yellow, f.Reset,
 		f.Yellow, f.Reset,
 	)
+}
+
+// splitOdooAccountName splits an account display name "700100 LOCATION
+// SALLES" into its code and name.
+func splitOdooAccountName(display string) (string, string) {
+	display = strings.TrimSpace(display)
+	code, name, ok := strings.Cut(display, " ")
+	if !ok || strings.Trim(code, "0123456789") != "" {
+		return "", display
+	}
+	return code, strings.TrimSpace(name)
 }

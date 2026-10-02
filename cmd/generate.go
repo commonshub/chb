@@ -949,6 +949,17 @@ func Generate(args []string) error {
 		return fmt.Sprintf("%s, %s", Pluralize(months, "month", ""), Pluralize(pending, "pending bill", ""))
 	})
 
+	// Expenses, vendors, customers, bookings per month and year, per tier
+	// (cmd/odoo_public_generate.go).
+	genStep("Expenses, vendors, customers, bookings", func() string {
+		n, err := generateAccountingFiles(dataDir)
+		if err != nil {
+			Warnf("⚠ accounting files: %v", err)
+			return "failed"
+		}
+		return Pluralize(n, "month", "")
+	})
+
 	// Belgian VAT declarations → public vat.json — see cmd/vat_generate.go.
 	genStep("VAT declarations", func() string {
 		n, err := generateVAT(dataDir)
@@ -4046,8 +4057,12 @@ func transactionForAudience(tx TransactionEntry, a Audience) TransactionEntry {
 	out.StripeChargeID = ""
 	out.StripeCustomerID = ""
 	for k, v := range out.Metadata {
-		if s, ok := v.(string); ok && containsEmail(s) {
-			delete(out.Metadata, k)
+		if s, ok := v.(string); ok {
+			if containsEmail(s) {
+				delete(out.Metadata, k)
+				continue
+			}
+			out.Metadata[k] = maskBankDetails(s)
 		}
 	}
 	for _, k := range []string{"email", "iban", "bic", "counterparty"} {
@@ -4056,17 +4071,77 @@ func transactionForAudience(tx TransactionEntry, a Audience) TransactionEntry {
 	if containsEmail(out.Counterparty) {
 		out.Counterparty = "" // a mailbox standing in for a name is a contact detail
 	}
-	if a == AudienceMembers {
-		return out
-	}
-	// public
-	out.Counterparty = ""
-	for k := range out.Metadata {
-		if isPublicUnsafeMetadataKey(k) {
-			delete(out.Metadata, k)
+	// KBC counterparties are derived from the narration and can carry the
+	// payer's account: names stay for members, bank details go.
+	out.Counterparty = maskBankDetails(out.Counterparty)
+	out.CounterpartyID = maskBankDetails(out.CounterpartyID)
+	public := a == AudiencePublic
+	if public {
+		out.Counterparty = ""
+		for k := range out.Metadata {
+			if isPublicUnsafeMetadataKey(k) {
+				delete(out.Metadata, k)
+			}
+		}
+		// A bank narration is written by the bank or the payer: it carries
+		// the other party's name, account and card holder. Below members it
+		// goes entirely; who we paid is published by vendors.json instead.
+		if transactionHasBankNarration(tx) {
+			delete(out.Metadata, "description")
 		}
 	}
+	// Tags mirror metadata (Nostr-style [key, value] pairs) and must be
+	// projected the same way, or the narration leaks through them.
+	if len(tx.Tags) > 0 {
+		tags := make([][]string, 0, len(tx.Tags))
+		for _, t := range tx.Tags {
+			if len(t) == 0 {
+				continue
+			}
+			k := t[0]
+			switch {
+			case k == "email" || k == "iban" || k == "bic" || k == "counterparty":
+				continue
+			case public && isPublicUnsafeMetadataKey(k):
+				continue
+			case public && k == "description" && transactionHasBankNarration(tx):
+				continue
+			}
+			nt := make([]string, len(t))
+			copy(nt, t)
+			drop := false
+			for i := 1; i < len(nt); i++ {
+				if containsEmail(nt[i]) {
+					drop = true
+					break
+				}
+				nt[i] = maskBankDetails(nt[i])
+			}
+			if !drop {
+				tags = append(tags, nt)
+			}
+		}
+		out.Tags = tags
+	}
 	return out
+}
+
+// transactionHasBankNarration: the description is the bank's free text
+// (KBC, Wise, CSV statements) or a payer-written SEPA memo (incoming
+// Monerium orders), not a label we chose.
+func transactionHasBankNarration(tx TransactionEntry) bool {
+	switch tx.Provider {
+	case "kbcbrussels", "kbc", "wise", "csv":
+		return true
+	}
+	if tx.Provider == "etherscan" && strings.EqualFold(tx.Type, "CREDIT") {
+		for _, t := range tx.Tags {
+			if len(t) > 0 && t[0] == "moneriumKind" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isPublicUnsafeMetadataKey names metadata that carries people or bank

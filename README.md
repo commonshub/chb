@@ -115,7 +115,8 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 - [docs/cookbook.md](docs/cookbook.md) — copy-pasteable recipes for common ops.
 - [docs/txspread.md](docs/txspread.md) — `spread` metadata for amortised transactions.
 - [docs/vat.md](docs/vat.md) — Belgian VAT declarations: import, archive, public `vat.json`.
-- [docs/bills.md](docs/bills.md) — vendor bills per month and the public "still to pay" list.
+- [docs/bills.md](docs/bills.md) — the public "still to pay" list.
+- [docs/accounting-data.md](docs/accounting-data.md) — expenses, vendors, customers and room bookings per month and year, per audience.
 
 ## License
 

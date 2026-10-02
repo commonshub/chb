@@ -39,7 +39,7 @@ Same file names in every tier; each lower tier has strictly less.
 
 | file | public (anyone) | members (Discord `member` role) | where |
 |---|---|---|---|
-| `transactions.json` | amounts, direction, category, collective, account ids, canonical tx ids, plain `description` — no counterparty, no memo/narration, no bank reference, no donor display names | + counterparty names, `memo`, `fullDescription`, `reference` | month, `latest/` |
+| `transactions.json` | amounts, direction, category, collective, account ids, canonical tx ids, `description` only when we wrote it — no bank narration (KBC/Wise/CSV, incoming SEPA memos), no counterparty, no memo, no bank reference, no donor display names | + counterparty names, `memo`, narration (`fullDescription`), `reference` — account numbers and BICs masked | month, `latest/` |
 | `counterparties.json` | our own accounts only (entries with `slug`) | every counterparty by display name | month, `latest/` |
 | `summary.json` | per-account / per-collective / per-category aggregates (identical in all tiers) | = | month (`latest/` holds the lifetime rollup) |
 | `commissions.json`, `inbound_spreads.json`, `activitygrid.json` | aggregates (spreads: no counterparty) | = (+ counterparty on spreads) | month / year / `latest/` |
@@ -53,8 +53,11 @@ Same file names in every tier; each lower tier has strictly less.
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photo, author identity, reactions — `message` is empty | + message text | month, `latest/` |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
-| `bills.json` | the month's posted vendor bills, paid or not: amounts, dates, status, category; business vendors by name with line descriptions; private individuals anonymous | + individuals' names and line descriptions | month only |
-| `pending-bills.json` | every bill still to pay, same projection as `bills.json` — **the "help us pay" list** (§6) | same, with individuals named | `latest/` only |
+| `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; individuals typed only, their free text dropped; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
+| `vendors.json` | one row per vendor: category, documents, total, paid, due; individuals merged per category | one row per vendor, all named | month, year (§7) |
+| `customers.json` | one row per customer: income types, invoices, total, received, due; only organisations named, everyone else merged per income type | all named | month, year (§7) |
+| `bookings.json` | room bookings (room, times, hours; title only for public events), room-rental invoice lines, per-room summary | + booking titles, rental descriptions, customer names | month, year (§7) |
+| `pending-bills.json` | every bill still to pay — **the "help us pay" list** (§6) | same, with individuals named | `latest/` only |
 
 Outside the tiers, because they are public and the same for everyone, each
 file exists once instead of as three identical copies:
@@ -195,7 +198,19 @@ The list is only as accurate as Odoo's reconciliation: a bill paid by
 direct debit stays pending until its bank line is reconciled. Schema, tier
 differences and page guidance: [bills.md](bills.md).
 
-## 7. Checklist for a new page
+## 7. Expenses, vendors, customers, bookings — publish them
+
+Four files per month (`YYYY/MM/<tier>/`) and per year (`YYYY/<tier>/`),
+never in `latest/`. Together they show who the Hub pays and for what, line
+by line; who pays the Hub; and how the rooms are used and what renting
+them brings in. In `public/`, organisations (and VAT-registered sole
+traders, as vendors) are named; private individuals appear only by type,
+merged into one row per category. Schemas, the naming rules and page
+recipes: [accounting-data.md](accounting-data.md).
+
+The month `bills.json` of v3.14 is gone: read `expenses.json`.
+
+## 8. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

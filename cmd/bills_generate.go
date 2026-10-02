@@ -133,7 +133,7 @@ func billStatus(inv OdooOutgoingInvoice) string {
 // billVendorIsBusiness: a company, or anyone registered for VAT (a sole
 // trader's business identity is public in the company register).
 func billVendorIsBusiness(p OdooInvoicePartner) bool {
-	return p.IsCompany || p.CompanyType == "company" || strings.TrimSpace(p.VAT) != ""
+	return partyType(p) != "individual"
 }
 
 func billFromInvoice(inv OdooOutgoingInvoice) Bill {
@@ -299,9 +299,9 @@ func writeBillsTiers(dataDir, year, month, rel string, full BillsFile) {
 	}
 }
 
-// generateBills writes the month files for every month with a bill cache
-// (or only `only`, "YYYY-MM") and always rebuilds the pending list.
-// Returns (months written, pending bills).
+// generateBills rebuilds the pending list (latest/<tier>/pending-bills.json)
+// and removes the retired month bills.json files. Returns (months with
+// bills, pending bills). `only` is kept for callers; the list is global.
 func generateBills(dataDir, only string) (int, int) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	all := loadAllCachedBills(dataDir)
@@ -320,18 +320,14 @@ func generateBills(dataDir, only string) (int, int) {
 			pending = append(pending, b)
 		}
 	}
-	months := 0
-	for ym, bills := range byMonth {
-		if only != "" && ym != only {
-			continue
+	// Month bill lists moved to expenses.json (cmd/odoo_public_generate.go);
+	// remove the v3.14 month bills.json files so nobody reads stale data.
+	for ym := range byMonth {
+		for _, a := range Audiences {
+			os.Remove(audiencePath(dataDir, ym[:4], ym[5:], a, billsFile))
 		}
-		sortBills(bills)
-		writeBillsTiers(dataDir, ym[:4], ym[5:], billsFile, BillsFile{
-			GeneratedAt: now, Source: "odoo", Scope: "month", Month: ym, Currency: "EUR",
-			Totals: billsTotals(bills), TotalsByCurrency: otherCurrencyTotals(bills), Bills: bills,
-		})
-		months++
 	}
+	months := len(byMonth)
 	if len(all) > 0 {
 		sortBills(pending)
 		writeBillsTiers(dataDir, "latest", "", pendingBillsFile, BillsFile{

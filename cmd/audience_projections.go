@@ -119,8 +119,21 @@ func imagesFileForAudience(f ImagesFile, a Audience) ImagesFile {
 // (entries with a slug); members see every counterparty by name; stewards
 // everything.
 func counterpartiesFileForAudience(f CounterpartiesFile, a Audience) CounterpartiesFile {
-	if a != AudiencePublic {
+	if a == AudienceStewards {
 		return f
+	}
+	if a == AudienceMembers {
+		// Names stay; account numbers that bank narrations put in them go.
+		out := f
+		out.Counterparties = make(map[string]CounterpartyEntry, len(f.Counterparties))
+		for uri, cp := range f.Counterparties {
+			cp.Name = maskBankDetails(cp.Name)
+			cp.About = maskBankDetails(cp.About)
+			// KBC counterparty ids embed the narration: mask them the same
+			// way transactionForAudience masks counterpartyId, so links hold.
+			out.Counterparties[maskBankDetails(uri)] = cp
+		}
+		return out
 	}
 	out := f
 	out.Counterparties = map[string]CounterpartyEntry{}
