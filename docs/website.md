@@ -37,6 +37,23 @@ contains everything the public one does.
 
 Same file names in every tier; each lower tier has strictly less.
 
+**Every month has every month file, and every year every year file**, from
+the first month of data to the last. A month with nothing to report has
+the file with empty lists (`"expenses": []`, `"transactions": []`, …),
+never a missing file. There are no exceptions for older months. Month
+files: `transactions.json`, `counterparties.json`, `summary.json`,
+`commissions.json`, `contributors.json`, `images.json`, `members.json`,
+`door.json`, `events.json`, `calendars/public.ics`, `expenses.json`,
+`vendors.json`, `customers.json`, `bookings.json` (plus `events/images/`
+in `public/` when a month has event covers). Year files:
+`activitygrid.json`, `contributors.json`, `events.json`, `events.csv`,
+`expenses.json`, `vendors.json`, `customers.json`, `bookings.json`.
+
+`latest/<tier>/` holds the newest month's files plus the lifetime and
+upcoming views (`contributors.json` = top contributors, `activitygrid.json`
+= every year, `events.json` = upcoming, `events.csv` = current year,
+`pending-bills.json`). Year files are never copied there.
+
 | file | public (anyone) | members (Discord `member` role) | where |
 |---|---|---|---|
 | `transactions.json` | amounts, direction, category, collective, account ids, canonical tx ids, `description` only when we wrote it — no bank narration (KBC/Wise/CSV, incoming SEPA memos), no counterparty, no memo, no bank reference, no donor display names; `counterpartyId` only when it names nobody (blockchain address, our own accounts) | + counterparty names, `memo`, narration (`fullDescription`), `reference` — account numbers and BICs masked | month, `latest/` |

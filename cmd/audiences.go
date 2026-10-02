@@ -127,7 +127,7 @@ func audiencePath(dataDir, year, month string, a Audience, rel string) string {
 var ErrAudiencePolicy = errors.New("audience policy violation")
 
 // writeAudienceFile writes rel into the tier directory of the month (and
-// mirrors it to latest/<tier>/rel, like writeMonthFile), after running the
+// mirrors a month file to latest/<tier>/rel, like writeMonthFile), after running the
 // tier's policy. A policy violation is an error, not a warning: the file is
 // not written, because a consumer of that tier could otherwise see it.
 func writeAudienceFile(dataDir, year, month string, a Audience, rel string, data []byte) error {
@@ -136,7 +136,10 @@ func writeAudienceFile(dataDir, year, month string, a Audience, rel string, data
 		return err
 	}
 	targets := []string{audiencePath(dataDir, year, month, a, rel)}
-	if year != "latest" {
+	// Only month files mirror to latest/ ("the newest month"). A year file
+	// (month "") never does: it used to overwrite latest/contributors.json
+	// and latest/activitygrid.json with the last year processed.
+	if year != "latest" && month != "" {
 		targets = append(targets, audiencePath(dataDir, "latest", "", a, rel))
 	}
 	for _, target := range targets {

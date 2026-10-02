@@ -185,8 +185,8 @@ func writeMonthFile(dataDir, year, month, relPath string, data []byte) error {
 		return err
 	}
 
-	// Mirror to latest/ (skip if already writing to latest/)
-	if year != "latest" {
+	// Mirror month files to latest/ (not year files, not latest/ itself)
+	if year != "latest" && month != "" {
 		latestDst := filepath.Join(dataDir, "latest", relPath)
 		if err := writeDataFile(latestDst, data); err != nil {
 			return err

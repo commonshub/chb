@@ -22,9 +22,9 @@ month by month and for the whole year:
 | `YYYY/<tier>/<same names>` | the same four for the whole year; `bookings.json` adds `months[]`, a per-room summary for each month |
 
 `<tier>` is `public`, `members` or `stewards`. These files are never
-mirrored to `latest/`: pick the month or the year. A month without vendor
-bills has no `expenses.json`/`vendors.json`, and so on. Treat a missing file
-as "nothing that month".
+mirrored to `latest/`: pick the month or the year. Every month and every
+year has all four files: a month without vendor bills has an
+`expenses.json` with `"expenses": []`, and so on.
 
 Every file carries `generatedAt`, `scope` (`month` or `year`), `period`
 (`2026-08` or `2026`) and `currency` (`EUR`). All totals are in euros:

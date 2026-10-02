@@ -985,6 +985,20 @@ func Generate(args []string) error {
 		return Pluralize(n, "period", "") + " → latest/vat.json"
 	})
 
+	// Same files in every month and year, whatever the month had to say
+	// (cmd/month_files.go). Runs last so it only fills real gaps.
+	genStep("Month file set", func() string {
+		n, err := ensureMonthFileSet(dataDir)
+		if err != nil {
+			Warnf("⚠ month file set: %v", err)
+			return "failed"
+		}
+		if n == 0 {
+			return "complete"
+		}
+		return Pluralize(n, "file", "") + " added"
+	})
+
 	// Content hashes of the raw archives for every completed month that
 	// has none yet (or whose providers changed since) — see cmd/integrity.go.
 	genStep("Integrity", func() string {
@@ -4157,8 +4171,6 @@ func transactionHasBankNarration(tx TransactionEntry) bool {
 	return false
 }
 
-// isPublicUnsafeMetadataKey names metadata that carries people or bank
-// references and therefore stops at the members tier.
 // publicCounterpartyID keeps a counterparty id in public only when it names
 // no person: a blockchain address or token contract (public on chain
 // anyway), or one of our own bank accounts. Bank counterparty ids embed the
@@ -4181,6 +4193,8 @@ func publicCounterpartyID(id string) string {
 	return ""
 }
 
+// isPublicUnsafeMetadataKey names metadata that carries people or bank
+// references and therefore stops at the members tier.
 func isPublicUnsafeMetadataKey(k string) bool {
 	switch k {
 	case "name", "firstName", "lastName", "fullDescription", "reference", "freeReference",

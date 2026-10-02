@@ -916,12 +916,18 @@ func generateYearlyCSV(dataDir, year string) {
 	}
 
 	csvContent := headers + "\n" + strings.Join(rows, "\n") + "\n"
-	writeTiers(dataDir, year, "", "events.csv", tierPayload{
+	payload := tierPayload{
 		Stewards: []byte(csvContent),
 		Members:  []byte(csvContent),
 		Public:   []byte(eventsCSVForAudience(csvContent, AudiencePublic)),
 		Legacy:   []byte(csvContent),
-	})
+	}
+	writeTiers(dataDir, year, "", "events.csv", payload)
+	// latest/events.csv is the current year's sheet (year files no longer
+	// mirror to latest/ on their own).
+	if year == time.Now().In(BrusselsTZ()).Format("2006") {
+		writeTiers(dataDir, "latest", "", "events.csv", payload)
+	}
 }
 
 func csvEscape(s string) string {
