@@ -601,7 +601,7 @@ func getAvailableYears(dataDir string) []string {
 	}
 	var years []string
 	for _, e := range entries {
-		if e.IsDir() && len(e.Name()) == 4 {
+		if e.IsDir() && isYearSegment(e.Name()) { // not "logs" or "temp"
 			years = append(years, e.Name())
 		}
 	}
@@ -618,7 +618,7 @@ func getAvailableMonths(dataDir, year string) []string {
 	}
 	var months []string
 	for _, e := range entries {
-		if e.IsDir() && len(e.Name()) == 2 {
+		if e.IsDir() && isMonthSegment(e.Name()) {
 			months = append(months, e.Name())
 		}
 	}

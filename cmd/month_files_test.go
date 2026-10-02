@@ -96,3 +96,13 @@ func TestYearFilesDoNotMirrorToLatest(t *testing.T) {
 		t.Errorf("month files still mirror to latest/: %s", got)
 	}
 }
+
+func TestAvailableYearsIgnoreOtherDirs(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, d := range []string{"2025", "2026", "logs", "temp", "latest"} {
+		os.MkdirAll(filepath.Join(dataDir, d), 0o755)
+	}
+	if got := getAvailableYears(dataDir); strings.Join(got, ",") != "2025,2026" {
+		t.Errorf("years = %v", got)
+	}
+}
