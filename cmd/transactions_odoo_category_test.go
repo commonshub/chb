@@ -47,6 +47,7 @@ func TestOdooTxCategorizer(t *testing.T) {
 		{Slug: "vat", Accounts: []string{"451"}},
 		{Slug: "consulting", Accounts: []string{"613105"}},
 		{Slug: "catering", Accounts: []string{"604200"}},
+		{Slug: "subsidy", Accounts: []string{"740041"}},
 	}
 	o := &odooTxCategorizer{
 		lineByID: map[int]OdooCacheLine{
@@ -54,10 +55,13 @@ func TestOdooTxCategorizer(t *testing.T) {
 			2: {ID: 2, MoveID: 12, AccountID: 451, CounterpartType: "liability_current"},
 			3: {ID: 3, MoveID: 13, AccountID: 440, CounterpartType: "liability_payable"},
 			4: {ID: 4, MoveID: 14, AccountID: 499, CounterpartType: "asset_current"},
+			5: {ID: 5, MoveID: 15, AccountID: 440, CounterpartType: "liability_payable"},
 		},
 		lineByImport: map[string]OdooCacheLine{},
 		codeByID:     map[int]string{580: "580000", 451: "451200", 440: "440000", 499: "499000"},
-		matches:      map[int][]int{3: {900, 901}},
+		matches:      map[int][]int{3: {900, 901}, 5: {902}},
+		// 902 is not a cached bill: its booking lines come from the matches file.
+		moveAccounts: map[int]map[string]float64{902: {"740041": 6036.71}},
 		docs: map[int]OdooOutgoingInvoice{
 			900: {ID: 900, LineItems: []OdooInvoiceLineItem{{AccountCode: "613105", SubtotalAmount: 1000}, {AccountCode: "604200", SubtotalAmount: 50}}},
 			901: {ID: 901, LineItems: []OdooInvoiceLineItem{{AccountCode: "604200", SubtotalAmount: 200}}},
@@ -78,6 +82,7 @@ func TestOdooTxCategorizer(t *testing.T) {
 		{tx(3, ""), "consulting", "DEBIT", 2},
 		{tx(3, "rent"), "rent", "DEBIT", 2}, // rules win; documents still linked
 		{tx(4, ""), "", "DEBIT", 0},         // suspense: no category
+		{tx(5, ""), "subsidy", "DEBIT", 1},  // matched entry, not a cached bill
 		{tx(99, ""), "", "DEBIT", 0},        // not in Odoo
 		{TransactionEntry{Type: "CREDIT", Metadata: map[string]interface{}{"description": "Solde d'ouverture"}}, "opening_balance", "INTERNAL", 0},
 	}
@@ -91,5 +96,14 @@ func TestOdooTxCategorizer(t *testing.T) {
 		if c.cat != "" && c.tx.Category == "" && x.Metadata["categorySource"] != "odoo" {
 			t.Errorf("case %d: categorySource not set", i)
 		}
+	}
+}
+
+func TestOdooAccountCodeFromField(t *testing.T) {
+	if got := odooAccountCodeFromField([]interface{}{float64(7), "613105 HONORAIRES DIVERS"}); got != "613105" {
+		t.Fatalf("got %q", got)
+	}
+	if got := odooAccountCodeFromField(false); got != "" {
+		t.Fatalf("got %q", got)
 	}
 }

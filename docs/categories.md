@@ -44,9 +44,11 @@ In order; the first one that gives a category wins:
 3. **rules** (`rules.json`, `rules.local.json`; [rules.md](rules.md));
 4. **Odoo**, the consolidated books, when the bank line is reconciled
    there:
-   - reconciled with **invoices or bills**: the category of the documents'
-     lines (by GL account, weighted by amount); the documents' URIs go to
-     `metadata.documents`;
+   - reconciled with **invoices, bills or other entries**: the category of
+     their booking lines (by GL account, weighted by amount; tax,
+     receivable and payable lines left out); their URIs go to
+     `metadata.documents`. A bill booked to 444000 (an invoice accrued the
+     year before) gives `accrual`;
    - booked straight to an account (580000 internal transfer, 451200 VAT,
      455000 salaries, 613105 fees…): the category of that account;
    - suspense (499) gives none.

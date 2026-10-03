@@ -423,6 +423,16 @@
     "group": "internal"
   },
   {
+    "slug": "accrual",
+    "label": "Previous-year invoices",
+    "direction": "both",
+    "group": "other",
+    "accounts": [
+      "404",
+      "444"
+    ]
+  },
+  {
     "slug": "refund",
     "label": "Refund",
     "direction": "both",

@@ -26,7 +26,12 @@ import (
 
 type StatementMatchesFile struct {
 	FetchedAt string           `json:"fetchedAt,omitempty"`
-	Matches   map[string][]int `json:"matches"` // statement line id → matched move ids (bills, invoices)
+	Matches   map[string][]int `json:"matches"` // statement line id → matched move ids (bills, invoices, entries)
+	// Moves: matched move id → its booking lines' amounts per GL account
+	// code (product lines only: no tax, receivable or payable lines), so a
+	// payment is categorised even when the move is not a cached bill or
+	// invoice.
+	Moves map[string]map[string]float64 `json:"moves,omitempty"`
 }
 
 func statementMatchesPath(dataDir string) string {
@@ -89,7 +94,7 @@ func syncStatementMatches(creds *OdooCredentials, uid int, dataDir string) (int,
 			cpIDs = append(cpIDs, l.CounterpartID)
 		}
 	}
-	file := StatementMatchesFile{Matches: map[string][]int{}}
+	file := StatementMatchesFile{Matches: map[string][]int{}, Moves: map[string]map[string]float64{}}
 	if len(cpIDs) > 0 {
 		cps, err := odooReadChunked(creds, uid, "account.move.line", cpIDs, []string{"matched_debit_ids", "matched_credit_ids"})
 		if err != nil {
@@ -141,6 +146,9 @@ func syncStatementMatches(creds *OdooCredentials, uid int, dataDir string) (int,
 				file.Matches[strconv.Itoa(st.ID)] = moves
 			}
 		}
+		if err := fetchMatchedMoveAccounts(creds, uid, &file); err != nil {
+			return 0, err
+		}
 	}
 	err := writeIfChanged(statementMatchesPath(dataDir), &file,
 		func(v interface{}) { v.(*StatementMatchesFile).FetchedAt = "" }, &StatementMatchesFile{},
@@ -181,4 +189,86 @@ func OdooStatementMatchesSync(args []string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s matched to invoices or bills", Pluralize(n, "bank line", "")), nil
+}
+
+// fetchMatchedMoveAccounts fills file.Moves with the product lines of every
+// matched move, summed per GL account code.
+func fetchMatchedMoveAccounts(creds *OdooCredentials, uid int, file *StatementMatchesFile) error {
+	seen := map[int]bool{}
+	var ids []int
+	for _, ms := range file.Matches {
+		for _, m := range ms {
+			if !seen[m] {
+				seen[m] = true
+				ids = append(ids, m)
+			}
+		}
+	}
+	sort.Ints(ids)
+	for start := 0; start < len(ids); start += 500 {
+		end := start + 500
+		if end > len(ids) {
+			end = len(ids)
+		}
+		domain := []interface{}{
+			[]interface{}{"move_id", "in", ids[start:end]},
+			[]interface{}{"display_type", "in", []interface{}{"product", false}},
+			[]interface{}{"account_id.account_type", "not in", []interface{}{"asset_receivable", "liability_payable"}},
+		}
+		res, err := odooExec(creds.URL, creds.DB, uid, creds.Password, "account.move.line", "search_read",
+			[]interface{}{domain}, map[string]interface{}{"fields": []string{"move_id", "account_id", "balance"}})
+		if err != nil {
+			return err
+		}
+		var rows []map[string]interface{}
+		if err := json.Unmarshal(res, &rows); err != nil {
+			return err
+		}
+		for _, r := range rows {
+			code := odooAccountCodeFromField(r["account_id"])
+			if code == "" {
+				continue
+			}
+			key := strconv.Itoa(odooFieldID(r["move_id"]))
+			if file.Moves[key] == nil {
+				file.Moves[key] = map[string]float64{}
+			}
+			amt := odooFloat(r["balance"])
+			if amt < 0 {
+				amt = -amt
+			}
+			file.Moves[key][code] = roundCents(file.Moves[key][code] + amt)
+		}
+	}
+	return nil
+}
+
+// odooAccountCodeFromField: the code from a many2one [id, "613105 Fees"].
+func odooAccountCodeFromField(v interface{}) string {
+	if xs, ok := v.([]interface{}); ok && len(xs) > 1 {
+		if name, ok := xs[1].(string); ok {
+			if f := strings.Fields(name); len(f) > 0 {
+				return f[0]
+			}
+		}
+	}
+	return ""
+}
+
+func loadStatementMatchedMoves(dataDir string) map[int]map[string]float64 {
+	out := map[int]map[string]float64{}
+	data, err := os.ReadFile(statementMatchesPath(dataDir))
+	if err != nil {
+		return out
+	}
+	var f StatementMatchesFile
+	if json.Unmarshal(data, &f) != nil {
+		return out
+	}
+	for k, v := range f.Moves {
+		if id, err := strconv.Atoi(k); err == nil {
+			out[id] = v
+		}
+	}
+	return out
 }

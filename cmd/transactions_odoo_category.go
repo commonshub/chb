@@ -54,6 +54,7 @@ type odooTxCategorizer struct {
 	lineByImport map[string]OdooCacheLine
 	codeByID     map[int]string
 	matches      map[int][]int
+	moveAccounts map[int]map[string]float64 // matched move → amount per GL account
 	docs         map[int]OdooOutgoingInvoice
 	accounts     map[string]*AccountConfig
 	prefixes     []categoryPrefix
@@ -111,6 +112,7 @@ func newOdooTxCategorizer(dataDir string) *odooTxCategorizer {
 		}
 	}
 	o.matches = loadStatementMatches(dataDir)
+	o.moveAccounts = loadStatementMatchedMoves(dataDir)
 	for id, d := range loadAllCachedBills(dataDir) {
 		o.docs[id] = d
 	}
@@ -166,6 +168,14 @@ func (o *odooTxCategorizer) lineFor(tx TransactionEntry) (OdooCacheLine, bool) {
 func (o *odooTxCategorizer) documentCategory(moveIDs []int) string {
 	weight := map[string]float64{}
 	for _, id := range moveIDs {
+		if accts, ok := o.moveAccounts[id]; ok {
+			for code, amt := range accts {
+				if c := categoryForAccountCode(o.prefixes, code); c != "" {
+					weight[c] += amt
+				}
+			}
+			continue
+		}
 		for _, li := range o.docs[id].LineItems {
 			amt := li.SubtotalAmount
 			if amt < 0 {
@@ -202,9 +212,7 @@ func (o *odooTxCategorizer) apply(tx *TransactionEntry) {
 	if len(moves) > 0 {
 		var uris []interface{}
 		for _, m := range moves {
-			if d, ok := o.docs[m]; ok {
-				uris = append(uris, odooDocURI("account.move", m, d.InvoiceURL))
-			}
+			uris = append(uris, odooDocURI("account.move", m, o.docs[m].InvoiceURL))
 		}
 		if len(uris) > 0 {
 			setMetadata(tx, "documents", uris)
@@ -252,6 +260,7 @@ func monthOdooBookingsHash(dataDir, year, month string) string {
 	byMonth, ok := odooBookingsHashCache[dataDir]
 	if !ok {
 		matches := loadStatementMatches(dataDir)
+		moveAccounts := loadStatementMatchedMoves(dataDir)
 		cats, _ := os.ReadFile(settingsFilePath("categories.json"))
 		lines := cachedJournalLines(dataDir)
 		sort.Slice(lines, func(i, j int) bool { return lines[i].ID < lines[j].ID })
@@ -267,7 +276,11 @@ func monthOdooBookingsHash(dataDir, year, month string) string {
 				h.Write(cats)
 				hashes[ym] = h
 			}
-			fmt.Fprintf(h, "%d|%d|%s|%v\n", l.ID, l.AccountID, l.CounterpartType, matches[l.ID])
+			fmt.Fprintf(h, "%d|%d|%s|%v|", l.ID, l.AccountID, l.CounterpartType, matches[l.ID])
+			for _, m := range matches[l.ID] {
+				fmt.Fprintf(h, "%v", moveAccounts[m])
+			}
+			h.Write([]byte("\n"))
 		}
 		byMonth = map[string]string{}
 		for ym, h := range hashes {
