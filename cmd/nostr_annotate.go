@@ -50,6 +50,7 @@ func NostrAnnotate(args []string) error {
 	set("--collective", &ann.Collective)
 	set("--event", &ann.Event)
 	set("--note", &ann.Description)
+	set("--exclude", &ann.Exclude) // --exclude "" includes it again
 	if spreads := GetOptions(args, "--spread"); len(spreads) > 0 {
 		ann.Spread = nil
 		for _, sp := range spreads {
@@ -60,8 +61,9 @@ func NostrAnnotate(args []string) error {
 			ann.Spread = append(ann.Spread, SpreadEntry{Month: month, Amount: amount})
 		}
 	}
-	if ann.Category == "" && ann.Collective == "" && ann.Event == "" && ann.Description == "" && len(ann.Spread) == 0 {
-		return fmt.Errorf("nothing to annotate: pass --category, --collective, --event, --spread or --note")
+	if ann.Category == "" && ann.Collective == "" && ann.Event == "" && ann.Description == "" && len(ann.Spread) == 0 &&
+		ann.Exclude == "" && len(GetOptions(args, "--exclude")) == 0 {
+		return fmt.Errorf("nothing to annotate: pass --category, --collective, --event, --spread, --note or --exclude")
 	}
 
 	// Warnings, not errors: the dataset only knows its own slugs.
@@ -86,6 +88,9 @@ func NostrAnnotate(args []string) error {
 	}
 	for _, sp := range ann.Spread {
 		tags = append(tags, nostr.Tag{"spread", sp.Month, sp.Amount})
+	}
+	if ann.Exclude != "" {
+		tags = append(tags, nostr.Tag{"exclude", ann.Exclude})
 	}
 	ev := &nostr.Event{Kind: 1111, Tags: tags, Content: ann.Description}
 
@@ -156,7 +161,7 @@ chb nostr annotate — publish an annotation for a transaction or an Odoo docume
 USAGE
   chb nostr annotate <uri> [--category <slug>] [--collective <slug>] [--event <id>]
                            [--spread YYYY-MM:amount …] [--note "text"]
-                           [--clear] [--dry-run] [--yes]
+                           [--exclude "reason"] [--clear] [--dry-run] [--yes]
 
 URIS (the "id"/"uri" fields of the published files)
   odoo:<host>:<db>:account.move:<id>       bill, credit note, invoice, journal entry
@@ -167,7 +172,9 @@ URIS (the "id"/"uri" fields of the published files)
 
 An annotation is a snapshot: the newest trusted one per URI wins. The command
 starts from the current annotation and changes only the fields you pass
-(--clear starts empty). It is a kind 1111 event with lowercase i/k tags only;
+(--clear starts empty). --exclude "test mint" leaves the record out of
+every total (it stays listed, marked excluded); --exclude "" includes it
+again. It is a kind 1111 event with lowercase i/k tags only;
 uppercase I/K would make it a comment. See docs/annotations.md.
 `)
 }

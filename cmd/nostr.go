@@ -310,7 +310,10 @@ type TxAnnotation struct {
 	Tags         [][]string    `json:"tags,omitempty"`
 	Description  string        `json:"description,omitempty"`
 	Spread       []SpreadEntry `json:"spread,omitempty"`
-	NostrEventID string        `json:"nostrEventId"`
+	// Exclude: the reason this record is left out of every total (an
+	// ["exclude", "<reason>"] tag; docs/annotations.md).
+	Exclude      string `json:"exclude,omitempty"`
+	NostrEventID string `json:"nostrEventId"`
 	Author       string        `json:"author"`
 	CreatedAt    int64         `json:"createdAt"`
 }
@@ -409,6 +412,9 @@ func parseAnnotation(uri string, ev NostrEvent) *TxAnnotation {
 			if len(tag) >= 3 {
 				a.Spread = append(a.Spread, SpreadEntry{Month: tag[1], Amount: tag[2]})
 			}
+		case "exclude":
+			a.Exclude = exclusionReason(tag[1])
+			continue
 		}
 		if tag[0] == "i" || tag[0] == "I" || tag[0] == "k" || tag[0] == "K" || tag[0] == "e" || tag[0] == "p" {
 			continue

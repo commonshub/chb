@@ -326,6 +326,12 @@ URIs in `metadata.documents`). Leave out `internal_transfer` and
 progress with `summary.json` → `coverage.uncategorisedShare`. Details:
 [categories.md](categories.md).
 
+Transactions marked `metadata.excluded` (a reason, e.g. `"test mint"`)
+are listed for transparency but are not money or tokens: leave them out of
+every total, as `summary.json` and `contributors.json` already do. They
+come from trusted `exclude` annotations ([annotations.md](annotations.md))
+or from settings `excluded-transactions.json` entries with `"keep": true`.
+
 ## 14. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.

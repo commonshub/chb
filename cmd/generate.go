@@ -1767,6 +1767,7 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	}
 
 	type chtTx struct {
+		Hash      string `json:"hash"`
 		From      string `json:"from"`
 		To        string `json:"to"`
 		Value     string `json:"value"`
@@ -1818,7 +1819,11 @@ func generateMonthContributorsGo(dataDir, year, month string, settings *Settings
 	}
 	addrTotals := map[string]*addrTokens{}
 	divisor := math.Pow10(decimals)
+	excluded := loadTxExclusions(dataDir)
 	for _, tx := range chtTxs {
+		if excluded.hash(tx.Hash) != "" {
+			continue // test mints and the like: not contributions
+		}
 		if !cutoff.IsZero() {
 			secs, err := strconv.ParseInt(tx.TimeStamp, 10, 64)
 			if err != nil || time.Unix(secs, 0).UTC().Before(cutoff) {
@@ -3058,6 +3063,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					if len(ann.Spread) > 0 {
 						tx.Spread = ann.Spread
 					}
+					if ann.Exclude != "" {
+						setMetadata(tx, "excluded", ann.Exclude)
+					}
 					if note := strings.TrimSpace(ann.Description); note != "" {
 						// A trusted annotation's text: kept apart from the bank
 						// narration (description), which never goes public.
@@ -3174,6 +3182,15 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	if odooMappings, err := LoadOdooMappings(); err == nil && len(odooMappings) > 0 {
 		for i := range transactions {
 			applyOdooMapping(odooMappings, &transactions[i])
+		}
+	}
+
+	// 5b. Exclusions — test mints and the like stay listed, marked
+	// metadata.excluded, and every total skips them (excluded_transactions.go).
+	ex := loadTxExclusions(dataDir)
+	for i := range transactions {
+		if r := ex.reasonFor(transactions[i]); r != "" {
+			setMetadata(&transactions[i], "excluded", r)
 		}
 	}
 

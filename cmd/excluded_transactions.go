@@ -19,6 +19,11 @@ type excludedOnchainTx struct {
 	To     string  `json:"to"`
 	Amount float64 `json:"amount,omitempty"`
 	Reason string  `json:"reason,omitempty"`
+	// Keep: the transaction stays in transactions.json, marked
+	// metadata.excluded = reason, and is left out of every total (test
+	// mints, for example). Without it the transfer is dropped. The hash
+	// alone identifies it (chain and to are optional).
+	Keep bool `json:"keep,omitempty"`
 }
 
 type excludedTransactionsFile struct {
@@ -53,7 +58,9 @@ func loadExcludedOnchainTxs() map[string]bool {
 			return
 		}
 		for _, t := range f.Transactions {
-			excludedOnchainSet[excludedOnchainKey(t.Chain, t.Hash, t.To)] = true
+			if !t.Keep {
+				excludedOnchainSet[excludedOnchainKey(t.Chain, t.Hash, t.To)] = true
+			}
 		}
 	})
 	return excludedOnchainSet
@@ -63,4 +70,103 @@ func loadExcludedOnchainTxs() map[string]bool {
 // exclusion list.
 func isExcludedOnchainTx(chain, hash, to string) bool {
 	return loadExcludedOnchainTxs()[excludedOnchainKey(chain, hash, to)]
+}
+
+// Excluded-but-kept transactions: one registry for every total.
+//
+// Two sources mark a transaction excluded: excluded-transactions.json
+// entries with "keep": true, and trusted Nostr annotations carrying an
+// ["exclude", "<reason>"] tag (docs/annotations.md). An excluded
+// transaction stays in transactions.json with metadata.excluded = reason
+// and is skipped by summary.json, contributors.json token totals, the
+// token report and coverage.
+
+type txExclusions struct {
+	byURI  map[string]string // canonical URI → reason
+	byHash map[string]string // lower-case tx hash → reason (on-chain)
+}
+
+var (
+	txExclusionsMu    sync.Mutex
+	txExclusionsCache = map[string]*txExclusions{}
+)
+
+// resetTxExclusions forgets the cached registry (after a Nostr pull, in
+// tests).
+func resetTxExclusions() {
+	txExclusionsMu.Lock()
+	txExclusionsCache = map[string]*txExclusions{}
+	txExclusionsMu.Unlock()
+}
+
+func loadTxExclusions(dataDir string) *txExclusions {
+	txExclusionsMu.Lock()
+	defer txExclusionsMu.Unlock()
+	if e, ok := txExclusionsCache[dataDir]; ok {
+		return e
+	}
+	e := &txExclusions{byURI: map[string]string{}, byHash: map[string]string{}}
+	if data, err := os.ReadFile(settingsFilePath("excluded-transactions.json")); err == nil {
+		var f excludedTransactionsFile
+		if json.Unmarshal(data, &f) == nil {
+			for _, t := range f.Transactions {
+				if t.Keep && t.Hash != "" {
+					e.byHash[strings.ToLower(t.Hash)] = exclusionReason(t.Reason)
+				}
+			}
+		}
+	}
+	for uri, a := range loadTransactionAnnotations(dataDir) {
+		if a.Exclude == "" {
+			continue
+		}
+		e.byURI[uri] = a.Exclude
+		if i := strings.LastIndex(uri, ":tx:"); i >= 0 {
+			e.byHash[strings.ToLower(uri[i+4:])] = a.Exclude
+		}
+	}
+	txExclusionsCache[dataDir] = e
+	return e
+}
+
+func exclusionReason(r string) string {
+	if r = strings.TrimSpace(r); r == "" {
+		return "excluded"
+	}
+	return r
+}
+
+// hash returns the reason an on-chain transfer is excluded, or "".
+func (e *txExclusions) hash(h string) string {
+	if e == nil || h == "" {
+		return ""
+	}
+	return e.byHash[strings.ToLower(h)]
+}
+
+// reasonFor returns why a transaction is excluded, or "".
+func (e *txExclusions) reasonFor(tx TransactionEntry) string {
+	if e == nil {
+		return ""
+	}
+	if r := e.byURI[tx.ID]; r != "" {
+		return r
+	}
+	for _, h := range []string{tx.TxHash, tx.ProviderID} {
+		if strings.HasPrefix(strings.ToLower(h), "0x") {
+			if r := e.hash(h); r != "" {
+				return r
+			}
+		}
+	}
+	return ""
+}
+
+// isExcludedTx: a transaction marked metadata.excluded (by generate).
+func isExcludedTx(tx TransactionEntry) bool {
+	if tx.Metadata == nil {
+		return false
+	}
+	r, _ := tx.Metadata["excluded"].(string)
+	return r != ""
 }

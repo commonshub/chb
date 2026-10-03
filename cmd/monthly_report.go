@@ -241,7 +241,11 @@ func readMonthlyReportSummary(dataDir, year, month string) MonthlyReportSummary 
 	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json")); err == nil {
 		var f TransactionsFile
 		if json.Unmarshal(data, &f) == nil {
-			summary.Transactions = len(f.Transactions)
+			for _, tx := range f.Transactions {
+				if !isExcludedTx(tx) {
+					summary.Transactions++
+				}
+			}
 		}
 	}
 	if data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "events.json")); err == nil {
@@ -266,6 +270,9 @@ func buildMonthlyReportCurrencies(dataDir, year, month string) []MonthlyReportCu
 
 	currencies := map[string]*MonthlyReportCurrency{}
 	for _, tx := range f.Transactions {
+		if isExcludedTx(tx) {
+			continue
+		}
 		currency := strings.ToUpper(strings.TrimSpace(tx.Currency))
 		if currency == "" {
 			currency = "UNKNOWN"
@@ -405,6 +412,9 @@ func buildMonthlyReportTaggedFlows(dataDir, year, month string) (collectives, ca
 	// but the cost is recognized elsewhere). A tx without a spread contributes
 	// its full amount as before.
 	for _, tx := range f.Transactions {
+		if isExcludedTx(tx) {
+			continue
+		}
 		if len(tx.Spread) > 0 {
 			alloc, ok := spreadAllocationForMonth(tx.Spread, thisYM)
 			if !ok || alloc == 0 {
@@ -521,6 +531,9 @@ func buildMonthlyReportAccounts(dataDir, year, month string) []MonthlyReportAcco
 
 	accounts := map[string]*MonthlyReportAccount{}
 	for _, tx := range f.Transactions {
+		if isExcludedTx(tx) {
+			continue
+		}
 		if tx.Provider == etherscansource.Source && strings.TrimSpace(tx.Account) == "" {
 			continue
 		}
@@ -655,7 +668,11 @@ func buildMonthlyReportToken(dataDir, year, month string, token TokenConfig) (Mo
 		}
 		hadHistory = true
 		isMonth := ym == monthYM
+		excluded := loadTxExclusions(dataDir)
 		for _, tx := range cache.Transactions {
+			if excluded.hash(tx.Hash) != "" {
+				continue
+			}
 			dec := token.Decimals
 			if tx.TokenDecimal != "" {
 				fmt.Sscanf(tx.TokenDecimal, "%d", &dec)
@@ -1294,7 +1311,7 @@ func buildCategoryCoverage(dataDir, year, month string) *CategoryCoverage {
 	}
 	c := &CategoryCoverage{Currency: "EUR"}
 	for _, tx := range f.Transactions {
-		if !isEURCurrency(tx.Currency) || strings.EqualFold(tx.Type, "INTERNAL") {
+		if isExcludedTx(tx) || !isEURCurrency(tx.Currency) || strings.EqualFold(tx.Type, "INTERNAL") {
 			continue
 		}
 		cat := txDisplayCategory(tx)

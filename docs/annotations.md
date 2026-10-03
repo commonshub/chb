@@ -83,6 +83,7 @@ but not applied.
 | `collective` | a collective slug from settings `collectives.json` | e.g. `commonshub`, `openletter` |
 | `event` | the event id from `events.json` | links an expense or a payment to an event |
 | `spread` | `["spread", "YYYY-MM", "<amount>"]`, one tag per month | amortise a transaction over months ([txspread.md](txspread.md)) |
+| `exclude` | `["exclude", "<reason>"]` | leave the record out of every total (test mints, duplicates). It stays in `transactions.json`, marked `metadata.excluded: "<reason>"`; `summary.json`, contributors' token totals, the token report and coverage skip it. A newer snapshot without the tag includes it again. `chb nostr annotate <uri> --exclude "test mint"` |
 | content | free text, shown as `note` | keep it about the expense, not about people |
 
 An annotation is a **snapshot**: the newest trusted one per URI replaces

@@ -1,5 +1,5 @@
 {
-  "description": "On-chain transfers excluded from generated accounting data because they re-issue balances already represented by legacy EURe transfers (Monerium EURe V1→V2 migration mints).",
+  "description": "On-chain transfers excluded from generated accounting data because they re-issue balances already represented by legacy EURe transfers (Monerium EURe V1→V2 migration mints). Entries with \"keep\": true stay listed, marked metadata.excluded, and are left out of every total (test mints).",
   "transactions": [
     {
       "chain": "gnosis",
@@ -35,6 +35,48 @@
       "to": "0x6fdf0aae33e313d9c98d2aa19bcd8ef777912cbf",
       "amount": 197.81,
       "reason": "EURe V1->V2 migration mint (Polygon) for Monerium savings; legacy balance already counted (was double-counting → 2x)."
+    },
+    {
+      "chain": "celo",
+      "hash": "0x1a93cfa2f712079e9ee4657ab22eb6f170dfbbd1d559991e759d364690008ffb",
+      "amount": 1000000,
+      "reason": "test mint (CHT, January 2025)",
+      "keep": true
+    },
+    {
+      "chain": "celo",
+      "hash": "0x42262de0f79d40de757f8fd08afb1927d693b7f033ff6fc828c1d30d19dfefa3",
+      "amount": 1000000,
+      "reason": "burn of the January 2025 test mint (CHT)",
+      "keep": true
+    },
+    {
+      "chain": "celo",
+      "hash": "0x665308351033b3975355cbdcb838650f8aa146dd342e9b7435e9c269e0eb111f",
+      "amount": 2000000000000,
+      "reason": "test mint (CHT, September 2025)",
+      "keep": true
+    },
+    {
+      "chain": "celo",
+      "hash": "0x52bfe60bce63cc5e69a3c2ea975b083f4f6919fbf94591f4d480411535fbf202",
+      "amount": 2000000,
+      "reason": "burn of the September 2025 test mint (CHT)",
+      "keep": true
+    },
+    {
+      "chain": "celo",
+      "hash": "0x3c7a4f44c7b0fd8d7b20de4bf10e20fc3828f969c4a780574f8598a2f2416956",
+      "amount": 1999998000,
+      "reason": "burn of the September 2025 test mint (CHT)",
+      "keep": true
+    },
+    {
+      "chain": "celo",
+      "hash": "0xc793214c08ce0b7f5292af52e8b41297761505dc8eeb95f5be4d24a7eaa50aa9",
+      "amount": 1997998002000,
+      "reason": "burn of the September 2025 test mint (CHT)",
+      "keep": true
     }
   ]
 }
