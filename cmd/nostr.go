@@ -303,19 +303,19 @@ func parseTxMetadata(txHash string, ev NostrEvent) *TxMetadata {
 
 // TxAnnotation holds accounting annotations for a transaction from Nostr.
 type TxAnnotation struct {
-	URI          string        `json:"uri"`
-	Category     string        `json:"category,omitempty"`
-	Collective   string        `json:"collective,omitempty"`
-	Event        string        `json:"event,omitempty"`
-	Tags         [][]string    `json:"tags,omitempty"`
-	Description  string        `json:"description,omitempty"`
-	Spread       []SpreadEntry `json:"spread,omitempty"`
+	URI         string        `json:"uri"`
+	Category    string        `json:"category,omitempty"`
+	Collective  string        `json:"collective,omitempty"`
+	Event       string        `json:"event,omitempty"`
+	Tags        [][]string    `json:"tags,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Spread      []SpreadEntry `json:"spread,omitempty"`
 	// Exclude: the reason this record is left out of every total (an
 	// ["exclude", "<reason>"] tag; docs/annotations.md).
 	Exclude      string `json:"exclude,omitempty"`
 	NostrEventID string `json:"nostrEventId"`
-	Author       string        `json:"author"`
-	CreatedAt    int64         `json:"createdAt"`
+	Author       string `json:"author"`
+	CreatedAt    int64  `json:"createdAt"`
 }
 
 // SpreadEntry represents a monthly amount allocation.
