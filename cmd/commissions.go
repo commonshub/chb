@@ -94,9 +94,11 @@ func rebuildCommissions(dataDir string) error {
 				continue
 			}
 			year, month := yearEntry.Name(), monthEntry.Name()
+			// A month without commissions gets an empty file, not none:
+			// every month has the same files (cmd/month_files.go).
 			items := commissionsForMonth(dataDir, year, month)
-			if len(items) == 0 {
-				continue
+			if items == nil {
+				items = []Commission{}
 			}
 			f := CommissionsFile{
 				Year:      year,
