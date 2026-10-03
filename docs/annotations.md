@@ -123,8 +123,26 @@ Publish on `wss://relay.commonshub.brussels` (settings.json `nostr.relays`).
   trusted too. To trust someone, a seed follows them; to revoke, it
   unfollows them. One level only: whom they follow is not trusted. Turn it
   off with `nostr.trustFollows: false`.
+- **Attestations:** a key a seed attests is trusted too: a kind 31926
+  event by the seed with the key in a `p` tag. The website publishes one
+  when a member links their browser key to their Discord account:
+
+  ```json
+  {"kind": 31926, "tags": [["d", "discord:<user id>"], ["p", "<member key>"],
+    ["role", "member"], ["i", "discord:<guild id>"], ["k", "discord"]],
+   "content": "{\"name\":\"…\",\"roles\":[\"member\"]}"}
+  ```
+
+  It counts only when it carries an allowed role (`role` tags or the
+  content's `roles`; `nostr.attestationRoles`, default `member` and
+  `steward`) and, when settings.json has `discord.guildId`, names that
+  guild in its `i` tag. The newest attestation per (seed, `d`) wins, so
+  republishing it without the `p` tag or without the role revokes the
+  key at the next pull. One level only. Turn it off with
+  `nostr.trustAttestations: false`.
 - Every event's signature is checked. The current list is in
-  `latest/providers/nostr/trust.json` (seeds, and who follows whom).
+  `latest/providers/nostr/trust.json` (seeds, who follows whom, and the
+  attested keys with their roles).
 - A trust change takes effect at the next pull. Annotations by a
   no-longer-trusted author disappear from the published data at that pull.
 

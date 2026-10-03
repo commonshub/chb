@@ -187,7 +187,7 @@ func refreshNostrTrust(dataDir string, relays []string) error {
 		authors = append(authors, a)
 	}
 	sort.Strings(authors)
-	events, ok := fetchEventsFromRelays(relays, map[string]interface{}{"kinds": []int{3}, "authors": authors})
+	events, ok := fetchEventsFromRelays(relays, map[string]interface{}{"kinds": []int{3, 31926}, "authors": authors})
 	if ok == 0 {
 		return fmt.Errorf("no relay answered")
 	}
@@ -195,6 +195,7 @@ func refreshNostrTrust(dataDir string, relays []string) error {
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Seeds:     authors,
 		Follows:   followsFromContactLists(events, seeds),
+		Attested:  attestationsFromEvents(events, seeds, discordGuildIDSetting()),
 	}
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {

@@ -48,6 +48,51 @@ type NostrSettings struct {
 	// list) by a seed is trusted too. One level only: follows of followed
 	// authors are not.
 	TrustFollows *bool `json:"trustFollows,omitempty"`
+	// TrustAttestations (default true): a key a seed attests (kind 31926,
+	// `p` tag, e.g. the website linking a member's browser key to their
+	// Discord account) is trusted when the attestation carries one of
+	// AttestationRoles (default member, steward) and names our Discord
+	// guild. One level only, like follows.
+	TrustAttestations *bool    `json:"trustAttestations,omitempty"`
+	AttestationRoles  []string `json:"attestationRoles,omitempty"`
+}
+
+// defaultAttestationRoles: roles an attestation must carry for its key to
+// be trusted.
+var defaultAttestationRoles = []string{"member", "steward"}
+
+func nostrTrustAttestations() bool {
+	if v := loadNostrSettings().TrustAttestations; v != nil {
+		return *v
+	}
+	return true
+}
+
+func nostrAttestationRoles() map[string]bool {
+	list := loadNostrSettings().AttestationRoles
+	if len(list) == 0 {
+		list = defaultAttestationRoles
+	}
+	out := map[string]bool{}
+	for _, r := range list {
+		out[strings.ToLower(strings.TrimSpace(r))] = true
+	}
+	return out
+}
+
+// discordGuildIDSetting reads settings.json discord.guildId directly.
+func discordGuildIDSetting() string {
+	data, err := os.ReadFile(settingsFilePath("settings.json"))
+	if err != nil {
+		return ""
+	}
+	var s struct {
+		Discord struct {
+			GuildID string `json:"guildId"`
+		} `json:"discord"`
+	}
+	_ = json.Unmarshal(data, &s)
+	return strings.TrimSpace(s.Discord.GuildID)
 }
 
 // loadNostrSettings reads settings.json `nostr` directly: no settings
@@ -100,20 +145,38 @@ func nostrTrustFollows() bool {
 	return true
 }
 
-// nostrTrustedPubkeys returns every trusted author (seeds, and the authors
-// they follow as recorded by the last `chb nostr pull` in trust.json) as
-// lowercase hex keys. Offline: generate calls it.
+// nostrTrustedPubkeys returns every trusted author as lowercase hex keys:
+// the seeds, the authors they follow, and the keys they attest with an
+// allowed role, as recorded by the last `chb nostr pull` in trust.json.
+// Offline: generate calls it.
 func nostrTrustedPubkeys() map[string]bool {
-	out := nostrTrustSeeds()
-	if !nostrTrustFollows() {
-		return out
+	seeds := nostrTrustSeeds()
+	out := map[string]bool{}
+	for k := range seeds {
+		out[k] = true
 	}
 	t := loadNostrTrustFile(DataDir())
-	for hex, by := range t.Follows {
-		for _, seed := range by {
-			if out[seed] { // only while the follower is still a seed
-				out[hex] = true
-				break
+	if nostrTrustFollows() {
+		for hex, by := range t.Follows {
+			for _, seed := range by {
+				if seeds[seed] { // only while the follower is still a seed
+					out[hex] = true
+					break
+				}
+			}
+		}
+	}
+	if nostrTrustAttestations() {
+		roles := nostrAttestationRoles()
+		for hex, att := range t.Attested {
+			if !seeds[att.By] {
+				continue // only while the attester is still a seed
+			}
+			for _, r := range att.Roles {
+				if roles[r] {
+					out[hex] = true
+					break
+				}
 			}
 		}
 	}
@@ -126,6 +189,90 @@ type NostrTrustFile struct {
 	UpdatedAt string              `json:"updatedAt"`
 	Seeds     []string            `json:"seeds"`
 	Follows   map[string][]string `json:"follows"` // followed pubkey → seeds following it
+	// Attested: pubkey → the newest attestation of it by a seed (kind 31926).
+	Attested map[string]NostrAttestation `json:"attested,omitempty"`
+}
+
+// NostrAttestation is a seed's kind 31926 attestation of a key.
+type NostrAttestation struct {
+	By      string   `json:"by"`      // attesting seed (hex)
+	Subject string   `json:"subject"` // the attestation's d tag, e.g. discord:<user id>
+	Roles   []string `json:"roles,omitempty"`
+	EventID string   `json:"eventId"`
+}
+
+// attestationsFromEvents keeps, per (seed, d), the newest signed kind 31926
+// by a seed (parameterised replaceable: a newer one revokes what an older
+// one said), restricted to our Discord guild when one is configured, and
+// maps each p-tagged key to it. Roles come from `role` tags and the
+// content's "roles".
+func attestationsFromEvents(events map[string]NostrEvent, seeds map[string]bool, guildID string) map[string]NostrAttestation {
+	newest := map[string]NostrEvent{}
+	for _, ev := range events {
+		pk := strings.ToLower(ev.PubKey)
+		if ev.Kind != 31926 || !seeds[pk] || !nostrEventSignatureValid(ev) {
+			continue
+		}
+		key := pk + "|" + firstTagValue(ev.Tags, "d")
+		if cur, ok := newest[key]; !ok || ev.CreatedAt > cur.CreatedAt {
+			newest[key] = ev
+		}
+	}
+	out := map[string]NostrAttestation{}
+	keys := make([]string, 0, len(newest))
+	for k := range newest {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		ev := newest[k]
+		if guildID != "" {
+			if g := firstTagValue(ev.Tags, "i"); g != "" && g != "discord:"+guildID {
+				continue
+			}
+		}
+		roles := map[string]bool{}
+		for _, t := range ev.Tags {
+			if len(t) >= 2 && t[0] == "role" {
+				roles[strings.ToLower(strings.TrimSpace(t[1]))] = true
+			}
+		}
+		var content struct {
+			Roles []string `json:"roles"`
+		}
+		if json.Unmarshal([]byte(ev.Content), &content) == nil {
+			for _, r := range content.Roles {
+				roles[strings.ToLower(strings.TrimSpace(r))] = true
+			}
+		}
+		var rs []string
+		for r := range roles {
+			if r != "" {
+				rs = append(rs, r)
+			}
+		}
+		sort.Strings(rs)
+		for _, t := range ev.Tags {
+			if len(t) < 2 || t[0] != "p" {
+				continue
+			}
+			hex := nostrPubkeyHex(t[1])
+			if hex == "" || seeds[hex] {
+				continue
+			}
+			out[hex] = NostrAttestation{By: strings.ToLower(ev.PubKey), Subject: firstTagValue(ev.Tags, "d"), Roles: rs, EventID: ev.ID}
+		}
+	}
+	return out
+}
+
+func firstTagValue(tags [][]string, name string) string {
+	for _, t := range tags {
+		if len(t) >= 2 && t[0] == name {
+			return t[1]
+		}
+	}
+	return ""
 }
 
 func nostrTrustFilePath(dataDir string) string {
