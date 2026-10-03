@@ -107,3 +107,31 @@ func TestOdooAccountCodeFromField(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestDefaultReferenceRules(t *testing.T) {
+	data, err := os.ReadFile("defaults/rules.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rules []Rule
+	if err := json.Unmarshal(data, &rules); err != nil {
+		t.Fatal(err)
+	}
+	c := &Categorizer{rules: rules}
+	for _, tc := range []struct {
+		tx   TransactionEntry
+		want string
+	}{
+		{TransactionEntry{Type: "BURN", Amount: -8152.21, Counterparty: "FPS Finance - VAT Revenue Service Brussels", Metadata: map[string]interface{}{"memo": "+++080/4505/13233+++"}}, "vat"},
+		{TransactionEntry{Type: "BURN", Amount: -12603.84, Counterparty: "XL Collective SRL", Metadata: map[string]interface{}{"memo": "Taxe communale 2025 CHB"}}, "taxes"},
+		{TransactionEntry{Type: "BURN", Amount: -907.5, Metadata: map[string]interface{}{"memo": "Refund Summerschool September 2025 8700186"}}, "refund"},
+		{TransactionEntry{Type: "BURN", Amount: -10989.84, Metadata: map[string]interface{}{"description": "Internal transfer from EOA to multisig"}}, "internal_transfer"},
+		{TransactionEntry{Type: "DEBIT", Amount: -1, Counterparty: "e-invoice.be", Metadata: map[string]interface{}{"description": "***080/4505/13233***"}}, ""},
+	} {
+		tx := tc.tx
+		c.Apply(&tx)
+		if tx.Category != tc.want {
+			t.Errorf("%v: got %q, want %q", tc.tx.Metadata, tx.Category, tc.want)
+		}
+	}
+}

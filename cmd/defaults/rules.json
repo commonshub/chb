@@ -1307,5 +1307,57 @@
       "collective": "commonshub",
       "override": true
     }
+  },
+  {
+    "match": {
+      "description": "*080/4505/13233*",
+      "recipient": "*T.V.A*"
+    },
+    "assign": {
+      "category": "vat"
+    }
+  },
+  {
+    "match": {
+      "description": "*080/4505/13233*",
+      "recipient": "*VAT*"
+    },
+    "assign": {
+      "category": "vat"
+    }
+  },
+  {
+    "match": {
+      "description": "Taxe communale*"
+    },
+    "assign": {
+      "category": "taxes"
+    }
+  },
+  {
+    "match": {
+      "description": "*precompte immobilier*"
+    },
+    "assign": {
+      "category": "taxes"
+    }
+  },
+  {
+    "match": {
+      "description": "Salary*",
+      "direction": "out"
+    },
+    "assign": {
+      "category": "HR"
+    }
+  },
+  {
+    "match": {
+      "description": "Refund*",
+      "direction": "out"
+    },
+    "assign": {
+      "category": "refund"
+    }
   }
 ]
