@@ -4853,6 +4853,13 @@ func OdooSyncAll(args []string) error {
 		}
 		return err
 	})
+	step("statement matches", func() error {
+		summary, err := OdooStatementMatchesSync(args)
+		if err == nil {
+			odooSyncLine("statement matches", summary)
+		}
+		return err
+	})
 	printPendingMergesSummary()
 	fmt.Printf("\n  %sTo push local changes to Odoo: chb odoo journals push%s", Fmt.Dim, Fmt.Reset)
 	if len(pendingPartnerMerges()) > 0 {
@@ -4892,6 +4899,13 @@ func OdooProviderSync(args []string) error {
 		summary, err := OdooLedgerSync(args)
 		if err == nil {
 			odooSyncLine("chart & ledger", summary)
+		}
+		return err
+	})
+	step("statement matches", func() error {
+		summary, err := OdooStatementMatchesSync(args)
+		if err == nil {
+			odooSyncLine("statement matches", summary)
 		}
 		return err
 	})

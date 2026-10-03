@@ -54,14 +54,15 @@ photos from public channels). Year files:
 `latest/<tier>/` holds the newest month's files plus the lifetime and
 upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 = every year, `events.json` = upcoming, `events.csv` = current year,
-`pending-bills.json`, `accounts-chart.json`). Year files are never copied
+`pending-bills.json`, `accounts-chart.json`, `categories.json`). Year files are never copied
 there.
 
 | file | public (anyone) | members (Discord `member` role) | where |
 |---|---|---|---|
 | `transactions.json` | amounts, direction, category, collective, account ids, canonical tx ids, `description` only when we wrote it — no bank narration (KBC/Wise/CSV, incoming SEPA memos), no counterparty, no memo, no bank reference, no donor display names; `counterpartyId` only when it names nobody (blockchain address, our own accounts) | + counterparty names, `memo`, narration (`fullDescription`), `reference` — account numbers and BICs masked | month, `latest/` |
 | `counterparties.json` | our own accounts only (entries with `slug`) | every counterparty by display name | month, `latest/` |
-| `summary.json` | per-account / per-collective / per-category aggregates (identical in all tiers) | = | month (`latest/` holds the lifetime rollup) |
+| `summary.json` | per-account / per-collective / per-category aggregates, and `coverage`: the month's uncategorised share (identical in all tiers) | = | month (`latest/` holds the lifetime rollup) |
+| `categories.json` | the category taxonomy: slug, label, direction, group, PCMN accounts (identical in all tiers) | = | `latest/` only ([categories.md](categories.md)) |
 | `commissions.json`, `inbound_spreads.json`, `activitygrid.json` | aggregates (spreads: no counterparty) | = (+ counterparty on spreads) | month / year / `latest/` |
 | `events.json` | events as published: name, times, place, host, cover, url | + ticket sales, attendance, income, notes | month, year, `latest/` (upcoming only) |
 | `events.csv` | year sheet without attendance / sales / revenue / income / note columns | full sheet | year |
@@ -314,7 +315,18 @@ merged in `public/` and `members/`; totals are the same in every tier.
 Schema, opening-balance rules and page recipes:
 [accounting-data.md](accounting-data.md#chart-of-accounts-and-ledger-balances).
 
-## 13. Checklist for a new page
+## 13. Categories — use the taxonomy, don't guess
+
+Label and group categories from `latest/public/categories.json`; don't
+hard-code labels. A transaction's `metadata.category` is set by rules or,
+when the bank line is reconciled in Odoo, from the invoice, bill or account
+it is booked to (`metadata.categorySource: "odoo"`, with the documents'
+URIs in `metadata.documents`). Leave out `internal_transfer` and
+`opening_balance` (type `INTERNAL`) from income and expenses. Track
+progress with `summary.json` → `coverage.uncategorisedShare`. Details:
+[categories.md](categories.md).
+
+## 14. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

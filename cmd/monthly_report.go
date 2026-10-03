@@ -31,6 +31,7 @@ type MonthlyReportFile struct {
 	Currencies  []MonthlyReportCurrency  `json:"currencies,omitempty"`
 	Collectives []TaggedSummary          `json:"collectives,omitempty"`
 	Categories  []TaggedSummary          `json:"categories,omitempty"`
+	Coverage    *CategoryCoverage        `json:"coverage,omitempty"`
 	Sources     []MonthlyReportSource    `json:"sources"`
 	Notes       []string                 `json:"notes,omitempty"`
 }
@@ -178,6 +179,7 @@ func generateMonthlyReportGo(dataDir, year, month string, settings *Settings) bo
 		Currencies:  buildMonthlyReportCurrencies(dataDir, year, month),
 		Collectives: collectives,
 		Categories:  categories,
+		Coverage:    buildCategoryCoverage(dataDir, year, month),
 		Notes: []string{
 			"opening and ending balances are omitted until a source provides full-history, live-balance verification",
 		},
@@ -1263,4 +1265,64 @@ func rebuildSummaryRollup(dataDir string) (int, error) {
 	}
 	writeTiersSame(dataDir, "latest", "", "summary.json", data)
 	return len(rows), nil
+}
+
+// CategoryCoverage: how much of the month's euro income and expenses
+// carries a category. Internal transfers and opening balances are not
+// income or expenses and are left out.
+type CategoryCoverage struct {
+	Currency           string  `json:"currency"` // EUR (EUR, EURe, EURb together)
+	In                 float64 `json:"in"`
+	Out                float64 `json:"out"`
+	UncategorisedIn    float64 `json:"uncategorisedIn"`
+	UncategorisedOut   float64 `json:"uncategorisedOut"`
+	UncategorisedCount int     `json:"uncategorisedCount"`
+	// Share of in + out without a category, 0–1.
+	UncategorisedShare float64 `json:"uncategorisedShare"`
+	// Odoo-derived: amount categorised from Odoo bookings (categorySource "odoo").
+	FromOdoo float64 `json:"fromOdoo"`
+}
+
+func buildCategoryCoverage(dataDir, year, month string) *CategoryCoverage {
+	data, err := os.ReadFile(filepath.Join(dataDir, year, month, stewardsDirName, "transactions.json"))
+	if err != nil {
+		return nil
+	}
+	var f TransactionsFile
+	if json.Unmarshal(data, &f) != nil {
+		return nil
+	}
+	c := &CategoryCoverage{Currency: "EUR"}
+	for _, tx := range f.Transactions {
+		if !isEURCurrency(tx.Currency) || strings.EqualFold(tx.Type, "INTERNAL") {
+			continue
+		}
+		cat := txDisplayCategory(tx)
+		if cat == "internal_transfer" || cat == "opening_balance" {
+			continue
+		}
+		amt := tx.Amount
+		if amt > 0 {
+			c.In += amt
+		} else {
+			c.Out -= amt
+		}
+		if cat == "" {
+			c.UncategorisedCount++
+			if amt > 0 {
+				c.UncategorisedIn += amt
+			} else {
+				c.UncategorisedOut -= amt
+			}
+		} else if src, _ := tx.Metadata["categorySource"].(string); src == "odoo" {
+			c.FromOdoo += math.Abs(amt)
+		}
+	}
+	if total := c.In + c.Out; total > 0 {
+		c.UncategorisedShare = math.Round((c.UncategorisedIn+c.UncategorisedOut)/total*10000) / 10000
+	}
+	c.In, c.Out = roundReportAmount(c.In), roundReportAmount(c.Out)
+	c.UncategorisedIn, c.UncategorisedOut = roundReportAmount(c.UncategorisedIn), roundReportAmount(c.UncategorisedOut)
+	c.FromOdoo = roundReportAmount(c.FromOdoo)
+	return c
 }

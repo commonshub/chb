@@ -972,6 +972,11 @@ func Generate(args []string) error {
 		return Pluralize(n, "month", "")
 	})
 
+	// Category taxonomy → latest/<tier>/categories.json.
+	genStep("Categories", func() string {
+		return Pluralize(generateCategoriesFile(dataDir), "category", "categories")
+	})
+
 	// Chart of accounts + yearly ledger balances (cmd/ledger_generate.go).
 	genStep("Chart & ledger", func() string {
 		n, years := generateChartAndLedger(dataDir)
@@ -1288,7 +1293,10 @@ func collectStaleGeneratedScopes(dataDir string, years []string, beforeMonth str
 			if cur.UpdatedAt.IsZero() {
 				continue // never generated — leave the backlog to --history
 			}
-			if monthSourceMaxMTime(dataDir, year, month).After(cur.MaxSourceMTime) {
+			// …or whose bank lines were booked or reconciled differently in
+			// Odoo since (the categories derived from Odoo would change).
+			if monthSourceMaxMTime(dataDir, year, month).After(cur.MaxSourceMTime) ||
+				cur.ContentHash != monthOdooBookingsHash(dataDir, year, month) {
 				out = append(out, generateScope{Year: year, Month: month})
 			}
 		}
@@ -1345,7 +1353,8 @@ func filterDirtyGenerateScopes(dataDir string, scopes []generateScope, force boo
 	for _, s := range scopes {
 		cur := LoadSyncCursor(SyncCursorKeyForGenerateMonth(s.Year, s.Month))
 		mtime := monthSourceMaxMTime(dataDir, s.Year, s.Month)
-		if cur.UpdatedAt.IsZero() || mtime.After(cur.MaxSourceMTime) || cur.MaxSourceMTime.IsZero() {
+		if cur.UpdatedAt.IsZero() || mtime.After(cur.MaxSourceMTime) || cur.MaxSourceMTime.IsZero() ||
+			cur.ContentHash != monthOdooBookingsHash(dataDir, s.Year, s.Month) {
 			dirty = append(dirty, s)
 			continue
 		}
@@ -1362,6 +1371,7 @@ func stampGenerateMonthCursor(dataDir, year, month string) {
 	_ = SaveSyncCursor(SyncCursor{
 		Key:            SyncCursorKeyForGenerateMonth(year, month),
 		MaxSourceMTime: mtime,
+		ContentHash:    monthOdooBookingsHash(dataDir, year, month),
 	})
 }
 
@@ -3164,6 +3174,15 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	if odooMappings, err := LoadOdooMappings(); err == nil && len(odooMappings) > 0 {
 		for i := range transactions {
 			applyOdooMapping(odooMappings, &transactions[i])
+		}
+	}
+
+	// 6. Odoo bookings — uncategorised transactions take the category of
+	// their reconciled invoice/bill or counterpart account in Odoo. After
+	// the mapping on purpose: these never flow back to Odoo.
+	if oc := odooTxCategorizerFor(dataDir); oc != nil {
+		for i := range transactions {
+			oc.apply(&transactions[i])
 		}
 	}
 

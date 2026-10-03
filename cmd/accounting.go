@@ -23,7 +23,13 @@ type OdooAccountingConfig struct {
 type CategoryDef struct {
 	Slug      string `json:"slug"`
 	Label     string `json:"label"`
-	Direction string `json:"direction"` // "income" or "expense"
+	Direction string `json:"direction"` // "income", "expense" or "both"
+	// Group gathers categories for display (space, people, services, …).
+	Group string `json:"group,omitempty"`
+	// Accounts are PCMN account-code prefixes (Belgian chart) that map to
+	// this category; the longest matching prefix wins. Used to categorise
+	// bank lines from their Odoo counterpart and to publish the taxonomy.
+	Accounts []string `json:"accounts,omitempty"`
 }
 
 // CategoryRule maps transactions to categories based on matching criteria.
