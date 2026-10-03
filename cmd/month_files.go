@@ -140,6 +140,12 @@ var monthFileSpecs = []monthFileSpec{
 // yearFileSpecs: the per-year files every year must have. Year events are
 // rebuilt from the month stewards files (offline) when a tier lacks them.
 var yearFileSpecs = []monthFileSpec{
+	{rel: annualAccountsFile,
+		empty: func(y, _, now string) interface{} {
+			return AnnualAccountsFile{GeneratedAt: now, Scope: "year", Year: y,
+				Entity:      AnnualEntity{Name: "Commons Hub Brussels ASBL", EnterpriseNumber: "0804.505.132", FormerName: "Citizen Spring ASBL"},
+				FiscalYears: []AnnualFiscalYear{}}
+		}},
 	{rel: "activitygrid.json",
 		empty: func(y, _, now string) interface{} {
 			return ActivityGridYear{Year: y, Months: []ActivityGridMonth{}}

@@ -294,6 +294,13 @@ func countProviderStats(unit, rel string, data []byte, isJSON bool, stats map[st
 	case ext == ".xml" && unit == "intervat":
 		stats["declarations"]++
 		return
+	case unit == "annual-accounts":
+		if base == "filing.json" {
+			stats["fiscal years"]++
+		} else {
+			stats["documents"]++
+		}
+		return
 	case ext == ".ics":
 		stats["calendars"]++
 		stats["events"] += bytes.Count(data, []byte("BEGIN:VEVENT"))
@@ -369,14 +376,15 @@ func countProviderStats(unit, rel string, data []byte, isJSON bool, stats map[st
 // providerSummary renders the counts the way a person would say them.
 func providerSummary(unit string, stats map[string]int, files int) string {
 	order := map[string][]string{
-		"discord":   {"channels", "messages", "attachments"},
-		"stripe":    {"transactions", "charges", "customers", "products", "subscriptions", "payouts"},
-		"odoo":      {"journals", "lines", "invoices", "bills", "partners"},
-		"etherscan": {"accounts", "transfers"},
-		"monerium":  {"accounts", "orders"},
-		"ics":       {"calendars", "events"},
-		"nostr":     {"annotations"},
-		"intervat":  {"declarations"},
+		"discord":         {"channels", "messages", "attachments"},
+		"stripe":          {"transactions", "charges", "customers", "products", "subscriptions", "payouts"},
+		"odoo":            {"journals", "lines", "invoices", "bills", "partners"},
+		"etherscan":       {"accounts", "transfers"},
+		"monerium":        {"accounts", "orders"},
+		"ics":             {"calendars", "events"},
+		"nostr":           {"annotations"},
+		"intervat":        {"declarations"},
+		"annual-accounts": {"fiscal years", "documents"},
 	}
 	keys, ok := order[strings.SplitN(unit, "/", 2)[0]]
 	if !ok {

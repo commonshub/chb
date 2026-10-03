@@ -47,8 +47,9 @@ files: `transactions.json`, `counterparties.json`, `summary.json`,
 `vendors.json`, `customers.json`, `bookings.json` (plus, in `public/`,
 `events/images/` when a month has event covers and `images/` when it has
 photos from public channels). Year files:
-`activitygrid.json`, `contributors.json`, `events.json`, `events.csv`,
-`expenses.json`, `vendors.json`, `customers.json`, `bookings.json`.
+`activitygrid.json`, `annual-accounts.json`, `contributors.json`,
+`events.json`, `events.csv`, `expenses.json`, `vendors.json`,
+`customers.json`, `bookings.json`.
 
 `latest/<tier>/` holds the newest month's files plus the lifetime and
 upcoming views (`contributors.json` = top contributors, `activitygrid.json`
@@ -286,7 +287,19 @@ there (relative to the data root). Serve that file: the Discord `url` in the
 entry expires within a day and is only kept for reference. No Discord API
 call is needed any more.
 
-## 11. Checklist for a new page
+## 11. Annual accounts — publish them
+
+`YYYY/public/annual-accounts.json` holds the filed annual accounts of the
+fiscal year(s) ending in YYYY (abbreviated schema for associations, as filed
+with the National Bank): key figures and every figure by NBB code,
+consistency checks, and the filed balance sheet and profit and loss as PDF
+in `YYYY/public/annual-accounts/`. `latest/public/annual-accounts.json`
+indexes every fiscal year. Drafts and internal documents (trial balance,
+internal balance sheet) never reach `public/`. Fiscal years can be longer
+than 12 months: use `period`. Schema, checks and page recipes:
+[annual-accounts.md](annual-accounts.md).
+
+## 12. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

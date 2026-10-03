@@ -114,6 +114,7 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 - [docs/testing.md](docs/testing.md) — test layout + smoke tests.
 - [docs/cookbook.md](docs/cookbook.md) — copy-pasteable recipes for common ops.
 - [docs/txspread.md](docs/txspread.md) — `spread` metadata for amortised transactions.
+- [docs/annual-accounts.md](docs/annual-accounts.md) — annual accounts (NBB filing): import, checks, public `annual-accounts.json`.
 - [docs/vat.md](docs/vat.md) — Belgian VAT declarations: import, archive, public `vat.json`.
 - [docs/bills.md](docs/bills.md) — the public "still to pay" list.
 - [docs/annotations.md](docs/annotations.md) — annotate any transaction or Odoo document on Nostr; trust; consolidation into Odoo.

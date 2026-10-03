@@ -972,6 +972,20 @@ func Generate(args []string) error {
 		return Pluralize(n, "month", "")
 	})
 
+	// Annual accounts (NBB filing) → YYYY/<tier>/annual-accounts.json
+	// (cmd/annual_accounts_generate.go).
+	genStep("Annual accounts", func() string {
+		n, err := generateAnnualAccounts(dataDir)
+		if err != nil {
+			Warnf("⚠ annual accounts: %v", err)
+			return "failed"
+		}
+		if n == 0 {
+			return "none imported"
+		}
+		return Pluralize(n, "fiscal year", "")
+	})
+
 	// Belgian VAT declarations → public vat.json — see cmd/vat_generate.go.
 	genStep("VAT declarations", func() string {
 		n, err := generateVAT(dataDir)

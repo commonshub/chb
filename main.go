@@ -500,6 +500,12 @@ func main() {
 		}
 	case "accounts":
 		cmd.AccountsCommand(args[1:])
+	case "annual-accounts":
+		// `chb annual-accounts [import|set …]` — the association's annual
+		// accounts as filed with the National Bank (manual import).
+		if err := cmd.AnnualAccountsCommand(args[1:]); err != nil {
+			exitWithError(err)
+		}
 	case "vat":
 		// `chb vat [import …]` — Belgian VAT declarations (Intervat XML
 		// exports), a manual import like the KBC statements.

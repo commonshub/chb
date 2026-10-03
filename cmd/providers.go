@@ -171,6 +171,16 @@ func providerCommandSpecs() []providerCommandSpec {
 			Generate: GenerateMembers,
 		},
 		{
+			Name:        "annual-accounts",
+			Description: "Annual accounts (NBB filing), imported from the drop folder latest/providers/annual-accounts/ as a draft.",
+			Commands:    []string{"pull", "generate"},
+			Sync:        pullAnnualAccountsInbox,
+			Generate: func(args []string) error {
+				_, err := generateAnnualAccounts(DataDir())
+				return err
+			},
+		},
+		{
 			Name:        "intervat",
 			Description: "Belgian VAT declarations (Intervat XML), imported from the drop folder latest/providers/intervat/.",
 			Commands:    []string{"pull", "generate"},
