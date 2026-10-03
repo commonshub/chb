@@ -14,6 +14,7 @@ const (
 	MetadataFile          = "metadata.json"
 	StripeAnnotationsFile = "stripe-annotations.json"
 	AnnotationsFile       = "transaction-annotations.json"
+	OdooAnnotationsFile   = "odoo-annotations.json" // bills, invoices, expense claims, keyed by odoo: URI
 )
 
 type SourceProvider struct{}

@@ -32,7 +32,7 @@ func SetupNostr() error {
 	// Step 1: Relay selection
 	fmt.Printf("\n%s1. Select Relays%s\n\n", Fmt.Bold, Fmt.Reset)
 
-	defaultRelays := nostrRelays
+	defaultRelays := nostrRelayList()
 	relayOptions := make([]huh.Option[string], len(defaultRelays))
 	for i, r := range defaultRelays {
 		relayOptions[i] = huh.NewOption(r, r)

@@ -2632,7 +2632,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		if chainID != 0 {
 			monthCache := LoadNostrMetadataCache(nostrsource.ChainMetadataPath(dataDir, year, month, chainID))
 			latestCache := LoadNostrMetadataCache(filepath.Join(dataDir, "latest", nostrsource.RelPath(strconv.Itoa(chainID), nostrsource.MetadataFile)))
-			nostrMeta = MergeNostrMetadata(latestCache, monthCache)
+			nostrMeta = trustedNostrMetadata(MergeNostrMetadata(latestCache, monthCache))
 		}
 
 		// Dedup transfers that appear under more than one contract version for
@@ -2926,24 +2926,20 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		return 0
 	}
 
-	// Load Nostr annotations (highest priority for categorization)
+	// Load Nostr annotations (highest priority for categorization): the
+	// month's transaction-annotations.json, written by `chb nostr pull`.
+	// Only trusted authors count (caches from before v3.18 may hold others;
+	// the legacy stripe-annotations.json is no longer read).
 	nostrAnnotations := map[string]*TxAnnotation{}
-	// Stripe annotations
-	stripeAnnotPath := nostrsource.Path(dataDir, year, month, nostrsource.StripeAnnotationsFile)
-	if data, err := os.ReadFile(stripeAnnotPath); err == nil {
-		var cache NostrAnnotationCache
-		if json.Unmarshal(data, &cache) == nil {
-			for k, v := range cache.Annotations {
-				nostrAnnotations[k] = v
-			}
-		}
-	}
+	trustedAuthors := nostrTrustedPubkeys()
 	annotationsPath := nostrsource.Path(dataDir, year, month, nostrsource.AnnotationsFile)
 	if data, err := os.ReadFile(annotationsPath); err == nil {
 		var cache NostrAnnotationCache
 		if json.Unmarshal(data, &cache) == nil {
 			for k, v := range cache.Annotations {
-				nostrAnnotations[k] = v
+				if annotationTrusted(v, trustedAuthors) {
+					nostrAnnotations[k] = v
+				}
 			}
 		}
 	}
@@ -3028,6 +3024,14 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					}
 					if len(ann.Spread) > 0 {
 						tx.Spread = ann.Spread
+					}
+					if note := strings.TrimSpace(ann.Description); note != "" {
+						// A trusted annotation's text: kept apart from the bank
+						// narration (description), which never goes public.
+						if tx.Metadata == nil {
+							tx.Metadata = map[string]interface{}{}
+						}
+						tx.Metadata["note"] = note
 					}
 				}
 			}
@@ -3631,7 +3635,7 @@ func generateCounterpartiesGo(dataDir, year, month string) int {
 			if !ok {
 				monthCache := LoadNostrMetadataCache(nostrsource.ChainMetadataPath(dataDir, year, month, chainID))
 				latestCache := LoadNostrMetadataCache(filepath.Join(dataDir, "latest", nostrsource.RelPath(strconv.Itoa(chainID), nostrsource.MetadataFile)))
-				cache = MergeNostrMetadata(latestCache, monthCache)
+				cache = trustedNostrMetadata(MergeNostrMetadata(latestCache, monthCache))
 				chainCaches[chainID] = cache
 			}
 			if md, ok := cache.Addresses[addr]; ok && md != nil {
@@ -4101,6 +4105,9 @@ func transactionForAudience(tx TransactionEntry, a Audience) TransactionEntry {
 	// payer's account: names stay for members, bank details go.
 	out.Counterparty = maskBankDetails(out.Counterparty)
 	out.CounterpartyID = maskBankDetails(out.CounterpartyID)
+	if isStripeCustomerURI(out.CounterpartyID) {
+		out.CounterpartyID = "" // follows one buyer across purchases; stewards only
+	}
 	public := a == AudiencePublic
 	if public {
 		out.Counterparty = ""
@@ -4195,6 +4202,11 @@ func publicCounterpartyID(id string) string {
 
 // isPublicUnsafeMetadataKey names metadata that carries people or bank
 // references and therefore stops at the members tier.
+// isStripeCustomerURI: stripe:cus_… (and the older stripe:customer:cus_…).
+func isStripeCustomerURI(id string) bool {
+	return strings.HasPrefix(id, "stripe:") && strings.Contains(id, "cus_")
+}
+
 func isPublicUnsafeMetadataKey(k string) bool {
 	switch k {
 	case "name", "firstName", "lastName", "fullDescription", "reference", "freeReference",

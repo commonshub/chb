@@ -18,7 +18,12 @@
         "contributions": "1297965144579637248"
       },
       "door": "1306678821751230514"
-    }
+    },
+    "publicChannels": [
+      "general",
+      "activities.contributions",
+      "activities.tokens"
+    ]
   },
   "membership": {
     "stripe": {
@@ -43,5 +48,14 @@
         }
       ]
     }
+  },
+  "nostr": {
+    "relays": [
+      "wss://relay.commonshub.brussels"
+    ],
+    "trustedAuthors": [
+      "npub1wfaa749vdzd8tnu823rd6fpqj8twhlqen02clnsuv68cgpgcxjfqcyrgut",
+      "npub1d8z6e7rkscejnym7m3v5036fh04s94755anqsvzxg3xp3jn4l6gsvza3qc"
+    ]
   }
 }

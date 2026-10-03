@@ -53,6 +53,7 @@ Both files share one schema:
   "totalsByCurrency": { "EUR": { "…": 0 }, "USD": { "count": 5, "totalAmount": 102.00, "amountDue": 102.00 } },
   "bills": [
     {
+      "uri": "odoo:citizen-spring-vzw.odoo.com:citizen-spring-vzw:account.move:8803",
       "id": "b-b7e6ee1b53",
       "number": "CHB-S/2026/09/0011",
       "type": "bill",
@@ -78,7 +79,9 @@ Both files share one schema:
 
 | field | meaning |
 |---|---|
-| `id` | stable public id, the same in every tier and on every instance of the same Odoo database. Use it in URLs. It does not reveal the Odoo record id. |
+| `uri` | the bill's global id, `odoo:<host>:<db>:account.move:<id>`: the same in every tier, in `expenses.json`, on Nostr and on the website. Use it in URLs and to annotate. |
+| `id` | **deprecated** alias (`b-…`), removed in the next release. |
+| `note` | text of a trusted Nostr annotation on the `uri` ([website.md](website.md) §9). |
 | `number` | our accounting number for the bill. Quote it when paying or sponsoring a bill. |
 | `type` | `bill`, or `credit_note` when the vendor owes us. |
 | `status` | `pending`, `partially_paid`, `paid` (includes a payment registered but not yet matched to the bank), or `reversed` (cancelled by a credit note). |

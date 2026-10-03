@@ -371,7 +371,12 @@ func TestPublicCounterpartyIDNamesNobody(t *testing.T) {
 		if got := transactionForAudience(tx, AudiencePublic).CounterpartyID; got != want {
 			t.Errorf("public counterpartyId(%q) = %q, want %q", in, got, want)
 		}
-		if got := transactionForAudience(tx, AudienceMembers).CounterpartyID; got == "" {
+		got := transactionForAudience(tx, AudienceMembers).CounterpartyID
+		if isStripeCustomerURI(in) {
+			if got != "" {
+				t.Errorf("members must not carry the Stripe customer id %q", in)
+			}
+		} else if got == "" {
 			t.Errorf("members keep counterpartyId %q", in)
 		}
 	}

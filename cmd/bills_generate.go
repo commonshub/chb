@@ -44,7 +44,8 @@ const (
 
 // Bill is one vendor bill or vendor credit note, as published.
 type Bill struct {
-	ID           string     `json:"id"`     // stable public id, "b-" + 10 hex
+	URI          string     `json:"uri"`    // odoo:<host>:<db>:account.move:<id>
+	ID           string     `json:"id"`     // deprecated alias ("b-…"), removed in the next release: use uri
 	Number       string     `json:"number"` // our accounting number, e.g. CHB-S/2026/04/0012
 	Type         string     `json:"type"`   // "bill" | "credit_note"
 	Status       string     `json:"status"` // "pending" | "partially_paid" | "paid" | "reversed"
@@ -57,6 +58,7 @@ type Bill struct {
 	Category     string     `json:"category,omitempty"`
 	Collective   string     `json:"collective,omitempty"`
 	Event        string     `json:"event,omitempty"`
+	Note         string     `json:"note,omitempty"` // text of a trusted Nostr annotation
 	Currency     string     `json:"currency"`
 	Untaxed      float64    `json:"untaxedAmount"`
 	VAT          float64    `json:"vatAmount"`
@@ -144,6 +146,7 @@ func billVendorIsBusiness(p OdooInvoicePartner) bool {
 
 func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 	b := Bill{
+		URI:          odooDocURI("account.move", inv.ID, inv.InvoiceURL),
 		ID:           billPublicID(inv.ID),
 		Number:       inv.Number,
 		Type:         "bill",
@@ -221,6 +224,7 @@ func billForAudience(b Bill, a Audience) Bill {
 		b.VendorRef = ""
 		b.Description = ""
 		b.Event = ""
+		b.Note = ""
 		lines := make([]BillLine, len(b.Lines))
 		for i, l := range b.Lines {
 			l.Description = ""
@@ -231,6 +235,7 @@ func billForAudience(b Bill, a Audience) Bill {
 	case soleTrader:
 		b.VendorRef = ""
 		b.Event = ""
+		b.Note = ""
 		var products []string
 		lines := make([]BillLine, len(b.Lines))
 		for i, l := range b.Lines {
@@ -332,6 +337,7 @@ func writeBillsTiers(dataDir, year, month, rel string, full BillsFile) {
 func generateBills(dataDir, only string) (int, int) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	all := loadAllCachedBills(dataDir)
+	annotations := loadOdooAnnotations(dataDir)
 	byMonth := map[string][]Bill{}
 	var pending []Bill
 	for _, inv := range all {
@@ -339,6 +345,7 @@ func generateBills(dataDir, only string) (int, int) {
 			continue // drafts are not bills yet; cancelled ones never were
 		}
 		b := billFromInvoice(inv)
+		b.Note = applyAnnotation(annotations[b.URI], &b.Category, &b.Collective, &b.Event)
 		if len(b.Date) < 7 {
 			continue
 		}

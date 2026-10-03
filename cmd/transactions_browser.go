@@ -2006,10 +2006,7 @@ func nostrRelayCountForPosting() int {
 	if keys == nil {
 		return 0
 	}
-	if len(keys.Relays) > 0 {
-		return len(keys.Relays)
-	}
-	return len(nostrRelays)
+	return len(nostrRelayList())
 }
 
 func countPublishableTransactionAnnotations(txs []TransactionEntry) int {
@@ -2038,11 +2035,7 @@ func publishTransactionAnnotationsCmd(seq int, txs []TransactionEntry) tea.Cmd {
 func publishTransactionAnnotationsFromTUI(txs []TransactionEntry) (events int, relays int, published int, err error) {
 	keys := LoadNostrKeys()
 	if keys != nil {
-		if len(keys.Relays) > 0 {
-			relays = len(keys.Relays)
-		} else {
-			relays = len(nostrRelays)
-		}
+		relays = len(nostrRelayList())
 	}
 	if keys == nil {
 		for _, tx := range txs {
@@ -2097,8 +2090,6 @@ func buildTransactionAnnotationEvent(tx TransactionEntry) *nostr.Event {
 	}
 
 	tags := nostr.Tags{
-		{"I", uri},
-		{"K", uriKind(uri)},
 		{"i", uri},
 		{"k", uriKind(uri)},
 	}

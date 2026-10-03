@@ -188,7 +188,7 @@ func providerCommandSpecs() []providerCommandSpec {
 			// never trigger Nostr writes. The push side is reached via
 			// `chb nostr push` / `chb push`.
 			Sync: func(args []string) (string, error) {
-				return "", NostrPull(args)
+				return pullNostrAnnotations(DataDir(), HasFlag(args, "--force"))
 			},
 			Generate: GenerateTransactions,
 		},

@@ -199,11 +199,7 @@ func FlushNostrOutbox() nostrOutboxResult {
 	keys := LoadNostrKeys()
 	result := nostrOutboxResult{}
 	if keys != nil {
-		if len(keys.Relays) > 0 {
-			result.Relays = len(keys.Relays)
-		} else {
-			result.Relays = len(nostrRelays)
-		}
+		result.Relays = len(nostrRelayList())
 	}
 	entries, err := os.ReadDir(nostrOutboxDir())
 	if err != nil {

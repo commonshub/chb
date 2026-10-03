@@ -159,6 +159,11 @@ func syncDiscordImages(dataDir, year, month, label, token string, force bool) (d
 		fmt.Printf("  ✓ %s discord: %d downloaded\n", label, downloaded)
 	}
 
+	// Photos from public channels go to public/images/ (see images_public.go).
+	if copied, removed := publishPublicImages(dataDir, imf.Images, publicPhotoChannelIDs(), force); copied+removed > 0 {
+		fmt.Printf("  ✓ %s public photos: %d copied, %d removed\n", label, copied, removed)
+	}
+
 	return downloaded, skipped
 }
 

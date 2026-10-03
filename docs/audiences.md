@@ -10,7 +10,7 @@ nothing else.
 | tier | who | unix mode | may contain |
 |---|---|---|---|
 | `public/` | anyone — the website's public pages, bots answering strangers, OG images | `0755` / files `0644` | aggregates, events, canonical ids, categories, collectives, amounts. **No person**: no names, no free-text narration, no bank references, no contact data |
-| `members/` | people with the Discord `member` role — member-only pages, a members-only assistant | `0750` / files `0640`, unix group `chb-members` | + names of people and organisations, memos and bank narration, who did what (contributions, door openings by day count) — **no way to contact or pay anyone**: no email, no IBAN/BIC, no Stripe/Odoo/Monerium ids |
+| `members/` | people with the Discord `member` role — member-only pages, a members-only assistant | `0750` / files `0640`, unix group `chb-members` | + names of people and organisations, memos and bank narration, who did what (contributions, door openings by day count) — **no way to contact or pay anyone**: no email, no phone, no IBAN/BIC, no Stripe customer ids, no Odoo partner/bank details, no Monerium orders |
 | `stewards/` | the stewards (admins) and `chb` itself | `0700` / files `0600` | everything, including emails, IBANs, provider ids, exact presence dates |
 
 Raw provider archives (`YYYY/MM/providers/`), processor intermediates and the
@@ -50,6 +50,28 @@ The existing binary rule ("a path with a literal `private` segment is 0700 and
 exempt from the guard; everything else is public and only scanned for `@`")
 stays for the legacy tree until it is removed; it is subsumed by the tiers.
 
+## Identifiers below stewards
+
+Since v3.18 every Odoo document is identified, everywhere, by its URI
+`odoo:<host>:<db>:<model>:<id>` (for example
+`odoo:citizen-spring-vzw.odoo.com:citizen-spring-vzw:account.move:1234`;
+`hr.expense` for expense claims). It names a document, not a person, so it
+is **allowed in every tier**: public and members files carry it as `uri`
+(expenses, pending bills, room rentals) and as `invoices[]` (customer rows,
+including the anonymous merged ones). It is the key Nostr annotations and
+the website use.
+
+Never below stewards, refused by the write-time policy:
+
+- contact data: emails (masked in free text), phone numbers, postal addresses;
+- bank details: third-party IBANs (compact or spaced), BICs;
+- Stripe customer ids (`cus_…`): they follow one buyer across purchases;
+- Belgian national register numbers.
+
+Not published either, by projection: Odoo partner ids and links, Monerium
+orders, exact door-opening dates, attendee lists, raw provider payloads.
+Partners (vendors, customers) keep their `p-…` ids; they are not annotated.
+
 ## Per-artifact classification
 
 What each output becomes in each tier. "—" means the artifact does not exist
@@ -70,7 +92,7 @@ in that tier; "= members" means the same projection as the tier below.
 | `contributors.json` (month, year, top) | see **Open decision 1** — either Discord identity (id, username, avatar) with token counts, or counts only | Discord identity, tokens in/out, message counts, wallet address? (**decision 2**) | = + wallet ↔ Discord map (`cache/discord-wallets.json`) |
 | `members.json` | count and public display identity only (**decision 1**) | + firstName, plan, status, amounts (**decision 3**) | + `emailHash`, `subscriptionUrl` (Stripe dashboard), `latestPayment.url` |
 | `profiles/<username>.json` | — | full (messages the person posted in the guild's public channels) | = |
-| `images.json` | photos with author display identity (**decision 1**), no message text | + message text | = |
+| `images.json` | photos from **public channels only** (settings.json `discord.publicChannels`), author display identity (**decision 1**), no message text; `filePath` → `YYYY/MM/public/images/<id>.<ext>` | every photo + message text; `filePath` → the public copy, empty for non-public channels | `filePath` → `providers/` |
 | Odoo `invoices.json` / `bills.json` | today's public projection (ids, amounts, VAT, lines, category, collective) | + partner display name, reference | + partner bank, payments, attachments, Odoo urls (today's `private/`) |
 | Monerium `private/monerium/<addr>.json` | — | — | full |
 | `providers/odoo/pending/`, Nostr outbox | — | — | full |

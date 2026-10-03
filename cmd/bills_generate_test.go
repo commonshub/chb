@@ -93,12 +93,12 @@ func TestGenerateBillsTiers(t *testing.T) {
 	if len(pub.Bills) != 2 || pub.Totals.AmountDue != 151 || pub.Scope != "pending" {
 		t.Fatalf("public pending = %+v", pub)
 	}
-	for _, leak := range []string{"jane@example.com", "Jane Doe", "Train tickets for Jane", "note-jane", "+32470000000", "billing@electrabel", "odoo.example", "odooId"} {
+	for _, leak := range []string{"jane@example.com", "Jane Doe", "Train tickets for Jane", "note-jane", "+32470000000", "billing@electrabel", "odoo.example/web", "odooId"} {
 		if strings.Contains(pubRaw, leak) {
 			t.Errorf("public pending leaks %q", leak)
 		}
 	}
-	for _, leak := range []string{"jane@example.com", "billing@electrabel", "+32470000000", "odoo.example", "odooId"} {
+	for _, leak := range []string{"jane@example.com", "billing@electrabel", "+32470000000", "odoo.example/web", "odooId"} {
 		if strings.Contains(memRaw, leak) {
 			t.Errorf("members pending leaks %q", leak)
 		}

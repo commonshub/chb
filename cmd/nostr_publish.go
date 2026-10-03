@@ -98,10 +98,7 @@ func TransactionsPublish(args []string) error {
 		return fmt.Errorf("no Nostr identity configured. Run: chb setup nostr")
 	}
 
-	relays := keys.Relays
-	if len(relays) == 0 {
-		relays = nostrRelays
-	}
+	relays := nostrRelayList()
 
 	// Determine month range
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
@@ -278,8 +275,6 @@ func TransactionsPublish(args []string) error {
 		status.Update("Publishing Nostr annotations %d/%d (%d ok, %d failed)", i+1, len(pending), published, failed)
 		// Build kind 1111 event
 		tags := nostr.Tags{
-			{"I", p.URI},
-			{"K", uriKind(p.URI)},
 			{"i", p.URI},
 			{"k", uriKind(p.URI)},
 			{"category", p.Category},

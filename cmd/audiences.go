@@ -203,6 +203,12 @@ func enforceAudiencePolicy(a Audience, rel string, data []byte) ([]byte, error) 
 		}
 		problems = append(problems, "IBAN "+redactIBAN(iban))
 	}
+	// A Stripe customer id follows one buyer across every purchase. Odoo
+	// record URIs (odoo:<host>:<db>:<model>:<id>) are allowed: they name a
+	// document, not a person.
+	if m := stripeCustomerIDPattern.Find(cleaned); m != nil {
+		problems = append(problems, "Stripe customer id "+string(m[:6])+"…")
+	}
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("%w: %s/%s must not carry %s", ErrAudiencePolicy, a, rel, strings.Join(problems, "; "))
 	}
@@ -302,6 +308,9 @@ func validIBANPrefix(m string) (string, int) {
 // nationalNumberPattern matches a Belgian national register number,
 // dotted or not (84.05.18-647.30, 84051864730 is too generic to match).
 var nationalNumberPattern = regexp.MustCompile(`\b\d{2}\.\d{2}\.\d{2}[- ]\d{3}\.\d{2}\b`)
+
+// stripeCustomerIDPattern matches a Stripe customer id (cus_…).
+var stripeCustomerIDPattern = regexp.MustCompile(`\bcus_[A-Za-z0-9]{8,}\b`)
 
 // ibanMask replaces a third-party IBAN in free text below stewards.
 const ibanMask = "[IBAN]"

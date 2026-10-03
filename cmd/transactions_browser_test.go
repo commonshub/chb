@@ -362,9 +362,14 @@ func TestBuildTransactionAnnotationEventUsesNIP73Tags(t *testing.T) {
 		t.Fatalf("event kind = %d, want 1111", ev.Kind)
 	}
 
+	// An annotation snapshot carries lowercase i/k only: uppercase I/K
+	// would make it a NIP-22 comment.
+	for _, tag := range ev.Tags {
+		if len(tag) > 0 && (tag[0] == "I" || tag[0] == "K") {
+			t.Fatalf("annotation must not carry %q: %#v", tag[0], ev.Tags)
+		}
+	}
 	for _, want := range [][]string{
-		{"I", "stripe:txn_123"},
-		{"K", "stripe:txn"},
 		{"i", "stripe:txn_123"},
 		{"k", "stripe:txn"},
 		{"category", "bookkeeping"},

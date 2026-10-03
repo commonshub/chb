@@ -44,8 +44,9 @@ never a missing file. There are no exceptions for older months. Month
 files: `transactions.json`, `counterparties.json`, `summary.json`,
 `commissions.json`, `contributors.json`, `images.json`, `members.json`,
 `door.json`, `events.json`, `calendars/public.ics`, `expenses.json`,
-`vendors.json`, `customers.json`, `bookings.json` (plus `events/images/`
-in `public/` when a month has event covers). Year files:
+`vendors.json`, `customers.json`, `bookings.json` (plus, in `public/`,
+`events/images/` when a month has event covers and `images/` when it has
+photos from public channels). Year files:
 `activitygrid.json`, `contributors.json`, `events.json`, `events.csv`,
 `expenses.json`, `vendors.json`, `customers.json`, `bookings.json`.
 
@@ -68,7 +69,8 @@ upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 | `members.json` | `summary` only (`members: []`) | who is a member, plan, status, amount; no email hash, no Stripe urls | month, `latest/` |
 | `contributors.json` | Discord display identity (id, username, displayName, avatar), token counts, message counts — no wallet address | same | month, year, `latest/` (top contributors) |
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
-| `images.json` | photo, author identity, reactions — `message` is empty | + message text | month, `latest/` |
+| `images.json` | photos from public channels only: author identity, reactions, `filePath` to the public copy — `message` is empty | every photo + message text; `filePath` to the public copy (empty for non-public channels) | month, `latest/` |
+| `images/<attachment id>.<ext>` | the photo files themselves, public channels only — **only in public/** (§10) | (read from public) | month |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
 | `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; sole traders' and individuals' free text and event tags dropped (no person linked to an event); individuals typed only; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
 | `vendors.json` | one row per vendor: category, documents, total, paid, due; individuals merged per category | one row per vendor, all named | month, year (§7) |
@@ -91,9 +93,12 @@ optional in `public/`: whether display identity is public-by-consent is an
 open community decision (audiences.md), and the public projection may drop
 them later without notice.
 
-What is **never** on the website: emails, IBANs/BICs, Stripe/Odoo/Monerium
-ids, attendee lists, raw provider payloads, Odoo partner bank details, Monerium
-orders, exact door-opening dates. Those exist only in `stewards/` and
+What is **never** on the website: emails, phone numbers, IBANs/BICs, Stripe
+customer ids, Monerium ids and orders, Odoo partner ids and bank details,
+national register numbers, attendee lists, raw provider payloads, exact
+door-opening dates. Odoo **document** URIs (`odoo:<host>:<db>:<model>:<id>`)
+are the exception: they identify bills, invoices and expense claims, name
+nobody, and are published on purpose (§8). Those exist only in `stewards/` and
 `providers/`, which the container cannot open — if a page needs them, the
 page belongs in steward tooling, not on the website.
 
@@ -227,7 +232,64 @@ recipes: [accounting-data.md](accounting-data.md).
 
 The month `bills.json` of v3.14 is gone: read `expenses.json`.
 
-## 8. Checklist for a new page
+## 8. One identifier per Odoo document: `uri`
+
+Every bill, credit note, expense claim and customer invoice is identified by
+its URI, the same string in chb's files, on Nostr and on the website:
+
+```
+odoo:<host>:<db>:<model>:<id>
+odoo:citizen-spring-vzw.odoo.com:citizen-spring-vzw:account.move:1234   bill, credit note, invoice
+odoo:citizen-spring-vzw.odoo.com:citizen-spring-vzw:hr.expense:56       expense claim not booked yet
+```
+
+- `expenses.json` and `pending-bills.json`: `uri` on every entry.
+- `bookings.json`: `uri` on every `rentals[]` row (the invoice).
+- `customers.json`: `invoices[]` on every row, the anonymous merged rows
+  included; the count is `invoiceCount`.
+- In every tier, month and year files alike.
+- `id` (`b-…`, `x-…`) is a **deprecated** alias kept for one release; switch
+  to `uri`. Vendors and customers keep `p-…` ids.
+
+## 9. Annotations (Nostr) and comments
+
+Anyone can annotate a transaction or an Odoo document on Nostr; the
+published files only apply annotations from a **trust list**.
+
+- **Relay:** `wss://relay.commonshub.brussels` (settings.json
+  `nostr.relays`). chb reads and publishes there.
+- **Trust list:** settings.json `nostr.trustedAuthors` (npubs). Seeded with
+  the website's key (`npub1wfaa749…`, see
+  https://commonshub.brussels/api/nostr/identity) and chb's own key. Events
+  are signature-checked; the newest trusted snapshot per URI wins; anything
+  else is ignored, not an error.
+- **Annotation snapshot:** kind 1111 with lowercase `i` (the URI) and `k`
+  (its kind: `odoo:account.move`, `odoo:hr.expense`, `stripe:txn`, …) only,
+  plus `category`, `collective`, `event`, `spread`, and the content as the
+  description. It sets the record's category/collective/event (over Odoo
+  and rules) and its `note`.
+- **Comment:** kind 1111 with uppercase `I`/`K` (NIP-22), a discussion. chb
+  never applies it, even if it also carries lowercase `i`. Publish comments
+  with `I`/`K`, annotations without.
+- **When:** the hourly `chb pull` fetches new trusted annotations;
+  `chb generate` applies them to `transactions.json` (`metadata.note`),
+  `expenses.json`, `pending-bills.json` and `bookings.json` rentals
+  (`note`). A tag set on the website shows up within the hour.
+- In `public/`, a note on a natural person's bill or on an individual
+  customer's rental is dropped (it would describe a person).
+
+## 10. Photos
+
+Photos come from Discord. Only channels listed in settings.json
+`discord.publicChannels` are published (default: `general`,
+`activities.contributions`, `activities.tokens`). `chb images sync`, part of
+the hourly job, copies each photo to `YYYY/MM/public/images/<attachment
+id>.<ext>`, and `images.json` in `public/` and `members/` points `filePath`
+there (relative to the data root). Serve that file: the Discord `url` in the
+entry expires within a day and is only kept for reference. No Discord API
+call is needed any more.
+
+## 11. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

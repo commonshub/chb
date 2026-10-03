@@ -239,10 +239,7 @@ func pushTargetHeaderItems() []SyncHeaderItem {
 
 	// Nostr — one row, scoped by relay count.
 	if keys := LoadNostrKeys(); keys != nil {
-		relays := keys.Relays
-		if len(relays) == 0 {
-			relays = nostrRelays
-		}
+		relays := nostrRelayList()
 		if len(relays) > 0 {
 			items = append(items, SyncHeaderItem{
 				Label:    "Nostr",

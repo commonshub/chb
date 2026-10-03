@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	nostrsource "github.com/CommonsHub/chb/providers/nostr"
 	odoosource "github.com/CommonsHub/chb/providers/odoo"
 )
 
@@ -268,6 +269,33 @@ func docStatus(inv OdooOutgoingInvoice) string {
 	return "pending"
 }
 
+// odooDocURI is the global identifier of an Odoo record,
+// odoo:<host>:<db>:<model>:<id> (OdooURI). The same string is used in
+// public files, on Nostr and on the website. Host and database come from
+// ODOO_URL / ODOO_DATABASE; a document's own link is the fallback host.
+func odooDocURI(model string, id int, docURL string) string {
+	if id == 0 {
+		return ""
+	}
+	rawURL := os.Getenv("ODOO_URL")
+	if rawURL == "" {
+		rawURL = docURL
+	}
+	host := OdooHost(rawURL)
+	db := strings.TrimSpace(os.Getenv("ODOO_DATABASE"))
+	if db == "" && os.Getenv("ODOO_URL") != "" {
+		db = odooDBFromURL(os.Getenv("ODOO_URL"))
+	}
+	if db == "" {
+		db = odoosource.PathNamespace()
+	}
+	if db == "" {
+		db = odooDBFromURL("https://" + host)
+	}
+	return OdooURI(host, db, model, id)
+}
+
+// docID is the v3.16 local id ("b-…"). Deprecated: use the uri.
 func docID(prefix string, odooID int) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:account.move:%d", odoosource.PathNamespace(), odooID)))
 	return prefix + hex.EncodeToString(sum[:])[:10]
@@ -289,7 +317,8 @@ type ExpenseLine struct {
 }
 
 type Expense struct {
-	ID          string        `json:"id"`     // "b-…" (same id as pending-bills.json) or "x-…" for a claim not posted yet
+	URI         string        `json:"uri"`    // odoo:<host>:<db>:account.move:<id>, or hr.expense for a claim not posted yet
+	ID          string        `json:"id"`     // deprecated alias ("b-…"/"x-…"), removed in the next release: use uri
 	Number      string        `json:"number"` // our accounting number
 	Kind        string        `json:"kind"`   // bill | credit_note | expense
 	Status      string        `json:"status"` // pending | partially_paid | paid | reversed | submitted
@@ -309,6 +338,7 @@ type Expense struct {
 	AmountDue   float64       `json:"amountDue"`
 	HasDocument bool          `json:"hasDocument"`
 	Payroll     bool          `json:"payroll,omitempty"`
+	Note        string        `json:"note,omitempty"` // text of a trusted Nostr annotation on this uri
 	Lines       []ExpenseLine `json:"lines"`
 
 	Stewards *DocStewards `json:"stewards,omitempty"`
@@ -366,7 +396,8 @@ func lineVATRate(l OdooInvoiceLineItem) string {
 func expenseFromBill(inv OdooOutgoingInvoice, claim *OdooExpense) Expense {
 	f := eurFactor(inv)
 	e := Expense{
-		ID: docID("b-", inv.ID), Number: inv.Number, Kind: "bill", Status: docStatus(inv),
+		URI: odooDocURI("account.move", inv.ID, inv.InvoiceURL),
+		ID:  docID("b-", inv.ID), Number: inv.Number, Kind: "bill", Status: docStatus(inv),
 		Date: firstNonEmpty(inv.InvoiceDate, inv.Date), DueDate: inv.DueDate,
 		Vendor: documentParty(inv), VendorRef: firstNonEmpty(inv.Ref, inv.Title),
 		Category: inv.Category, Collective: inv.Collective, Event: inv.Event,
@@ -424,7 +455,8 @@ func expenseFromBill(inv OdooOutgoingInvoice, claim *OdooExpense) Expense {
 func expenseFromClaim(c OdooExpense) Expense {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:hr.expense:%d", odoosource.PathNamespace(), c.ID)))
 	e := Expense{
-		ID: "x-" + hex.EncodeToString(sum[:])[:10], Number: "", Kind: "expense", Status: "submitted",
+		URI: odooDocURI("hr.expense", c.ID, ""),
+		ID:  "x-" + hex.EncodeToString(sum[:])[:10], Number: "", Kind: "expense", Status: "submitted",
 		Date: c.Date, Vendor: Party{ID: partyID(0, c.Employee), Type: "individual", Name: c.Employee},
 		Currency: firstNonEmpty(c.Currency, "EUR"), Total: c.Total, TotalEUR: round2(c.Total), AmountDue: c.Total,
 		Untaxed: round2(c.Total - c.TaxAmount), VAT: c.TaxAmount,
@@ -491,6 +523,7 @@ func expenseForAudience(e Expense, a Audience) Expense {
 	e.Lines = lines
 	if a == AudiencePublic && person {
 		e.Event = ""
+		e.Note = ""
 		e.VendorRef = ""
 		var products []string
 		for _, l := range lines {
@@ -668,17 +701,18 @@ type CustomerInvoiceRef struct {
 }
 
 type CustomerRow struct {
-	Customer    Party                `json:"customer"`
-	IncomeType  string               `json:"incomeType,omitempty"` // where most of the money came from
-	IncomeTypes []string             `json:"incomeTypes,omitempty"`
-	Products    []string             `json:"products,omitempty"`
-	Invoices    int                  `json:"invoices"`
-	Individuals int                  `json:"individuals,omitempty"` // public: individuals merged into this row
-	Untaxed     float64              `json:"untaxedAmount"`
-	Total       float64              `json:"totalAmount"`
-	Received    float64              `json:"receivedAmount"`
-	Due         float64              `json:"amountDue"`
-	InvoiceRefs []CustomerInvoiceRef `json:"invoiceList,omitempty"` // stewards
+	Customer     Party                `json:"customer"`
+	IncomeType   string               `json:"incomeType,omitempty"` // where most of the money came from
+	IncomeTypes  []string             `json:"incomeTypes,omitempty"`
+	Products     []string             `json:"products,omitempty"`
+	Invoices     []string             `json:"invoices"` // URIs of the invoices and credit notes in this row
+	InvoiceCount int                  `json:"invoiceCount"`
+	Individuals  int                  `json:"individuals,omitempty"` // public: individuals merged into this row
+	Untaxed      float64              `json:"untaxedAmount"`
+	Total        float64              `json:"totalAmount"`
+	Received     float64              `json:"receivedAmount"`
+	Due          float64              `json:"amountDue"`
+	InvoiceRefs  []CustomerInvoiceRef `json:"invoiceList,omitempty"` // stewards
 }
 
 type CustomersFile struct {
@@ -732,7 +766,8 @@ func customersFrom(docs []customerDoc, a Audience) ([]CustomerRow, []CategoryTot
 		if docStatus(d.inv) == "paid" {
 			due = 0
 		}
-		r.row.Invoices++
+		r.row.InvoiceCount++
+		r.row.Invoices = append(r.row.Invoices, odooDocURI("account.move", d.inv.ID, d.inv.InvoiceURL))
 		r.row.Untaxed = round2(r.row.Untaxed + d.sign*d.inv.UntaxedAmount*d.f)
 		r.row.Total = round2(r.row.Total + total)
 		r.row.Due = round2(r.row.Due + due)
@@ -804,6 +839,7 @@ type BookingRow struct {
 }
 
 type RentalRow struct {
+	URI           string  `json:"uri"`  // the invoice: odoo:<host>:<db>:account.move:<id>
 	Date          string  `json:"date"` // invoice date
 	Room          string  `json:"room,omitempty"`
 	Product       string  `json:"product,omitempty"`
@@ -813,6 +849,8 @@ type RentalRow struct {
 	Total         float64 `json:"totalAmount"`
 	Customer      Party   `json:"customer"`
 	InvoiceNumber string  `json:"invoiceNumber,omitempty"` // members/stewards
+	Event         string  `json:"event,omitempty"`         // from a trusted annotation on the invoice
+	Note          string  `json:"note,omitempty"`          // its text (not public for individual customers)
 }
 
 type RoomSummary struct {
@@ -871,10 +909,14 @@ func bookingForAudience(b BookingRow, a Audience) BookingRow {
 }
 
 func rentalForAudience(r RentalRow, a Audience) RentalRow {
+	anonymous := customerIsAnonymous(r.Customer, a)
 	r.Customer = customerForAudience(r.Customer, a)
 	if a == AudiencePublic {
 		r.Description = ""
 		r.InvoiceNumber = ""
+		if anonymous {
+			r.Note, r.Event = "", "" // would place a person at a date
+		}
 	}
 	return r
 }
@@ -915,6 +957,52 @@ func summariseRooms(rooms []RoomInfo, bookings []BookingRow, rentals []RentalRow
 		return out[i].Room < out[j].Room
 	})
 	return out
+}
+
+// ── Annotations ──────────────────────────────────────────────────────────
+
+// loadOdooAnnotations reads every month's odoo-annotations.json (written by
+// `chb nostr pull`), trusted authors only, keyed by odoo: URI.
+func loadOdooAnnotations(dataDir string) map[string]*TxAnnotation {
+	out := map[string]*TxAnnotation{}
+	trusted := nostrTrustedPubkeys()
+	for _, ym := range dataMonthRange(dataDir) {
+		data, err := os.ReadFile(nostrsource.Path(dataDir, ym[:4], ym[5:], nostrsource.OdooAnnotationsFile))
+		if err != nil {
+			continue
+		}
+		var cache NostrAnnotationCache
+		if json.Unmarshal(data, &cache) != nil {
+			continue
+		}
+		for uri, a := range cache.Annotations {
+			if !annotationTrusted(a, trusted) {
+				continue
+			}
+			if cur, ok := out[uri]; !ok || a.CreatedAt > cur.CreatedAt {
+				out[uri] = a
+			}
+		}
+	}
+	return out
+}
+
+// applyAnnotation overrides category, collective and event (a trusted
+// annotation outranks Odoo) and returns the annotation's text.
+func applyAnnotation(a *TxAnnotation, category, collective, event *string) string {
+	if a == nil {
+		return ""
+	}
+	if a.Category != "" {
+		*category = a.Category
+	}
+	if a.Collective != "" {
+		*collective = a.Collective
+	}
+	if a.Event != "" {
+		*event = a.Event
+	}
+	return strings.TrimSpace(a.Description)
 }
 
 // ── Generation ───────────────────────────────────────────────────────────
@@ -998,6 +1086,8 @@ func generateAccountingFiles(dataDir string) (int, error) {
 	invoices := loadAllCachedInvoices(dataDir)
 	claims := loadAllOdooExpenses(dataDir)
 
+	annotations := loadOdooAnnotations(dataDir)
+
 	claimByMove := map[int]*OdooExpense{}
 	for id := range claims {
 		c := claims[id]
@@ -1019,6 +1109,11 @@ func generateAccountingFiles(dataDir string) (int, error) {
 			continue
 		}
 		e := expenseFromBill(inv, claimByMove[inv.ID])
+		e.Note = applyAnnotation(annotations[e.URI], &e.Category, &e.Collective, &e.Event)
+		if c := claimByMove[inv.ID]; c != nil && e.Note == "" {
+			// An annotation on the claim (hr.expense) counts for its bill too.
+			e.Note = applyAnnotation(annotations[odooDocURI("hr.expense", c.ID, "")], &e.Category, &e.Collective, &e.Event)
+		}
 		if len(e.Date) >= 7 {
 			get(e.Date[:7]).expenses = append(get(e.Date[:7]).expenses, e)
 		}
@@ -1032,6 +1127,7 @@ func generateAccountingFiles(dataDir string) (int, error) {
 			continue
 		}
 		e := expenseFromClaim(c)
+		e.Note = applyAnnotation(annotations[e.URI], &e.Category, &e.Collective, &e.Event)
 		if len(e.Date) >= 7 {
 			get(e.Date[:7]).expenses = append(get(e.Date[:7]).expenses, e)
 		}
@@ -1067,12 +1163,16 @@ func generateAccountingFiles(dataDir string) (int, error) {
 			t := incomeType(li.AccountCode)
 			d.types[t] += li.SubtotalAmount * d.f
 			if t == "room_rental" && docStatus(inv) != "reversed" {
-				get(date[:7]).rentals = append(get(date[:7]).rentals, RentalRow{
+				rental := RentalRow{
+					URI:  odooDocURI("account.move", inv.ID, inv.InvoiceURL),
 					Date: date, Room: roomForRentalLine(rooms, li), Product: strings.TrimSpace(li.ProductName),
 					Description: strings.TrimSpace(li.Title), Quantity: li.Quantity,
 					Untaxed: round2(d.sign * li.SubtotalAmount * d.f), Total: round2(d.sign * li.TotalAmount * d.f),
 					Customer: d.party, InvoiceNumber: inv.Number,
-				})
+				}
+				var cat, col string
+				rental.Note = applyAnnotation(annotations[rental.URI], &cat, &col, &rental.Event)
+				get(date[:7]).rentals = append(get(date[:7]).rentals, rental)
 			}
 		}
 		if docStatus(inv) == "reversed" {

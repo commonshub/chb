@@ -50,7 +50,7 @@ func Setup() error {
 		nostrDesc := "Not configured"
 		if keys := LoadNostrKeys(); keys != nil {
 			nostrStatus = fmt.Sprintf("%s✓%s", Fmt.Green, Fmt.Reset)
-			nostrDesc = fmt.Sprintf("%s (%d relays)", keys.Npub[:20]+"...", len(keys.Relays))
+			nostrDesc = fmt.Sprintf("%s (%d relays)", keys.Npub[:20]+"...", len(nostrRelayList()))
 		}
 		fmt.Printf("\n  n. %s  %-22s %s%s%s\n", nostrStatus, "Nostr Identity", Fmt.Dim, nostrDesc, Fmt.Reset)
 		fmt.Printf("  o. %s  %-22s %s%s%s\n", fmt.Sprintf("%s·%s", Fmt.Dim, Fmt.Reset), "Odoo Category Mapping", Fmt.Dim, "Map Odoo analytic accounts to categories", Fmt.Reset)
@@ -307,7 +307,7 @@ func summarizeSettingsFile(name string, settings *Settings) string {
 		if keys.Name != "" {
 			name = fmt.Sprintf(" (%s)", keys.Name)
 		}
-		return fmt.Sprintf("%s%s, %s", npub, name, Pluralize(len(keys.Relays), "relay", ""))
+		return fmt.Sprintf("%s%s, %s", npub, name, Pluralize(len(nostrRelayList()), "relay", ""))
 
 	case "rooms.json":
 		rooms, _ := LoadRooms()

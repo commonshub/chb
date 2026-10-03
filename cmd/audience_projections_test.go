@@ -65,7 +65,12 @@ func TestContributorProjectionsDropWallet(t *testing.T) {
 }
 
 func TestImagesFileForAudience(t *testing.T) {
-	f := ImagesFile{Images: []ImageEntry{{ID: "1", Message: "with Jane at jane@example.com", Author: ImageAuthor{Username: "bob"}}}}
+	tmp := t.TempDir()
+	t.Setenv("DATA_DIR", filepath.Join(tmp, "data"))
+	t.Setenv("APP_DATA_DIR", filepath.Join(tmp, "app"))
+	os.MkdirAll(filepath.Join(tmp, "app", "settings"), 0o755)
+	os.WriteFile(filepath.Join(tmp, "app", "settings", "settings.json"), []byte(`{"discord":{"channels":{"general":"111"},"publicChannels":["general"]}}`), 0o644)
+	f := ImagesFile{Images: []ImageEntry{{ID: "1", ChannelID: "111", Message: "with Jane at jane@example.com", Author: ImageAuthor{Username: "bob"}}}}
 	pub := imagesFileForAudience(f, AudiencePublic)
 	if pub.Images[0].Message != "" || pub.Images[0].Author.Username != "bob" {
 		t.Errorf("public keeps the author, drops the text: %+v", pub.Images[0])

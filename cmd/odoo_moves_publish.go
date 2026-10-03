@@ -80,10 +80,7 @@ func publishMoves(kind moveKind, args []string) error {
 	if keys == nil {
 		return fmt.Errorf("no Nostr identity configured. Run: chb setup nostr")
 	}
-	relays := keys.Relays
-	if len(relays) == 0 {
-		relays = nostrRelays
-	}
+	relays := nostrRelayList()
 
 	creds, err := ResolveOdooCredentials()
 	if err != nil {
@@ -197,8 +194,6 @@ func publishMoves(kind moveKind, args []string) error {
 	for i, p := range plan {
 		status.Update("Publishing %s annotations %d/%d (%d ok, %d failed)", kind.labelPl, i+1, len(plan), published, failed)
 		tags := nostr.Tags{
-			{"I", p.URI},
-			{"K", uriKind(p.URI)},
 			{"i", p.URI},
 			{"k", uriKind(p.URI)},
 		}

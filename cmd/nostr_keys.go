@@ -158,10 +158,7 @@ func PublishNostrProfile(keys *NostrKeys) error {
 	}
 	ev.Sign(keys.PrivHex)
 
-	relays := keys.Relays
-	if len(relays) == 0 {
-		relays = nostrRelays
-	}
+	relays := nostrRelayList()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -202,10 +199,7 @@ func SignNostrEvent(keys *NostrKeys, ev *nostr.Event) {
 }
 
 func PublishSignedNostrEvent(keys *NostrKeys, ev *nostr.Event) ([]string, error) {
-	relays := keys.Relays
-	if len(relays) == 0 {
-		relays = nostrRelays
-	}
+	relays := nostrRelayList()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -338,6 +338,7 @@ type Settings struct {
 	Finance    FinanceSettings     `json:"finance"`
 	Membership MembershipSettings  `json:"membership"`
 	Accounting *AccountingSettings `json:"accounting,omitempty"`
+	Nostr      NostrSettings       `json:"nostr,omitempty"`
 
 	// ContributionToken is derived from tokens.json (the entry marked
 	// contribution=true) at load time; settings.json no longer stores it.
@@ -375,6 +376,10 @@ type DiscordSettings struct {
 	GuildID  string            `json:"guildId"`
 	Roles    map[string]string `json:"roles"`
 	Channels json.RawMessage   `json:"channels"`
+	// PublicChannels lists the channels whose photos are published
+	// (names from Channels, dotted for groups, or ids). Absent: the
+	// defaults in images_public.go; [] publishes none.
+	PublicChannels *[]string `json:"publicChannels,omitempty"`
 }
 
 // FinanceSettings holds finance configuration

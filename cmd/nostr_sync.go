@@ -16,22 +16,14 @@ func NostrPull(args []string) error {
 		return nil
 	}
 	switch scope {
-	case "transactions", "tx":
-		return TransactionsSyncNostr(args)
-	case "invoices":
-		return syncMovesFromNostr(moveKindInvoice, args)
-	case "bills":
-		return syncMovesFromNostr(moveKindBill, args)
-	case "", "all":
-		if err := TransactionsSyncNostr(args); err != nil {
-			fmt.Printf("  %s✗ transactions: %v%s\n", Fmt.Red, err, Fmt.Reset)
+	case "", "all", "transactions", "tx", "invoices", "bills", "expenses":
+		// One read-only pull covers every record type: transactions and
+		// Odoo documents are matched by URI (cmd/nostr_annotations_pull.go).
+		summary, err := pullNostrAnnotations(DataDir(), HasFlag(args, "--force"))
+		if err != nil {
+			return err
 		}
-		if err := syncMovesFromNostr(moveKindInvoice, args); err != nil {
-			fmt.Printf("  %s✗ invoices: %v%s\n", Fmt.Red, err, Fmt.Reset)
-		}
-		if err := syncMovesFromNostr(moveKindBill, args); err != nil {
-			fmt.Printf("  %s✗ bills: %v%s\n", Fmt.Red, err, Fmt.Reset)
-		}
+		fmt.Printf("  ✓ Nostr: %s\n", summary)
 		return nil
 	default:
 		return fmt.Errorf("unknown scope %q — use transactions, invoices, bills, or all", scope)

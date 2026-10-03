@@ -56,14 +56,6 @@ type NostrMetadataCache struct {
 	Addresses    map[string]*AddressMetadata `json:"addresses"`    // keyed by address (lowercase)
 }
 
-var nostrRelays = []string{
-	"wss://nostr.commonshub.brussels",
-	"wss://nostr-pub.wellorder.net",
-	"wss://nostr.swiss-enigma.ch",
-	"wss://relay.nostr.band",
-	"wss://relay.damus.io",
-}
-
 const (
 	nostrConnectTimeout = 5 * time.Second
 	nostrDataTimeout    = 6 * time.Second
@@ -157,7 +149,7 @@ func fetchKind1111ByURIs(uris []string, since *time.Time) map[string]NostrEvent 
 	allEvents := map[string]NostrEvent{}
 
 	var wg sync.WaitGroup
-	for _, relay := range nostrRelays {
+	for _, relay := range nostrRelayList() {
 		wg.Add(1)
 		go func(relayURL string) {
 			defer wg.Done()
@@ -175,6 +167,12 @@ func fetchKind1111ByURIs(uris []string, since *time.Time) map[string]NostrEvent 
 		}(relay)
 	}
 	wg.Wait()
+	trusted := nostrTrustedPubkeys()
+	for id, ev := range allEvents {
+		if !acceptAnnotationEvent(ev, trusted) {
+			delete(allEvents, id)
+		}
+	}
 	return allEvents
 }
 
@@ -337,10 +335,7 @@ func FetchNostrAnnotations(uris []string, since *time.Time) (map[string]*TxAnnot
 	}
 
 	// Use custom relay list if user has configured one
-	relays := nostrRelays
-	if keys := LoadNostrKeys(); keys != nil && len(keys.Relays) > 0 {
-		relays = keys.Relays
-	}
+	relays := nostrRelayList()
 
 	// Batch URIs
 	var batches [][]string
@@ -383,21 +378,9 @@ func FetchNostrAnnotations(uris []string, since *time.Time) (map[string]*TxAnnot
 	}
 	wg.Wait()
 
-	// Parse annotations
-	annotations := map[string]*TxAnnotation{}
-	for _, ev := range allEvents {
-		for _, tag := range ev.Tags {
-			if len(tag) < 2 || (tag[0] != "i" && tag[0] != "I") {
-				continue
-			}
-			uri := tag[1]
-			existing, ok := annotations[uri]
-			if !ok || ev.CreatedAt > existing.CreatedAt {
-				annotations[uri] = parseAnnotation(uri, ev)
-			}
-		}
-	}
-
+	// Keep the newest trusted snapshot per URI; comments and untrusted or
+	// forged events are ignored (cmd/nostr_trust.go).
+	annotations := annotationsFromEvents(allEvents, nostrTrustedPubkeys())
 	return annotations, nil
 }
 

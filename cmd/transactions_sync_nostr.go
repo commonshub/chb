@@ -25,10 +25,7 @@ func TransactionsSyncNostr(args []string) error {
 		return fmt.Errorf("no Nostr identity configured. Run: chb setup nostr")
 	}
 
-	relays := keys.Relays
-	if len(relays) == 0 {
-		relays = nostrRelays
-	}
+	relays := nostrRelayList()
 
 	// Determine month range
 	posYear, posMonth, posFound := ParseYearMonthArg(args)
@@ -275,8 +272,6 @@ func TransactionsSyncNostr(args []string) error {
 	failed := 0
 	for i, p := range pending {
 		tags := nostr.Tags{
-			{"I", p.URI},
-			{"K", uriKind(p.URI)},
 			{"i", p.URI},
 			{"k", uriKind(p.URI)},
 			{"category", p.Category},

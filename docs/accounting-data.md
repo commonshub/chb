@@ -87,6 +87,7 @@ treated as an organisation.
   "byCategory": [ { "category": "cold-drinks", "count": 1, "totalAmount": 550.13 } ],
   "expenses": [
     {
+      "uri": "odoo:citizen-spring-vzw.odoo.com:citizen-spring-vzw:account.move:8812",
       "id": "b-1f0c…", "number": "CHB-S/2026/09/0013",
       "kind": "bill", "status": "pending",
       "date": "2026-09-18", "dueDate": "2026-10-18",
@@ -107,8 +108,13 @@ treated as an organisation.
 }
 ```
 
-- `id`: stable public id, the same as in `pending-bills.json` (`b-…`); an
-  expense claim not booked yet has an `x-…` id.
+- `uri`: the document's global id, `odoo:<host>:<db>:account.move:<id>`
+  (`hr.expense` for a claim not booked yet). The same in every tier, in
+  `pending-bills.json`, on Nostr and on the website; annotate with it.
+- `id`: **deprecated** alias (`b-…`, `x-…`), removed in the next release.
+- `note`: the text of a trusted Nostr annotation on this `uri`
+  ([website.md](website.md) §9). Annotations also set `category`,
+  `collective` and `event`. Dropped in `public/` for a natural person's bill.
 - `kind`: `bill`, `credit_note` (the vendor owes us), or `expense` (someone
   paid out of pocket and is reimbursed).
 - `status`: `pending`, `partially_paid`, `paid`, `reversed` (cancelled by a
@@ -150,12 +156,17 @@ number of distinct vendors, anonymous ones included.
   "customers": [
     { "customer": { "id": "p-…", "type": "organisation", "name": "Open Collective Inc." },
       "incomeType": "sponsorship", "incomeTypes": ["sponsorship"], "products": ["Sponsorship"],
-      "invoices": 3, "untaxedAmount": 9400, "totalAmount": 9400, "receivedAmount": 9400, "amountDue": 0 },
+      "invoices": ["odoo:…:account.move:7001", "odoo:…:account.move:7044", "odoo:…:account.move:7102"], "invoiceCount": 3, "untaxedAmount": 9400, "totalAmount": 9400, "receivedAmount": 9400, "amountDue": 0 },
     { "customer": { "type": "individual", "member": true }, "individuals": 36,
-      "incomeType": "membership", "invoices": 52, "totalAmount": 20858.42, "receivedAmount": 19900.00, "amountDue": 958.42 }
+      "incomeType": "membership", "invoices": ["odoo:…:account.move:6120", "…"], "invoiceCount": 52, "totalAmount": 20858.42, "receivedAmount": 19900.00, "amountDue": 958.42 }
   ]
 }
 ```
+
+`invoices[]` lists the URIs of the invoices and credit notes summed in the
+row, the anonymous merged rows included (a URI names a document, not a
+person), so each invoice can be annotated. `invoiceCount` is their number
+(it was `invoices` in v3.16–3.17).
 
 `incomeType` comes from the income account of the invoice lines:
 
@@ -193,7 +204,7 @@ group many buyers.
     { "room": "satoshi", "roomName": "Satoshi Room", "start": "…", "end": "…", "hours": 2, "public": false }
   ],
   "rentals": [
-    { "date": "2026-08-10", "room": "ostrom", "product": "Ostrom Room", "quantity": 4,
+    { "uri": "odoo:…:account.move:7210", "date": "2026-08-10", "room": "ostrom", "product": "Ostrom Room", "quantity": 4,
       "untaxedAmount": 200, "totalAmount": 242,
       "customer": { "id": "p-…", "type": "organisation", "name": "Open Org ASBL" } }
   ]
@@ -204,7 +215,9 @@ group many buyers.
   `public` is true when the booking hosts an event on the public calendar,
   matched by day and title. Only then does public see the title.
 - **`rentals`** come from customer invoice lines on the room-rental income
-  account (700100), dated by the invoice. The room is recognised from the
+  account (700100), dated by the invoice. `uri` is the invoice; a trusted
+  annotation on it adds `event` and `note` (not in `public/` for an
+  individual customer). The room is recognised from the
   product or the line text; `room: ""` means the line does not say which
   room. Invoices and calendar entries are not linked one to one: an invoice
   can cover several days, or a deposit.

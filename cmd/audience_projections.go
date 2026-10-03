@@ -97,19 +97,31 @@ func membersFileForAudience(f MembersOutputFile, a Audience) MembersOutputFile {
 
 // ---- images -------------------------------------------------------------
 
-// imagesFileForAudience: public keeps the photo and who posted it (display
-// identity) but not the message text, which is free-form and may name or
-// quote other people; members and stewards get the text.
+// imagesFileForAudience: public lists only photos from public channels
+// (settings.json discord.publicChannels) and keeps who posted them but not
+// the message text, which is free-form and may name or quote other people;
+// members get every photo with its text. In both, filePath points at the
+// public copy (YYYY/MM/public/images/…) or is empty: providers/ is never
+// served. Stewards keep the providers path.
 func imagesFileForAudience(f ImagesFile, a Audience) ImagesFile {
-	if a != AudiencePublic {
+	if a == AudienceStewards {
 		return f
 	}
+	dataDir := DataDir()
+	public := publicPhotoChannelIDs()
 	out := f
-	out.Images = make([]ImageEntry, len(f.Images))
-	for i, img := range f.Images {
-		img.Message = ""
-		out.Images[i] = img
+	out.Images = make([]ImageEntry, 0, len(f.Images))
+	for _, img := range f.Images {
+		if a == AudiencePublic {
+			if !public[img.ChannelID] {
+				continue
+			}
+			img.Message = ""
+		}
+		img.FilePath = publicImageRelPath(dataDir, img, public)
+		out.Images = append(out.Images, img)
 	}
+	out.Count = len(out.Images)
 	return out
 }
 
@@ -127,6 +139,9 @@ func counterpartiesFileForAudience(f CounterpartiesFile, a Audience) Counterpart
 		out := f
 		out.Counterparties = make(map[string]CounterpartyEntry, len(f.Counterparties))
 		for uri, cp := range f.Counterparties {
+			if isStripeCustomerURI(uri) {
+				continue // a buyer's Stripe id: stewards only
+			}
 			cp.Name = maskBankDetails(cp.Name)
 			cp.About = maskBankDetails(cp.About)
 			// KBC counterparty ids embed the narration: mask them the same
