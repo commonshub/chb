@@ -194,6 +194,14 @@ func TestPublicPhotosOnlyFromPublicChannels(t *testing.T) {
 	if err != nil || st.Mode().Perm() != 0o644 {
 		t.Fatalf("public copy: %v %v", err, st)
 	}
+	// A partial list (latest/ covers part of a month) must not delete the
+	// copies of photos it does not mention.
+	if _, removed := publishPublicImages(dataDir, images[:1], publicPhotoChannelIDs(), false); removed != 0 {
+		t.Errorf("a partial list removed %d public copies", removed)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "2026", "08", "public", "images", "a2.jpg")); err != nil {
+		t.Error("a2 copy was removed by a list that does not mention it")
+	}
 	if dst, _ := os.Stat(filepath.Join(dataDir, "2026", "08", "public", "images")); dst.Mode().Perm() != 0o755 {
 		t.Errorf("public images dir mode = %o", dst.Mode().Perm())
 	}

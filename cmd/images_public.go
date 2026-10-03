@@ -120,25 +120,28 @@ func publicImageRelPath(dataDir string, img ImageEntry, public map[string]bool) 
 	return filepath.ToSlash(filepath.Join(year, month, AudiencePublic.Dir(), "images", name))
 }
 
-// publishPublicImages copies the month's downloaded photos from public
-// channels to public/images/ and removes copies of photos that are not
-// (or no longer) from a public channel. Returns (copied, removed).
+// publishPublicImages copies downloaded photos from public channels to
+// public/images/ and removes the copies of listed photos whose channel is
+// not (or no longer) public. Returns (copied, removed).
 func publishPublicImages(dataDir string, images []ImageEntry, public map[string]bool, force bool) (int, int) {
 	copied, removed := 0, 0
-	keep := map[string]map[string]bool{} // public images dir → ids to keep
+	// Only photos this list says are from a non-public channel are removed:
+	// the list may cover part of a month (latest/), so a file it does not
+	// mention is left alone.
+	drop := map[string]map[string]bool{} // public images dir → ids to remove
 	for _, img := range images {
 		year, month, ok := imageMonthDir(img)
 		if !ok {
 			continue
 		}
 		dir := publicImagesDir(dataDir, year, month)
-		if keep[dir] == nil {
-			keep[dir] = map[string]bool{}
-		}
 		if !public[img.ChannelID] {
+			if drop[dir] == nil {
+				drop[dir] = map[string]bool{}
+			}
+			drop[dir][img.ID] = true
 			continue
 		}
-		keep[dir][img.ID] = true
 		srcDir := filepath.Dir(filepath.Join(dataDir, filepath.FromSlash(img.FilePath)))
 		name := findByIDPrefix(srcDir, img.ID)
 		if name == "" {
@@ -154,12 +157,10 @@ func publishPublicImages(dataDir string, images []ImageEntry, public map[string]
 		}
 		copied++
 	}
-	for dir, ids := range keep {
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			id := strings.SplitN(e.Name(), ".", 2)[0]
-			if !ids[id] {
-				if os.Remove(filepath.Join(dir, e.Name())) == nil {
+	for dir, ids := range drop {
+		for id := range ids {
+			if name := findByIDPrefix(dir, id); name != "" {
+				if os.Remove(filepath.Join(dir, name)) == nil {
 					removed++
 				}
 			}
