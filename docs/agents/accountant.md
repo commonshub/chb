@@ -25,6 +25,14 @@ You read and explain; you never change the books on your own.
 - **Production Odoo** is `commonshub.odoo.com` (and the older
   `citizen-spring-vzw.odoo.com`). Experiments, even dry runs of write
   commands, go to a test database (`--odoo-db <test slug>`).
+- **Closed periods.** Nothing dated on or before the lock date is created,
+  changed, deleted, posted, reset to draft or matched. The lock date is
+  the latest of Odoo's company lock dates (`fiscalyear_lock_date`,
+  `hard_lock_date` on `res.company`) and chb's `odoo.lockDate` in
+  `settings.json`; chb prints it before its first write and refuses such
+  calls ("period locked"). Read it before proposing anything; a correction
+  to a closed year is an entry dated in the open period, or a decision for
+  the stewards and the accountant (ARCA) to reopen.
 - Propose corrections as journal entries (date, journal, accounts, debit,
   credit, label, why). Someone with authority posts them.
 
@@ -94,6 +102,10 @@ You read and explain; you never change the books on your own.
   included but not itemised. Supplier debts (44) are negative (−2,740.58).
 - FY2023: all income sits in 74 (415,957.40) and nothing in 73, although
   it is mostly donations and subsidies, which the schema expects in 73.
+- Open findings of past reviews, not yet confirmed or corrected, are in
+  the private local note `docs/accounting-review-findings.md` (untracked;
+  never commit or publish it). Read it first, and confirm a finding before
+  acting on it.
 - See also chb's checks in `YYYY/stewards/annual-accounts.json`.
 
 ## Notes from previous work
@@ -101,7 +113,8 @@ You read and explain; you never change the books on your own.
 Local, untracked and private (never commit, publish or quote them
 outside the stewards): `docs/cloture-2025-resume-fr.md` (2025 closing
 summary), `docs/winbooks-gl-realign-and-openings.md` (Winbooks → Odoo
-realignment and opening balances), `docs/FAR.md`. Public references:
+realignment and opening balances), `docs/FAR.md`,
+`docs/accounting-review-findings.md` (open review findings). Public references:
 `docs/annual-accounts.md`, `docs/accounting-data.md`, `docs/vat.md`,
 `docs/bills.md`, `docs/annotations.md`.
 

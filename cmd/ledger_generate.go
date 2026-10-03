@@ -79,8 +79,12 @@ type LedgerBalancesFile struct {
 var personAccountPrefix = regexp.MustCompile(`(?i)^(c/c|compte courant|current account|retributions?|r[ée]mun[ée]ration)\s+(.+)$`)
 
 // roleWords are what follows "C/C" or "RETRIBUTIONS" when the account is
-// about a role or a tax, not a person.
-var roleWords = regexp.MustCompile(`(?i)\b(g[ée]rants?|tva|vat|directors?|directeurs?|administrateurs?|staff|personnel|employ[ée]s|ouvriers|associ[ée]s|partners?|[ée]quitable|sabam|à r[ée]cup[ée]rer|a recuperer|payable|receivable|current account|capital|du capital)\b`)
+// about a group, a tax or the capital, not a person.
+var roleWords = regexp.MustCompile(`(?i)\b(g[ée]rants|tva|vat|directors|directeurs|administrateurs|bestuurders|staff|personnel|employ[ée]s|ouvriers|associ[ée]s|partners|[ée]quitable|sabam|à r[ée]cup[ée]rer|a recuperer|payable|receivable|current account|capital|du capital)\b`)
+
+// singleRoleWords: a role one person holds ("C/C director"). The balance is
+// that person's, so the account is treated like one named after them.
+var singleRoleWords = regexp.MustCompile(`(?i)\b(g[ée]rant|director|directeur|directrice|administrat(eur|rice)|pr[ée]sident(e)?|tr[ée]sori(er|[eè]re)|secr[ée]taire|zaakvoerder|bestuurder|voorzitter|penningmeester|secretaris|ceo|founder|fondat(eur|rice))\b`)
 
 type accountPrivacy struct {
 	private, public map[string]bool
@@ -156,6 +160,9 @@ func (p accountPrivacy) isIndividualAccount(code, name string) bool {
 		return false
 	}
 	rest := strings.TrimSpace(m[2])
+	if singleRoleWords.MatchString(rest) && !roleWords.MatchString(rest) {
+		return true
+	}
 	if rest == "" || roleWords.MatchString(rest) || nameHasLegalForm(rest) {
 		return false
 	}

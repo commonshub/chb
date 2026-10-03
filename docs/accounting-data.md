@@ -340,9 +340,13 @@ never mirrored to `latest/` (the chart lives only there).
 
 An account counts as "named after a person" when its label starts with a
 current-account or remuneration prefix (`C/C`, `compte courant`,
-`rétributions`, `rémunération`) followed by something other than a role
-or an organisation (a legal form, or the name of a company partner in
-Odoo). The setting `accounting.privateAccounts` (codes) forces an account
+`current account`, `rétributions`, `rémunération`) followed by either a
+name that is not an organisation (no legal form, not the name of a company
+partner in Odoo), or a role one person holds (director, gérant,
+administrateur, président, trésorier, secrétaire, zaakvoerder,
+bestuurder, voorzitter…): the current account of "the director" is that
+person's. Groups (`administrateurs`, `personnel`), taxes and the capital
+stay public. The setting `accounting.privateAccounts` (codes) forces an account
 private, `accounting.publicAccounts` forces it public.
 
 Totals are identical in every tier: merging changes rows, never amounts.

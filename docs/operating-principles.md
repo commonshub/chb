@@ -60,5 +60,28 @@ edit rules / data  →  chb generate            # resolve into the outbox (offli
                    →  chb … push               # commit after confirmation
 ```
 
-These three rules apply to agents and humans alike. When in doubt: stay offline,
+## 4. Closed periods are the accountant's
+
+chb never creates, changes, deletes, posts, resets or matches an
+accounting entry dated on or before the **lock date**: the latest of
+Odoo's company lock dates (`fiscalyear_lock_date`, `hard_lock_date`) and
+chb's own setting in `$APP_DATA_DIR/settings/settings.json`:
+
+```json
+{ "odoo": { "lockDate": "2025-12-31" } }
+```
+
+Use the setting when a year is closed but Odoo is not locked yet. chb
+prints the lock date before its first write (`· locked through
+2025-12-31 (Odoo): no change on or before 2025-12-31`) and refuses calls
+that touch the period with a `period locked` error; statement lines that
+cannot be created are reported with that reason. Matching across the lock
+date (a 2026 payment of a 2025 bill) is allowed: it changes no closed
+balance. Matching or unmatching lines that are all in the closed period is
+refused.
+
+The guard sits in `odooExec`, the single path for every Odoo call, so it
+covers every command, including `--reset` and `--force`.
+
+These four rules apply to agents and humans alike. When in doubt: stay offline,
 queue to the outbox, preview, and wait for a go-ahead before committing.

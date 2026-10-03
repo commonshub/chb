@@ -47,6 +47,10 @@ func odooExec(odooURL, db string, uid int, password, model, method string, args 
 	mutating := isMutatingOdooMethod(method)
 	if mutating {
 		printOdooWriteBannerOnce(odooURL, db)
+		printOdooLockOnce(odooURL, db, uid, password)
+		if err := checkOdooLock(odooURL, db, uid, password, model, method, args); err != nil {
+			return nil, err
+		}
 	}
 	result, err := odoosource.Exec(odooURL, db, uid, password, model, method, args, kwargs)
 	if err == nil && mutating {

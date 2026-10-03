@@ -6101,6 +6101,8 @@ func classifyStatementLineCreateFailure(line map[string]interface{}, err error) 
 	reason := "Odoo create error"
 	lower := strings.ToLower(detail)
 	switch {
+	case errors.Is(err, ErrOdooPeriodLocked):
+		reason = "period locked"
 	case strings.Contains(lower, "imported only once") ||
 		strings.Contains(lower, "unique_import_id") ||
 		strings.Contains(lower, "unique import") ||

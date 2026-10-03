@@ -8,18 +8,21 @@ import (
 func TestIndividualAccountDetection(t *testing.T) {
 	p := accountPrivacy{private: map[string]bool{"499999": true}, public: map[string]bool{"489350": true}, orgNames: []string{"all for climate dao"}}
 	cases := map[string]bool{
-		"489302|C/C DAMMAN Xavier":       true,
-		"489309|C/C KEVIN SUNDAR":        true,
-		"613000|RETRIBUTIONS LEEN":       true,
-		"489301|C/C ALL FOR CLIMATE":     false, // a company partner
-		"416200|C/C BRUSSELS PAY ASBL":   false, // legal form
-		"416000|C/C GERANT":              false, // a role
-		"411200|C/C TVA A RECUPERER":     false,
-		"694000|REMUNERATION DU CAPITAL": false,
-		"620200|REMUNERATIONS-EMPLOYES":  false,
-		"499999|ATTENTE":                 true,  // settings override
-		"489350|C/C JANE DOE":            false, // settings override
-		"604200|ACHATS NOURRITURE":       false,
+		"489302|C/C DAMMAN Xavier":        true,
+		"489309|C/C KEVIN SUNDAR":         true,
+		"613000|RETRIBUTIONS LEEN":        true,
+		"489301|C/C ALL FOR CLIMATE":      false, // a company partner
+		"416200|C/C BRUSSELS PAY ASBL":    false, // legal form
+		"416000|C/C GERANT":               true,  // a role one person holds
+		"489100|Current account director": true,
+		"489110|C/C ADMINISTRATEURS":      false, // a group
+		"489120|C/C Voorzitter":           true,
+		"411200|C/C TVA A RECUPERER":      false,
+		"694000|REMUNERATION DU CAPITAL":  false,
+		"620200|REMUNERATIONS-EMPLOYES":   false,
+		"499999|ATTENTE":                  true,  // settings override
+		"489350|C/C JANE DOE":             false, // settings override
+		"604200|ACHATS NOURRITURE":        false,
 	}
 	for in, want := range cases {
 		code, name, _ := strings.Cut(in, "|")
