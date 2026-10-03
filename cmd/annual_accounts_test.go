@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeAnnual(t *testing.T, dir, name, content string) string {
@@ -120,5 +121,66 @@ func TestAnnualAccountsVisibilityAndChecks(t *testing.T) {
 	_, _ = generateAnnualAccounts(dataDir)
 	if _, err := os.Stat(filepath.Join(dataDir, "2031", "public", "annual-accounts", "balance_sheet_abbr_assoc_31122031_x.pdf")); err == nil {
 		t.Error("withdrawn statement still in public/")
+	}
+}
+
+func TestAnnualFiledWithoutDateAndNBBRegister(t *testing.T) {
+	tmp := t.TempDir()
+	dataDir := filepath.Join(tmp, "data")
+	t.Setenv("DATA_DIR", dataDir)
+	in := t.TempDir()
+	files := []string{writeAnnual(t, in, "figures.csv", "20/58;10\n10/49;10\n")}
+	f, err := importAnnualFiles(dataDir, files, "2031-01-01:2031-12-31", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyAnnualSetFlags(f, []string{"--filed", "--figures-source", "internal-balance"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.Status != "filed" || f.FiledAt != "" || f.FiguresSource != "internal-balance" {
+		t.Fatalf("filing = %+v", f)
+	}
+	_ = saveAnnualFiling(dataDir, f)
+
+	// Register checked: nothing deposited yet.
+	writeFile(t, nbbRegisterPath(dataDir), `{"checkedAt":"2031-10-03T10:00:00Z","enterpriseNumber":"0804.505.132","deposits":[]}`)
+	_, _ = generateAnnualAccounts(dataDir)
+	raw, _ := os.ReadFile(audiencePath(dataDir, "2031", "", AudiencePublic, annualAccountsFile))
+	if !strings.Contains(string(raw), `"filedAt": null`) {
+		t.Errorf("an unknown filing date must be null: %s", raw)
+	}
+	fy := readAnnual(t, dataDir, "2031", AudiencePublic).FiscalYears[0]
+	codes := map[string]bool{}
+	for _, c := range fy.Checks {
+		codes[c.Code] = true
+	}
+	if !codes["not-on-nbb-register"] || !codes["figures-from-internal-balance"] {
+		t.Errorf("checks = %+v", fy.Checks)
+	}
+	if fy.NBB.URL != "https://consult.cbso.nbb.be/consult-enterprise/0804505132" || fy.NBB.OnRegister {
+		t.Errorf("nbb = %+v", fy.NBB)
+	}
+
+	// The deposit appears on the register: date and reference come from it.
+	writeFile(t, nbbRegisterPath(dataDir), `{"checkedAt":"2032-01-10T10:00:00Z","enterpriseNumber":"0804.505.132","deposits":[{"id":"x","reference":"2032-00012345","periodEndDate":"2031-12-31T00:00:00Z","depositDate":"2032-01-05T09:00:00Z"}]}`)
+	_, _ = generateAnnualAccounts(dataDir)
+	fy = readAnnual(t, dataDir, "2031", AudiencePublic).FiscalYears[0]
+	if !fy.NBB.OnRegister || fy.NBB.Reference != "2032-00012345" || fy.FiledAt == nil || *fy.FiledAt != "2032-01-05" {
+		t.Errorf("after deposit: nbb = %+v filedAt = %v", fy.NBB, fy.FiledAt)
+	}
+	for _, c := range fy.Checks {
+		if c.Code == "not-on-nbb-register" {
+			t.Error("still flagged as not on the register")
+		}
+	}
+}
+
+func TestAnnualDropFolderIgnoresRegister(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("DATA_DIR", dataDir)
+	writeFile(t, nbbRegisterPath(dataDir), `{"checkedAt":"`+time.Now().UTC().Format(time.RFC3339)+`","enterpriseNumber":"0804.505.132","deposits":[]}`)
+	s, err := pullAnnualAccountsInbox(nil)
+	if err != nil || !strings.HasPrefix(s, "drop folder empty") {
+		t.Errorf("summary %q err %v: the register snapshot is not a document", s, err)
 	}
 }

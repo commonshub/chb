@@ -70,24 +70,31 @@ type AnnualPeriod struct {
 }
 
 type AnnualFiscalYear struct {
-	Label      string              `json:"label"`
-	Year       string              `json:"year"` // year the period ends: where the files live
-	Period     AnnualPeriod        `json:"period"`
-	Status     string              `json:"status"` // filed | draft (draft: stewards only)
-	FiledAt    string              `json:"filedAt,omitempty"`
-	NBB        *AnnualNBB          `json:"nbb,omitempty"`
-	Schema     string              `json:"schema"`
-	Currency   string              `json:"currency"`
-	KeyFigures AnnualKeyFigures    `json:"keyFigures"`
-	Figures    map[string]euros    `json:"figures"` // every NBB code read, as printed ("20/58", "9904", "(14)", "14P")
-	Labels     map[string]string   `json:"labels"`
-	Documents  []AnnualDocumentOut `json:"documents"`
-	Checks     []AnnualCheck       `json:"checks"`
+	Label   string       `json:"label"`
+	Year    string       `json:"year"` // year the period ends: where the files live
+	Period  AnnualPeriod `json:"period"`
+	Status  string       `json:"status"`  // filed | draft (draft: stewards only)
+	FiledAt *string      `json:"filedAt"` // null when unknown (or draft)
+	NBB     AnnualNBB    `json:"nbb"`
+	// FiguresSource: "statements" (the abbreviated statements or an NBB
+	// export) or "internal-balance" (class totals read from the
+	// accountant's internal balance sheet; see checks).
+	FiguresSource string              `json:"figuresSource"`
+	Schema        string              `json:"schema"`
+	Currency      string              `json:"currency"`
+	KeyFigures    AnnualKeyFigures    `json:"keyFigures"`
+	Figures       map[string]euros    `json:"figures"` // every NBB code read, as printed ("20/58", "9904", "(14)", "14P")
+	Labels        map[string]string   `json:"labels"`
+	Documents     []AnnualDocumentOut `json:"documents"`
+	Checks        []AnnualCheck       `json:"checks"`
 }
 
 type AnnualNBB struct {
-	Reference string `json:"reference,omitempty"`
-	URL       string `json:"url,omitempty"`
+	Reference   string `json:"reference,omitempty"`
+	URL         string `json:"url"`                   // the deposit, or the association's page on the NBB register
+	OnRegister  bool   `json:"onRegister"`            // the NBB register lists this fiscal year
+	CheckedAt   string `json:"checkedAt,omitempty"`   // when chb last looked
+	DepositedAt string `json:"depositedAt,omitempty"` // per the register
 }
 
 type AnnualEntity struct {
@@ -160,11 +167,13 @@ func buildAnnualFiscalYear(dataDir string, f *AnnualFiling, all []*AnnualFiling)
 	fy := AnnualFiscalYear{
 		Label: f.Label, Year: f.PeriodEnd[:4],
 		Period: AnnualPeriod{Start: f.PeriodStart, End: f.PeriodEnd, Months: monthsBetween(f.PeriodStart, f.PeriodEnd), Assumed: f.PeriodAssumed},
-		Status: f.Status, FiledAt: f.FiledAt, Schema: firstNonEmpty(f.Schema, "abbreviated-association"), Currency: "EUR",
-		Figures: map[string]euros{}, Labels: labels,
+		Status: f.Status, Schema: firstNonEmpty(f.Schema, "abbreviated-association"), Currency: "EUR",
+		Figures: map[string]euros{}, Labels: labels, FiguresSource: firstNonEmpty(f.FiguresSource, "statements"),
+		NBB: AnnualNBB{Reference: f.NBBReference, URL: firstNonEmpty(f.NBBURL, nbbEnterpriseURL(firstNonEmpty(f.EnterpriseNumber, defaultEnterpriseNumber)))},
 	}
-	if f.NBBReference != "" || f.NBBURL != "" {
-		fy.NBB = &AnnualNBB{Reference: f.NBBReference, URL: f.NBBURL}
+	if f.FiledAt != "" {
+		v := f.FiledAt
+		fy.FiledAt = &v
 	}
 	for k, v := range figs {
 		fy.Figures[k] = eur(v)
@@ -191,6 +200,26 @@ func buildAnnualFiscalYear(dataDir string, f *AnnualFiling, all []*AnnualFiling)
 
 	if len(figs) == 0 {
 		add("error", "no-figures", "no figures could be read: import the abbreviated statements (PDF) or a figures.csv", nil)
+	}
+	if f.FiguresSource == "internal-balance" {
+		add("info", "figures-from-internal-balance", "these figures are the class totals read from the accountant's internal balance sheet: the filed abbreviated statement is not available yet", nil)
+	}
+	// The NBB register (checked daily by `chb pull`).
+	if reg := loadNBBRegister(dataDir); reg != nil {
+		fy.NBB.CheckedAt = reg.CheckedAt
+		if d := reg.depositFor(f.PeriodEnd); d != nil {
+			fy.NBB.OnRegister = true
+			fy.NBB.DepositedAt = firstNonEmpty(d.DepositDate[:min(10, len(d.DepositDate))])
+			if fy.NBB.Reference == "" {
+				fy.NBB.Reference = d.Reference
+			}
+			if fy.FiledAt == nil && fy.NBB.DepositedAt != "" {
+				v := fy.NBB.DepositedAt
+				fy.FiledAt = &v
+			}
+		} else if f.Status == "filed" {
+			add("info", "not-on-nbb-register", fmt.Sprintf("filed, but not yet visible on the NBB register as of %s", reg.CheckedAt[:min(10, len(reg.CheckedAt))]), nil)
+		}
 	}
 	if f.PeriodAssumed {
 		add("warning", "period-assumed", "the period start is assumed to be 1 January; set it with --period", nil)

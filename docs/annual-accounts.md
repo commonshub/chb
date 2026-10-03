@@ -11,7 +11,7 @@ checks them, and publishes the filed accounts as open data.
 ```
 chb annual-accounts import balance_sheet_abbr_assoc_31122025.pdf profit_and_loss_abbr_assoc_2025.pdf \
     [trial_balance_2025.pdf] [figures.csv]
-chb annual-accounts set 2025 --filed 2026-09-30 --nbb-ref <reference> --nbb-url <url>
+chb annual-accounts set 2025 --filed [2026-09-30] [--nbb-ref <reference>] [--nbb-url <url>]
 chb annual-accounts                      # list fiscal years, status and checks
 ```
 
@@ -29,6 +29,18 @@ chb annual-accounts                      # list fiscal years, status and checks
   (period, status, NBB reference), YYYY/MM being the end of the period.
 - **A fiscal year is a draft until `set … --filed`**: drafts are visible to
   stewards only. `--draft` withdraws a fiscal year from the public files.
+  `--filed` without a date records a filing whose date is unknown
+  (`filedAt: null`).
+- **No filed statement yet?** Import the class totals as a `figures.csv`
+  with `--figures-source internal-balance`, and the internal balance sheet
+  with `--internal`: the figures are published with a note that they come
+  from the accountant's internal balance sheet; the internal document stays
+  stewards-only.
+- **The NBB register.** `chb pull` checks the association's deposits on the
+  NBB register once a day. Until a fiscal year appears there, it carries the
+  note "not yet visible on the NBB register as of <date>"; once it appears,
+  the deposit date and reference fill in `filedAt` and `nbb.reference` when
+  they were not set.
 - Files dropped in `$DATA_DIR/latest/providers/annual-accounts/` are
   imported as a draft by the hourly `chb pull`.
 
@@ -68,7 +80,9 @@ document with its archive path. The archived documents are covered by
       "period": { "start": "2025-01-01", "end": "2025-12-31", "months": 12 },
       "status": "filed",
       "filedAt": "2026-09-30",
-      "nbb": { "reference": "…", "url": "https://consult.cbso.nbb.be/…" },
+      "figuresSource": "statements",
+      "nbb": { "reference": "…", "url": "https://consult.cbso.nbb.be/consult-enterprise/0804505132",
+               "onRegister": true, "depositedAt": "2026-09-30", "checkedAt": "2026-10-03T14:19:06Z" },
       "schema": "abbreviated-association",
       "currency": "EUR",
       "keyFigures": {
@@ -141,6 +155,8 @@ explanation) or `info`.
 | `opening-balance-mismatch` | last year's (14) ≠ this year's 14P |
 | `no-previous-year` (info) | the previous fiscal year is not imported, so the opening balance is not checked |
 | `period-assumed` | the period start was not confirmed |
+| `figures-from-internal-balance` (info) | the figures were read from the accountant's internal balance sheet; the filed statement is not available |
+| `not-on-nbb-register` (info) | filed, but not yet visible on the NBB register as of the last check |
 | `no-figures` | no figure could be read |
 
 ## Building pages
@@ -151,6 +167,10 @@ explanation) or `info`.
 - **Finance overview**: `latest/public/annual-accounts.json` for one row per
   fiscal year. Use `period` for the span: a fiscal year can be longer than
   12 months (`months`).
-- **Authoritative copy**: when `nbb.url` is set, link the NBB's own
-  publication next to ours; `sha256` lets anyone check the file is the one
+- **Authoritative copy**: link `nbb.url` (the association's page on the NBB
+  register) next to ours, and say "not yet on the register" while
+  `nbb.onRegister` is false; `sha256` lets anyone check the file is the one
   imported.
+- `filedAt` can be `null` (filed, date unknown); `figuresSource` says
+  whether the figures come from the statements or the internal balance
+  sheet.

@@ -37,7 +37,8 @@ type AnnualFiling struct {
 	PeriodEnd        string           `json:"periodEnd"`
 	PeriodAssumed    bool             `json:"periodAssumed,omitempty"` // start assumed to be 1 January
 	Status           string           `json:"status"`                  // draft | filed
-	FiledAt          string           `json:"filedAt,omitempty"`
+	FiledAt          string           `json:"filedAt,omitempty"`       // empty when filed but the date is unknown
+	FiguresSource    string           `json:"figuresSource,omitempty"` // "" = the statements; "internal-balance" = class totals read from the internal balance sheet
 	NBBReference     string           `json:"nbbReference,omitempty"`
 	NBBURL           string           `json:"nbbUrl,omitempty"`
 	Schema           string           `json:"schema"` // abbreviated-association
@@ -267,11 +268,16 @@ func annualAccountsImport(args []string) error {
 		printAnnualAccountsHelp()
 		return nil
 	}
+	// Flags taking a value; --filed takes one only when it is a date.
+	valueFlags := map[string]bool{"--period": true, "--nbb-ref": true, "--nbb-url": true, "--label": true, "--internal": true, "--figures-source": true}
 	var inputs []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "--") {
-			if !strings.Contains(a, "=") && i+1 < len(args) && a != "--dry-run" && a != "--yes" {
+			if strings.Contains(a, "=") || i+1 >= len(args) {
+				continue
+			}
+			if valueFlags[a] || (a == "--filed" && isISODate(args[i+1])) {
 				i++
 			}
 			continue
@@ -295,7 +301,7 @@ func annualAccountsImport(args []string) error {
 	if err != nil {
 		return err
 	}
-	if v := GetOption(args, "--filed"); v != "" || HasFlag(args, "--nbb-ref") {
+	if HasFlag(args, "--filed") || GetOption(args, "--filed") != "" || HasFlag(args, "--nbb-ref") || HasFlag(args, "--nbb-url") || GetOption(args, "--figures-source") != "" {
 		if err := applyAnnualSetFlags(filing, args); err != nil {
 			return err
 		}
@@ -319,11 +325,23 @@ func annualAccountsImport(args []string) error {
 }
 
 func applyAnnualSetFlags(f *AnnualFiling, args []string) error {
-	if v := GetOption(args, "--filed"); v != "" {
-		if !isISODate(v) {
-			return fmt.Errorf("--filed %q: expected YYYY-MM-DD", v)
+	if HasFlag(args, "--filed") || GetOption(args, "--filed") != "" {
+		v := GetOption(args, "--filed")
+		if isISODate(v) {
+			f.Status, f.FiledAt = "filed", v
+		} else {
+			f.Status, f.FiledAt = "filed", "" // filed, date unknown
 		}
-		f.Status, f.FiledAt = "filed", v
+	}
+	if v := GetOption(args, "--figures-source"); v != "" {
+		switch v {
+		case "statements":
+			f.FiguresSource = ""
+		case "internal-balance":
+			f.FiguresSource = v
+		default:
+			return fmt.Errorf("--figures-source %q: expected statements or internal-balance", v)
+		}
 	}
 	if HasFlag(args, "--draft") {
 		f.Status, f.FiledAt = "draft", ""
@@ -434,15 +452,26 @@ func printAnnualFiling(f *AnnualFiling) {
 // `chb annual-accounts set <year> --filed <date>`.
 func pullAnnualAccountsInbox(args []string) (string, error) {
 	dataDir := DataDir()
+	register := ""
+	if n, err := refreshNBBRegister(dataDir, HasFlag(args, "--force")); err != nil {
+		Warnf("⚠ NBB register: %v", err)
+	} else if n >= 0 {
+		register = fmt.Sprintf("; NBB register: %s", Pluralize(n, "deposit", ""))
+	}
 	files, _ := collectAnnualFiles([]string{annualAccountsInboxDir(dataDir)})
 	var keep []string
 	for _, f := range files {
-		if filepath.Base(f) != "README.md" {
-			keep = append(keep, f)
+		switch filepath.Base(f) {
+		case "README.md", filepath.Base(nbbRegisterPath(dataDir)):
+			continue // not a document: the register snapshot lives here too
 		}
+		keep = append(keep, f)
 	}
 	if len(keep) == 0 {
-		return "drop folder empty", nil
+		if register != "" {
+			_, _ = generateAnnualAccounts(dataDir)
+		}
+		return "drop folder empty" + register, nil
 	}
 	filing, err := importAnnualFiles(dataDir, keep, "", "", nil, false)
 	if err != nil {
@@ -454,7 +483,7 @@ func pullAnnualAccountsInbox(args []string) (string, error) {
 	if _, err := generateAnnualAccounts(dataDir); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("fiscal year %s imported as %s (%s)", filing.Label, filing.Status, Pluralize(len(keep), "document", "")), nil
+	return fmt.Sprintf("fiscal year %s imported as %s (%s)%s", filing.Label, filing.Status, Pluralize(len(keep), "document", ""), register), nil
 }
 
 func printAnnualAccountsHelp() {
@@ -466,8 +495,9 @@ USAGE
   chb annual-accounts import <files|dirs> [--period YYYY-MM-DD:YYYY-MM-DD]
         [--filed YYYY-MM-DD] [--nbb-ref REF] [--nbb-url URL] [--label 2023]
         [--internal <file> …] [--dry-run]
-  chb annual-accounts set <end year|end date|label> [--filed YYYY-MM-DD | --draft]
+  chb annual-accounts set <end year|end date|label> [--filed [YYYY-MM-DD] | --draft]
         [--period …] [--nbb-ref REF] [--nbb-url URL] [--label …]
+        [--figures-source statements|internal-balance]
 
 One import = one fiscal year: the abbreviated balance sheet and profit and
 loss (PDF, as filed with the National Bank), optionally the trial balance,
@@ -477,7 +507,12 @@ month the fiscal period ends. The period end is read from the balance
 sheet; pass --period when the fiscal year is not a calendar year (e.g.
 --period 2023-07-01:2024-12-31 --label 2023).
 
-A fiscal year stays a draft (stewards only) until marked filed. Only the
+A fiscal year stays a draft (stewards only) until marked filed (--filed
+without a date when the filing date is unknown). --figures-source
+internal-balance notes that the figures (figures.csv) were read from the
+accountant's internal balance sheet because the filed statement is not
+available. 'chb pull' checks the NBB register once a day and fills in the
+deposit date and reference when the filing appears there. Only the
 abbreviated balance sheet and profit and loss are ever published; trial
 balances, internal balance sheets (--internal forces it) and anything
 unrecognised stay in the stewards tier.
