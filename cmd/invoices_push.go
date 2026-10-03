@@ -2,15 +2,11 @@ package cmd
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"sort"
 	"strings"
-	"time"
-
-	nostrsource "github.com/CommonsHub/chb/providers/nostr"
 )
 
 // MovePushCommandInvoices is the `chb invoices push` entry point.
@@ -50,6 +46,7 @@ func MovesPushCommand(kind moveKind, args []string) error {
 	dryRun := HasFlag(args, "--dry-run")
 	assumeYes := HasFlag(args, "--yes", "-y")
 	verbose := HasFlag(args, "--verbose", "-v")
+	annotationsOnly := HasFlag(args, "--annotations-only")
 	if dryRun {
 		assumeYes = false
 	}
@@ -77,35 +74,71 @@ func MovesPushCommand(kind moveKind, args []string) error {
 	}
 	odooHost := OdooHost(creds.URL)
 
+	// Trusted Nostr annotations (odoo-annotations.json, `chb nostr pull`)
+	// are consolidated into Odoo: each annotation event is applied once,
+	// recorded in the ledger, so a later change made in Odoo by the
+	// accountant is not overwritten by the same annotation again.
+	dataDir := DataDir()
+	annotations := loadOdooAnnotations(dataDir)
+	ledger := loadAppliedAnnotations(dataDir)
+	claimURIByMove := map[int]string{}
+	for _, c := range loadAllOdooExpenses(dataDir) {
+		if c.MoveID != 0 {
+			claimURIByMove[c.MoveID] = OdooURI(odooHost, creds.DB, "hr.expense", c.ID)
+		}
+	}
+
 	type plan struct {
 		Row          moveRow
 		DesiredDist  map[int]float64
 		LinesToWrite []moveLineDiff
-		NostrNeeded  bool
-		LocalDirty   bool // rule fired but JSON still has empty fields
+		LocalDirty   bool          // rule fired but JSON still has empty fields
+		Annotation   *TxAnnotation // trusted annotation being consolidated
+		AnnURI       string
 	}
 	plans2 := make([]plan, 0, len(rows))
 	var needWrite int
 	for _, r := range rows {
+		uri := OdooURI(odooHost, creds.DB, "account.move", r.Move.ID)
+		ann, annURI := annotations[uri], uri
+		if ann == nil && claimURIByMove[r.Move.ID] != "" {
+			ann, annURI = annotations[claimURIByMove[r.Move.ID]], claimURIByMove[r.Move.ID]
+		}
+		if ann != nil && ledger[annURI] == ann.NostrEventID {
+			ann = nil // already consolidated: Odoo is the truth now
+		}
+		if ann != nil {
+			applyAnnotation(ann, &r.Move.Category, &r.Move.Collective, &r.Move.Event)
+		} else if annotationsOnly {
+			continue // consolidation run: rules-derived changes are not ours to push
+		}
 		desired := computeDesiredMoveAnalytic(r.Move, plans)
 		if len(desired) == 0 {
+			if ann != nil {
+				Warnf("  %s⚠ annotation on %s: category %q / collective %q has no Odoo analytic account%s", Fmt.Yellow, annURI, ann.Category, ann.Collective, Fmt.Reset)
+			}
 			continue
 		}
 		diffs := computeMoveLineAnalyticDiffs(r.Move, desired)
-		nostrPresent := moveNostrAnnotationMatches(r, kind, odooHost, creds.DB, plans)
 		jsonDirty := moveJSONStillBlank(r.Year, r.Month, kind, r.Move)
-		if len(diffs) == 0 && nostrPresent && !jsonDirty {
+		if len(diffs) == 0 && !jsonDirty {
+			if ann != nil && !dryRun {
+				ledger[annURI] = ann.NostrEventID // Odoo already agrees
+			}
 			continue
 		}
 		needWrite++
-		plans2 = append(plans2, plan{
-			Row:          r,
-			DesiredDist:  desired,
-			LinesToWrite: diffs,
-			NostrNeeded:  !nostrPresent,
-			LocalDirty:   jsonDirty,
-		})
+		p := plan{Row: r, DesiredDist: desired, LinesToWrite: diffs, LocalDirty: jsonDirty}
+		if ann != nil {
+			p.Annotation, p.AnnURI = ann, annURI
+		}
+		plans2 = append(plans2, p)
 	}
+	defer func() {
+		if !dryRun {
+			_ = saveAppliedAnnotations(dataDir, ledger)
+		}
+	}()
 	if needWrite == 0 {
 		fmt.Printf("  %sNothing to push. Local / Odoo / Nostr already converged.%s\n\n", Fmt.Dim, Fmt.Reset)
 		return nil
@@ -118,7 +151,14 @@ func MovesPushCommand(kind moveKind, args []string) error {
 		Fmt.Bold, needWrite, kind.label, plural(needWrite), Fmt.Reset)
 
 	for _, p := range plans2 {
-		printMovePushPreview(p.Row, p.LinesToWrite, p.NostrNeeded, p.LocalDirty, verbose)
+		printMovePushPreview(p.Row, p.LinesToWrite, false, p.LocalDirty, verbose)
+		if p.Annotation != nil {
+			author := p.Annotation.Author
+			if len(author) > 8 {
+				author = author[:8] + "…"
+			}
+			fmt.Printf("      %sfrom Nostr annotation %s by %s%s\n", Fmt.Dim, shortEventID(p.Annotation.NostrEventID), author, Fmt.Reset)
+		}
 	}
 
 	if dryRun {
@@ -127,7 +167,7 @@ func MovesPushCommand(kind moveKind, args []string) error {
 	}
 
 	if !assumeYes && isInteractiveTTY() {
-		fmt.Printf("\n  %sPush %d annotation%s to Odoo + Nostr?%s [Y/n] ",
+		fmt.Printf("\n  %sPush %d annotation%s to Odoo?%s [Y/n] ",
 			Fmt.Bold, needWrite, plural(needWrite), Fmt.Reset)
 		reader := bufio.NewReader(os.Stdin)
 		resp, _ := reader.ReadString('\n')
@@ -146,7 +186,7 @@ func MovesPushCommand(kind moveKind, args []string) error {
 		return fmt.Errorf("Odoo authentication failed: %v", err)
 	}
 
-	var odooApplied, nostrApplied, jsonApplied, failed int
+	var odooApplied, jsonApplied, consolidated, failed int
 	for _, p := range plans2 {
 		row := p.Row
 		if len(p.LinesToWrite) > 0 {
@@ -158,13 +198,9 @@ func MovesPushCommand(kind moveKind, args []string) error {
 			}
 			odooApplied++
 		}
-		if p.NostrNeeded {
-			if err := writeMoveNostrAnnotation(row, kind, odooHost, creds.DB, row.Move.Category, row.Move.Collective); err != nil {
-				LogErrorf("nostr annotation for %s #%d: %v", kind.label, row.Move.ID, err)
-				fmt.Printf("  %s⚠%s nostr write for %s #%d: %v\n", Fmt.Yellow, Fmt.Reset, kind.label, row.Move.ID, err)
-			} else {
-				nostrApplied++
-			}
+		if p.Annotation != nil {
+			ledger[p.AnnURI] = p.Annotation.NostrEventID
+			consolidated++
 		}
 		if p.LocalDirty {
 			if err := persistMoveAnnotationsToJSON(row, kind); err != nil {
@@ -177,15 +213,13 @@ func MovesPushCommand(kind moveKind, args []string) error {
 	}
 
 	fmt.Printf("\n  %sOdoo:%s  %d updated", Fmt.Bold, Fmt.Reset, odooApplied)
-	fmt.Printf("    %sNostr:%s %d annotation%s written", Fmt.Bold, Fmt.Reset, nostrApplied, plural(nostrApplied))
+	fmt.Printf("    %sNostr annotations consolidated:%s %d", Fmt.Bold, Fmt.Reset, consolidated)
 	fmt.Printf("    %sLocal:%s %d JSON file%s patched", Fmt.Bold, Fmt.Reset, jsonApplied, plural(jsonApplied))
 	if failed > 0 {
 		fmt.Printf("    %sFailed:%s %d", Fmt.Red, Fmt.Reset, failed)
 	}
 	fmt.Println()
-	if nostrApplied > 0 {
-		fmt.Printf("  %s(Annotations queued for next `chb nostr push`.)%s\n", Fmt.Dim, Fmt.Reset)
-	}
+	fmt.Printf("  %s(Odoo's categories reach Nostr with `chb nostr push bills|invoices`.)%s\n", Fmt.Dim, Fmt.Reset)
 	fmt.Println()
 	return nil
 }
@@ -323,77 +357,12 @@ func applyMoveAnalyticDistribution(creds *OdooCredentials, uid int, moveID int, 
 	})
 }
 
-// writeMoveNostrAnnotation queues a Nostr annotation event for the
+// queues a Nostr annotation event for the
 // move's canonical URI. Mirrors writeMoveTxAnnotation but uses the
 // move's own URI rather than the linked-tx URI. The annotation lives
 // in the nostr annotation cache for the move's month; `chb nostr
 // push` ships it to relays. Other chb instances pulling from the
 // same relay see the (category, collective) on their next pull.
-func writeMoveNostrAnnotation(row moveRow, kind moveKind, odooHost, odooDB, category, collective string) error {
-	if category == "" && collective == "" {
-		return nil
-	}
-	uri := OdooURI(odooHost, odooDB, "account.move", row.Move.ID)
-	dataDir := DataDir()
-	path := nostrsource.Path(dataDir, row.Year, row.Month, nostrsource.AnnotationsFile)
-
-	cache := NostrAnnotationCache{Annotations: map[string]*TxAnnotation{}}
-	if data, readErr := os.ReadFile(path); readErr == nil {
-		_ = json.Unmarshal(data, &cache)
-	}
-	if cache.Annotations == nil {
-		cache.Annotations = map[string]*TxAnnotation{}
-	}
-	prev := cache.Annotations[uri]
-	if prev == nil {
-		prev = &TxAnnotation{URI: uri}
-	}
-	if category != "" {
-		prev.Category = category
-	}
-	if collective != "" {
-		prev.Collective = collective
-	}
-	prev.CreatedAt = time.Now().Unix()
-	cache.Annotations[uri] = prev
-	cache.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-	_ = kind // reserved for future per-kind tagging
-	return nostrsource.WriteJSON(dataDir, row.Year, row.Month, cache, nostrsource.AnnotationsFile)
-}
-
-// moveNostrAnnotationMatches reports whether the local Nostr
-// annotation cache already carries the same (category, collective)
-// pair as the move. Returns true when both fields agree — i.e. there
-// is nothing to push to Nostr. Returns false when the cache is
-// missing or holds a different value.
-func moveNostrAnnotationMatches(row moveRow, kind moveKind, odooHost, odooDB string, _ *OdooAnalyticPlansFile) bool {
-	if row.Move.Category == "" && row.Move.Collective == "" {
-		return true
-	}
-	uri := OdooURI(odooHost, odooDB, "account.move", row.Move.ID)
-	dataDir := DataDir()
-	path := nostrsource.Path(dataDir, row.Year, row.Month, nostrsource.AnnotationsFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	var cache NostrAnnotationCache
-	if json.Unmarshal(data, &cache) != nil {
-		return false
-	}
-	ann, ok := cache.Annotations[uri]
-	if !ok || ann == nil {
-		return false
-	}
-	if row.Move.Category != "" && !strings.EqualFold(ann.Category, row.Move.Category) {
-		return false
-	}
-	if row.Move.Collective != "" && !strings.EqualFold(ann.Collective, row.Move.Collective) {
-		return false
-	}
-	_ = kind
-	return true
-}
 
 // moveJSONStillBlank reports whether the move's persisted JSON still
 // has empty Category/Collective even though the in-memory row has

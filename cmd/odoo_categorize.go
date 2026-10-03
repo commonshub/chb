@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	kbcbrusselssource "github.com/CommonsHub/chb/providers/kbcbrussels"
@@ -25,6 +26,16 @@ import (
 // Stripe support is straightforward to add — same shape, different
 // row-loader.
 func categorizeOdooJournal(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig, dryRun, assumeYes, verbose bool) error {
+	return categorizeOdooJournalMode(creds, uid, journalID, acc, dryRun, assumeYes, verbose, false)
+}
+
+// categorizeOdooJournalAnnotations is the consolidation run: only lines
+// driven by a trusted annotation not yet applied are written.
+func categorizeOdooJournalAnnotations(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig, dryRun, assumeYes, verbose bool) error {
+	return categorizeOdooJournalMode(creds, uid, journalID, acc, dryRun, assumeYes, verbose, true)
+}
+
+func categorizeOdooJournalMode(creds *OdooCredentials, uid int, journalID int, acc *AccountConfig, dryRun, assumeYes, verbose, annotationsOnly bool) error {
 	if acc.Provider != "kbcbrussels" {
 		return fmt.Errorf("`categorize` is currently implemented for kbcbrussels journals only (provider: %s)", acc.Provider)
 	}
@@ -50,7 +61,25 @@ func categorizeOdooJournal(creds *OdooCredentials, uid int, journalID int, acc *
 	}
 
 	ctx := newKBCMergeContext(acc)
-	plan := buildCategorizeJournalPlan(odooLines, csvByImportID, acc, ctx, plans)
+	dataDir := DataDir()
+	txAnnotations := loadTransactionAnnotations(dataDir)
+	ledger := loadAppliedAnnotations(dataDir)
+	plan := buildCategorizeJournalPlanWithAnnotations(odooLines, csvByImportID, acc, ctx, plans, txAnnotations, ledger)
+	if annotationsOnly {
+		var keep []categorizeChange
+		for _, c := range plan.ToUpdate {
+			if c.AnnotationURI != "" {
+				keep = append(keep, c)
+			}
+		}
+		plan.ToUpdate = keep
+	}
+	if !dryRun && len(plan.Agreeing) > 0 {
+		for _, a := range plan.Agreeing {
+			ledger[a[0]] = a[1]
+		}
+		_ = saveAppliedAnnotations(dataDir, ledger)
+	}
 
 	printCategorizeJournalSummary(plan, journalID, iban)
 	if verbose {
@@ -80,6 +109,12 @@ func categorizeOdooJournal(creds *OdooCredentials, uid int, journalID int, acc *
 	if err := applyCategorizeJournal(creds, uid, plan); err != nil {
 		return err
 	}
+	for _, c := range plan.ToUpdate {
+		if c.AnnotationURI != "" {
+			ledger[c.AnnotationURI] = c.AnnotationEventID
+		}
+	}
+	_ = saveAppliedAnnotations(dataDir, ledger)
 	fmt.Printf("\n  %s✓ Categorize complete%s\n\n", Fmt.Green, Fmt.Reset)
 	return nil
 }
@@ -220,8 +255,11 @@ func intSliceToInterface(ids []int) []interface{} {
 // categorizeChange is one line whose analytic_distribution needs to be
 // rewritten to match what the rule chain produces.
 type categorizeChange struct {
-	Line     odooCategorizeLine
-	Category string
+	Line odooCategorizeLine
+	// AnnotationURI / AnnotationEventID: set when a trusted Nostr
+	// annotation drives this change (recorded in the ledger once written).
+	AnnotationURI, AnnotationEventID string
+	Category                         string
 	// Collective is the resolved collective slug (may be empty).
 	Collective string
 	// AccountCode is the cost/income GL code (e.g. "740041"). Carried
@@ -234,6 +272,8 @@ type categorizeChange struct {
 
 type categorizeJournalPlan struct {
 	ToUpdate []categorizeChange
+	// Agreeing lists annotations (uri, event id) Odoo already reflects.
+	Agreeing [][2]string
 	// Unchanged tracks lines whose existing distribution already
 	// matches; surfaced for the summary so the operator sees scale.
 	Unchanged int
@@ -246,15 +286,36 @@ type categorizeJournalPlan struct {
 }
 
 func buildCategorizeJournalPlan(lines []odooCategorizeLine, csvByImportID map[string]kbcbrusselssource.Transaction, acc *AccountConfig, ctx kbcMergeContext, plans *OdooAnalyticPlansFile) categorizeJournalPlan {
+	return buildCategorizeJournalPlanWithAnnotations(lines, csvByImportID, acc, ctx, plans, nil, nil)
+}
+
+// buildCategorizeJournalPlanWithAnnotations: as buildCategorizeJournalPlan,
+// and a trusted Nostr annotation on the line's transaction URI
+// (iban:<iban>:tx:<statement line id>) that has not been applied to Odoo
+// yet (ledger) overrides the rules' category/collective. Lines with no CSV
+// row are still categorised when they carry such an annotation.
+func buildCategorizeJournalPlanWithAnnotations(lines []odooCategorizeLine, csvByImportID map[string]kbcbrusselssource.Transaction, acc *AccountConfig, ctx kbcMergeContext, plans *OdooAnalyticPlansFile, annotations map[string]*TxAnnotation, ledger map[string]string) categorizeJournalPlan {
 	var plan categorizeJournalPlan
+	iban := kbcbrusselssource.NormalizeIBAN(acc.IBAN)
 	for _, line := range lines {
+		uri := BuildIBANTxURI(iban, strconv.Itoa(line.StatementLineID))
+		ann := annotations[uri]
+		if ann != nil && ledger[uri] == ann.NostrEventID {
+			ann = nil // already consolidated
+		}
 		row, ok := csvByImportID[line.ImportID]
-		if !ok {
+		if !ok && ann == nil {
 			plan.Missing++
 			continue
 		}
 		csvRow := kbcMergeCSVRow{Row: row, ImportID: line.ImportID}
-		annotateKBCMergeRowWithMapping(&csvRow, acc, &ctx)
+		if ok {
+			annotateKBCMergeRowWithMapping(&csvRow, acc, &ctx)
+		}
+		if ann != nil {
+			var event string
+			applyAnnotation(ann, &csvRow.Category, &csvRow.Collective, &event)
+		}
 		desired := desiredAnalyticDistribution(csvRow, plans)
 		if len(desired) == 0 && csvRow.Category == "" && csvRow.Collective == "" && csvRow.AccountCode == "" {
 			plan.Untagged++
@@ -267,15 +328,22 @@ func buildCategorizeJournalPlan(lines []odooCategorizeLine, csvByImportID map[st
 		accountDrift := csvRow.AccountCode != ""
 		if distOK && !accountDrift {
 			plan.Unchanged++
+			if ann != nil {
+				plan.Agreeing = append(plan.Agreeing, [2]string{uri, ann.NostrEventID})
+			}
 			continue
 		}
-		plan.ToUpdate = append(plan.ToUpdate, categorizeChange{
+		change := categorizeChange{
 			Line:                line,
 			Category:            csvRow.Category,
 			Collective:          csvRow.Collective,
 			AccountCode:         csvRow.AccountCode,
 			DesiredDistribution: desired,
-		})
+		}
+		if ann != nil {
+			change.AnnotationURI, change.AnnotationEventID = uri, ann.NostrEventID
+		}
+		plan.ToUpdate = append(plan.ToUpdate, change)
 	}
 	return plan
 }

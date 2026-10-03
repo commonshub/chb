@@ -46,10 +46,11 @@ func countPendingMoveAnnotations(kind moveKind, args []string) (int, error) {
 			endMonth = fmt.Sprintf("%s-12", posYear)
 		}
 	} else {
-		startMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
-		endMonth = startMonth
+		startMonth, endMonth = "0000-00", fmt.Sprintf("%d-%02d", now.Year(), now.Month())
 	}
-	publishedIDs := loadPublishedEventIDs()
+	dataDir0 := DataDir()
+	annotations := loadOdooAnnotations(dataDir0)
+	ledger := loadAppliedAnnotations(dataDir0)
 	count := 0
 	dataDir := DataDir()
 	err = walkMoveMonths(dataDir, kind, func(year, month string) error {
@@ -66,7 +67,7 @@ func countPendingMoveAnnotations(kind moveKind, args []string) (int, error) {
 				continue
 			}
 			uri := OdooURI(host, db, kind.model, m.ID)
-			if !publishedIDs[uri] {
+			if moveNeedsPublish(m, annotations[uri], ledger[uri]) {
 				count++
 			}
 		}
@@ -101,11 +102,11 @@ func publishMoves(kind moveKind, args []string) error {
 			endMonth = fmt.Sprintf("%s-12", posYear)
 		}
 	} else {
-		startMonth = fmt.Sprintf("%d-%02d", now.Year(), now.Month())
-		endMonth = startMonth
+		startMonth, endMonth = "0000-00", fmt.Sprintf("%d-%02d", now.Year(), now.Month())
 	}
 
-	publishedIDs := loadPublishedEventIDs()
+	annotations := loadOdooAnnotations(DataDir())
+	ledger := loadAppliedAnnotations(DataDir())
 
 	type pending struct {
 		URI        string
@@ -133,7 +134,7 @@ func publishMoves(kind moveKind, args []string) error {
 				continue // nothing to publish
 			}
 			uri := OdooURI(host, db, kind.model, m.ID)
-			if publishedIDs[uri] {
+			if !moveNeedsPublish(m, annotations[uri], ledger[uri]) {
 				continue
 			}
 			plan = append(plan, pending{
@@ -220,11 +221,15 @@ func publishMoves(kind moveKind, args []string) error {
 		} else {
 			published++
 			_ = accepted
+			if ev.ID != "" {
+				ledger[p.URI] = ev.ID // Odoo and Nostr agree on this event
+			}
 		}
 		if (i+1)%20 == 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
+	_ = saveAppliedAnnotations(DataDir(), ledger)
 	status.Clear()
 	if !aggregated {
 		fmt.Printf("\n%s✓ Published %d %s annotations%s", Fmt.Green, published, kind.label, Fmt.Reset)
@@ -273,4 +278,28 @@ func printMovesPublishHelp(label string) {
 		label,
 		f.Cyan, f.Reset,
 	)
+}
+
+// moveNeedsPublish: Odoo's categorisation of a document goes to Nostr when
+// it differs from the newest trusted annotation, so the accountant's
+// corrections reach every consumer. Not while a newer trusted annotation
+// is still waiting to be applied to Odoo (`chb bills|invoices push`):
+// Odoo is stale then, and publishing it would undo the annotation.
+func moveNeedsPublish(m OdooOutgoingInvoicePublic, ann *TxAnnotation, appliedEventID string) bool {
+	if m.Category == "" && m.Collective == "" && m.Event == "" {
+		return false
+	}
+	if ann == nil {
+		return true
+	}
+	own := false
+	if keys := LoadNostrKeys(); keys != nil && strings.EqualFold(keys.PubHex, ann.Author) {
+		own = true // our own publication of Odoo's state
+	}
+	if !own && appliedEventID != ann.NostrEventID {
+		return false // not consolidated into Odoo yet
+	}
+	return !strings.EqualFold(ann.Category, m.Category) ||
+		!strings.EqualFold(ann.Collective, m.Collective) ||
+		(m.Event != "" && !strings.EqualFold(ann.Event, m.Event))
 }

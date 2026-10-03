@@ -254,27 +254,24 @@ odoo:citizen-spring-vzw.odoo.com:citizen-spring-vzw:hr.expense:56       expense 
 ## 9. Annotations (Nostr) and comments
 
 Anyone can annotate a transaction or an Odoo document on Nostr; the
-published files only apply annotations from a **trust list**.
+published files only apply annotations from **trusted** authors. The full
+guide (URIs per record type, tags, how to publish, trust, Odoo
+consolidation) is [annotations.md](annotations.md). In short:
 
 - **Relay:** `wss://relay.commonshub.brussels` (settings.json
-  `nostr.relays`). chb reads and publishes there.
-- **Trust list:** settings.json `nostr.trustedAuthors` (npubs). Seeded with
-  the website's key (`npub1wfaa749…`, see
-  https://commonshub.brussels/api/nostr/identity) and chb's own key. Events
-  are signature-checked; the newest trusted snapshot per URI wins; anything
-  else is ignored, not an error.
-- **Annotation snapshot:** kind 1111 with lowercase `i` (the URI) and `k`
-  (its kind: `odoo:account.move`, `odoo:hr.expense`, `stripe:txn`, …) only,
-  plus `category`, `collective`, `event`, `spread`, and the content as the
-  description. It sets the record's category/collective/event (over Odoo
-  and rules) and its `note`.
-- **Comment:** kind 1111 with uppercase `I`/`K` (NIP-22), a discussion. chb
-  never applies it, even if it also carries lowercase `i`. Publish comments
-  with `I`/`K`, annotations without.
-- **When:** the hourly `chb pull` fetches new trusted annotations;
-  `chb generate` applies them to `transactions.json` (`metadata.note`),
-  `expenses.json`, `pending-bills.json` and `bookings.json` rentals
-  (`note`). A tag set on the website shows up within the hour.
+  `nostr.relays`).
+- **Trust:** settings.json `nostr.trustedAuthors` (the website's key
+  `npub1wfaa749…`, see https://commonshub.brussels/api/nostr/identity, and
+  chb's own key), plus every author those keys **follow** (kind 3, one
+  level). Signatures are checked; the newest trusted snapshot per URI wins.
+- **Annotation** = kind 1111 with lowercase `i`/`k` only, plus `category`,
+  `collective`, `event`, `spread`, content as the note. **Comment** = kind
+  1111 with uppercase `I`/`K` (NIP-22): chb never applies it. Publish
+  annotations without `I`/`K`.
+- **When:** the hourly `chb pull` + `chb generate` apply new trusted
+  annotations to `transactions.json` (`metadata.note`), `expenses.json`,
+  `pending-bills.json` and `bookings.json` rentals (`note`) within the hour;
+  they are then written into Odoo (annotations.md, "From Nostr to Odoo").
 - In `public/`, a note on a natural person's bill or on an individual
   customer's rental is dropped (it would describe a person).
 

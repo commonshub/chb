@@ -116,6 +116,7 @@ Settings live under `$APP_DATA_DIR/settings/` (default `~/.chb/settings`):
 - [docs/txspread.md](docs/txspread.md) — `spread` metadata for amortised transactions.
 - [docs/vat.md](docs/vat.md) — Belgian VAT declarations: import, archive, public `vat.json`.
 - [docs/bills.md](docs/bills.md) — the public "still to pay" list.
+- [docs/annotations.md](docs/annotations.md) — annotate any transaction or Odoo document on Nostr; trust; consolidation into Odoo.
 - [docs/accounting-data.md](docs/accounting-data.md) — expenses, vendors, customers and room bookings per month and year, per audience.
 
 ## License

@@ -351,6 +351,14 @@ func uriKind(uri string) string {
 		}
 		return "odoo"
 	}
+	if strings.HasPrefix(uri, "iban:") {
+		// iban:<iban>:tx:<id> → iban:tx (a bank transaction)
+		parts := strings.Split(uri, ":")
+		if len(parts) >= 4 {
+			return "iban:" + parts[2]
+		}
+		return "iban"
+	}
 	return "unknown"
 }
 

@@ -441,6 +441,10 @@ func main() {
 			if err := cmd.OdooBackup(args[2:]); err != nil {
 				exitWithError(err)
 			}
+		case "annotations":
+			if err := cmd.OdooAnnotationsCommand(args[2:]); err != nil {
+				exitWithError(err)
+			}
 		default:
 			// Bare `chb odoo` shows only a hint; the command list stays
 			// behind `chb odoo --help` (or any unknown subcommand).
@@ -474,6 +478,10 @@ func main() {
 			}
 		case "pending":
 			if err := cmd.NostrPending(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		case "annotate":
+			if err := cmd.NostrAnnotate(args[2:]); err != nil {
 				exitWithError(err)
 			}
 		case "sync":

@@ -17,7 +17,12 @@ package cmd
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+
+	nostrsource "github.com/CommonsHub/chb/providers/nostr"
+	odoosource "github.com/CommonsHub/chb/providers/odoo"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
@@ -38,7 +43,11 @@ var defaultTrustedAuthors = []string{
 // NostrSettings is settings.json `nostr`.
 type NostrSettings struct {
 	Relays         []string `json:"relays,omitempty"`
-	TrustedAuthors []string `json:"trustedAuthors,omitempty"` // npub… or hex
+	TrustedAuthors []string `json:"trustedAuthors,omitempty"` // npub… or hex: the trust seeds
+	// TrustFollows (default true): an author followed (kind 3 contact
+	// list) by a seed is trusted too. One level only: follows of followed
+	// authors are not.
+	TrustFollows *bool `json:"trustFollows,omitempty"`
 }
 
 // loadNostrSettings reads settings.json `nostr` directly: no settings
@@ -65,8 +74,9 @@ func nostrRelayList() []string {
 	return defaultNostrRelays
 }
 
-// nostrTrustedPubkeys returns the trusted authors as lowercase hex keys.
-func nostrTrustedPubkeys() map[string]bool {
+// nostrTrustSeeds: settings.json trustedAuthors (or the defaults) plus this
+// instance's own key, as lowercase hex.
+func nostrTrustSeeds() map[string]bool {
 	list := loadNostrSettings().TrustedAuthors
 	if len(list) == 0 {
 		list = defaultTrustedAuthors
@@ -79,6 +89,87 @@ func nostrTrustedPubkeys() map[string]bool {
 	}
 	if keys := LoadNostrKeys(); keys != nil && keys.PubHex != "" {
 		out[strings.ToLower(keys.PubHex)] = true // our own annotations
+	}
+	return out
+}
+
+func nostrTrustFollows() bool {
+	if v := loadNostrSettings().TrustFollows; v != nil {
+		return *v
+	}
+	return true
+}
+
+// nostrTrustedPubkeys returns every trusted author (seeds, and the authors
+// they follow as recorded by the last `chb nostr pull` in trust.json) as
+// lowercase hex keys. Offline: generate calls it.
+func nostrTrustedPubkeys() map[string]bool {
+	out := nostrTrustSeeds()
+	if !nostrTrustFollows() {
+		return out
+	}
+	t := loadNostrTrustFile(DataDir())
+	for hex, by := range t.Follows {
+		for _, seed := range by {
+			if out[seed] { // only while the follower is still a seed
+				out[hex] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// NostrTrustFile is latest/providers/nostr/trust.json: who is trusted
+// because a seed follows them, and which seeds do.
+type NostrTrustFile struct {
+	UpdatedAt string              `json:"updatedAt"`
+	Seeds     []string            `json:"seeds"`
+	Follows   map[string][]string `json:"follows"` // followed pubkey → seeds following it
+}
+
+func nostrTrustFilePath(dataDir string) string {
+	return filepath.Join(dataDir, "latest", "providers", "nostr", "trust.json")
+}
+
+func loadNostrTrustFile(dataDir string) NostrTrustFile {
+	var t NostrTrustFile
+	if data, err := os.ReadFile(nostrTrustFilePath(dataDir)); err == nil {
+		_ = json.Unmarshal(data, &t)
+	}
+	return t
+}
+
+// followsFromContactLists turns the seeds' contact lists (kind 3, the
+// newest signed one per seed) into followed pubkey → seeds.
+func followsFromContactLists(events map[string]NostrEvent, seeds map[string]bool) map[string][]string {
+	newest := map[string]NostrEvent{}
+	for _, ev := range events {
+		pk := strings.ToLower(ev.PubKey)
+		if ev.Kind != 3 || !seeds[pk] || !nostrEventSignatureValid(ev) {
+			continue
+		}
+		if cur, ok := newest[pk]; !ok || ev.CreatedAt > cur.CreatedAt {
+			newest[pk] = ev
+		}
+	}
+	out := map[string][]string{}
+	for seed, ev := range newest {
+		for _, t := range ev.Tags {
+			if len(t) < 2 || t[0] != "p" {
+				continue
+			}
+			hex := nostrPubkeyHex(t[1])
+			if hex == "" || seeds[hex] {
+				continue
+			}
+			if !containsString(out[hex], seed) {
+				out[hex] = append(out[hex], seed)
+			}
+		}
+	}
+	for k := range out {
+		sort.Strings(out[k])
 	}
 	return out
 }
@@ -188,6 +279,62 @@ func trustedNostrMetadata(c NostrMetadataCache) NostrMetadataCache {
 	for k, v := range c.Addresses {
 		if v != nil && trusted[strings.ToLower(v.Author)] {
 			out.Addresses[k] = v
+		}
+	}
+	return out
+}
+
+// ── Consolidation ledger ─────────────────────────────────────────────────
+
+// appliedAnnotationsPath records, per URI, the Nostr event id last
+// consolidated into Odoo by `chb bills|invoices push`.
+func appliedAnnotationsPath(dataDir string) string {
+	return filepath.Join(dataDir, "latest", odoosource.RelPath("annotations-applied.json"))
+}
+
+func loadAppliedAnnotations(dataDir string) map[string]string {
+	out := map[string]string{}
+	if data, err := os.ReadFile(appliedAnnotationsPath(dataDir)); err == nil {
+		_ = json.Unmarshal(data, &out)
+	}
+	return out
+}
+
+func saveAppliedAnnotations(dataDir string, ledger map[string]string) error {
+	data, err := json.MarshalIndent(ledger, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeDataFile(appliedAnnotationsPath(dataDir), data)
+}
+
+func shortEventID(id string) string {
+	if len(id) > 10 {
+		return id[:10] + "…"
+	}
+	return id
+}
+
+// loadTransactionAnnotations reads every month's transaction-annotations.json,
+// trusted authors only, newest per URI.
+func loadTransactionAnnotations(dataDir string) map[string]*TxAnnotation {
+	out := map[string]*TxAnnotation{}
+	trusted := nostrTrustedPubkeys()
+	for _, ym := range dataMonthRange(dataDir) {
+		data, err := os.ReadFile(nostrsource.Path(dataDir, ym[:4], ym[5:], nostrsource.AnnotationsFile))
+		if err != nil {
+			continue
+		}
+		var cache NostrAnnotationCache
+		if json.Unmarshal(data, &cache) != nil {
+			continue
+		}
+		for uri, a := range cache.Annotations {
+			if annotationTrusted(a, trusted) {
+				if cur, ok := out[uri]; !ok || a.CreatedAt > cur.CreatedAt {
+					out[uri] = a
+				}
+			}
 		}
 	}
 	return out

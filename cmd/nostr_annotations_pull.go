@@ -83,6 +83,13 @@ func buildAnnotationIndex(dataDir string) annotationIndex {
 // pullNostrAnnotations is the read-only annotation pull. Returns a summary.
 func pullNostrAnnotations(dataDir string, force bool) (string, error) {
 	relays := nostrRelayList()
+	// Trust: the seeds, plus whom they follow (kind 3), refreshed first so
+	// a follow or unfollow takes effect in this very pull.
+	if nostrTrustFollows() {
+		if err := refreshNostrTrust(dataDir, relays); err != nil {
+			Warnf("⚠ nostr trust: %v (keeping the previous follow list)", err)
+		}
+	}
 	trusted := nostrTrustedPubkeys()
 	authors := make([]string, 0, len(trusted))
 	for a := range trusted {
@@ -162,7 +169,7 @@ func pullNostrAnnotations(dataDir string, force bool) (string, error) {
 	if full {
 		mode = "full"
 	}
-	summary := fmt.Sprintf("%s from %s (%s)", Pluralize(len(annotations), "trusted annotation", ""), Pluralize(len(trusted), "author", ""), mode)
+	summary := fmt.Sprintf("%s from %s (%s)", Pluralize(len(annotations), "trusted annotation", ""), Pluralize(len(trusted), "trusted author", ""), mode)
 	if unmatched > 0 {
 		summary += fmt.Sprintf(", %d for records not held here", unmatched)
 	}
@@ -170,6 +177,30 @@ func pullNostrAnnotations(dataDir string, force bool) (string, error) {
 		summary += fmt.Sprintf(", %s updated", Pluralize(changed, "month file", ""))
 	}
 	return summary, nil
+}
+
+// refreshNostrTrust reads the seeds' contact lists and rewrites trust.json.
+func refreshNostrTrust(dataDir string, relays []string) error {
+	seeds := nostrTrustSeeds()
+	authors := make([]string, 0, len(seeds))
+	for a := range seeds {
+		authors = append(authors, a)
+	}
+	sort.Strings(authors)
+	events, ok := fetchEventsFromRelays(relays, map[string]interface{}{"kinds": []int{3}, "authors": authors})
+	if ok == 0 {
+		return fmt.Errorf("no relay answered")
+	}
+	t := NostrTrustFile{
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Seeds:     authors,
+		Follows:   followsFromContactLists(events, seeds),
+	}
+	data, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeDataFile(nostrTrustFilePath(dataDir), data)
 }
 
 func monthHasURIs(index map[string]string, ym string) bool {
