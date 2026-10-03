@@ -49,12 +49,13 @@ files: `transactions.json`, `counterparties.json`, `summary.json`,
 photos from public channels). Year files:
 `activitygrid.json`, `annual-accounts.json`, `contributors.json`,
 `events.json`, `events.csv`, `expenses.json`, `vendors.json`,
-`customers.json`, `bookings.json`.
+`customers.json`, `bookings.json`, `ledger-balances.json`.
 
 `latest/<tier>/` holds the newest month's files plus the lifetime and
 upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 = every year, `events.json` = upcoming, `events.csv` = current year,
-`pending-bills.json`). Year files are never copied there.
+`pending-bills.json`, `accounts-chart.json`). Year files are never copied
+there.
 
 | file | public (anyone) | members (Discord `member` role) | where |
 |---|---|---|---|
@@ -77,6 +78,8 @@ upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 | `vendors.json` | one row per vendor: category, documents, total, paid, due; individuals merged per category | one row per vendor, all named | month, year (§7) |
 | `customers.json` | one row per customer: income types, invoices, total, received, due; only organisations named, everyone else merged per income type | all named | month, year (§7) |
 | `bookings.json` | room bookings (room, times, hours; title only for public events), room-rental invoice lines, per-room summary | + booking titles, rental descriptions, customer names | month, year (§7) |
+| `accounts-chart.json` | every account of the chart, labels in every language; accounts named after a person get a neutral label | = public | `latest/` only (§12) |
+| `ledger-balances.json` | per account: opening, debit, credit, closing for the calendar year; accounts named after a person merged per group, payroll (62) one row | = public | year (§12) |
 | `pending-bills.json` | every bill still to pay — **the "help us pay" list** (§6) | same, with individuals named | `latest/` only |
 
 Outside the tiers, because they are public and the same for everyone, each
@@ -299,7 +302,19 @@ internal balance sheet) never reach `public/`. Fiscal years can be longer
 than 12 months: use `period`. Schema, checks and page recipes:
 [annual-accounts.md](annual-accounts.md).
 
-## 12. Checklist for a new page
+## 12. Chart of accounts and ledger balances — publish them
+
+`latest/public/accounts-chart.json` is the chart of accounts and
+`YYYY/public/ledger-balances.json` the balance of every account for the
+calendar year (opening, debit, credit, closing; debit-positive), straight
+from Odoo's posted entries and refreshed hourly. Group by `class` and
+`group` for a balance sheet and a profit and loss; use `used` to hide
+accounts never posted to. Accounts named after a person and payroll are
+merged in `public/` and `members/`; totals are the same in every tier.
+Schema, opening-balance rules and page recipes:
+[accounting-data.md](accounting-data.md#chart-of-accounts-and-ledger-balances).
+
+## 13. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

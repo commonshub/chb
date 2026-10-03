@@ -239,3 +239,122 @@ group many buyers.
   individuals named.
 - **Freshness:** Odoo is pulled hourly. A bill shows as `pending` until it
   is reconciled with its payment in Odoo ([bills.md](bills.md)).
+
+## Chart of accounts and ledger balances
+
+The general ledger as open data: every account of the chart, and for each
+calendar year the balance of every account used. A page can show the
+books the way an accountant reads them (class by class, account by
+account), and anyone can check the annual accounts against them.
+
+| path | contents |
+|---|---|
+| `latest/<tier>/accounts-chart.json` | every account of the chart (Belgian PCMN, as set up in Odoo), with its labels in every active language |
+| `YYYY/<tier>/ledger-balances.json` | per account: opening balance, debit and credit of the year, closing balance |
+
+Both come from Odoo, pulled every hour by `chb odoo pull` (read-only:
+`read_group` sums of posted journal items, so drafts never count), and are
+written by `chb generate`. Every year from the first posted entry to the
+current year has a `ledger-balances.json`; a year has the file even if
+nothing was posted (`"accounts": []`). Like the other year files, they are
+never mirrored to `latest/` (the chart lives only there).
+
+### `accounts-chart.json`
+
+```json
+{
+  "generatedAt": "2026-10-03T14:00:00Z",
+  "languages": ["en_GB", "fr_BE", "nl_BE"],
+  "accounts": [
+    {
+      "code": "611000",
+      "label": "FRAIS ENTRETIEN ET D'AMENAGEMENT DES ESPACES",
+      "labels": { "en_GB": "Entretien et réparations des locaux", "fr_BE": "FRAIS ENTRETIEN ET D'AMENAGEMENT DES ESPACES", "nl_BE": "Onderhoudskosten en herstellingen" },
+      "class": "6",
+      "group": "61",
+      "odooGroup": "61",
+      "groupName": "61 Services and Other Goods",
+      "type": "expense",
+      "reconcile": false,
+      "deprecated": false,
+      "used": true
+    }
+  ]
+}
+```
+
+- `class` is the PCMN class (`1` equity … `7` income), `group` the
+  two-digit group; `odooGroup`/`groupName` the Odoo account group when
+  one is set.
+- `type` is Odoo's account type (`asset_cash`, `liability_payable`,
+  `income`, `expense`, …); `reconcile` whether items are matched
+  (receivables, payables, transfers).
+- `used` is true when the account has a balance in some
+  `ledger-balances.json`. Use it to hide the hundreds of unused accounts.
+- `label` is the label in the database's main language; pick from
+  `labels` for the reader's language. Translations are whatever was
+  entered in Odoo and can be stale or wrong: fall back to `label`.
+
+### `ledger-balances.json`
+
+```json
+{
+  "generatedAt": "2026-10-03T14:00:00Z",
+  "year": "2025",
+  "periodStart": "2025-01-01",
+  "periodEnd": "2025-12-31",
+  "fiscalStart": "2025-01-01",
+  "currency": "EUR",
+  "totals": { "label": "Total", "opening": 4739.16, "debit": 3843435.40, "credit": 3843435.40, "closing": 4739.16 },
+  "accounts": [
+    { "code": "240100", "label": "MATERIEL DE BUREAU", "class": "2", "group": "24",
+      "opening": 0.00, "debit": 2150.00, "credit": 0.00, "closing": 2150.00 }
+  ]
+}
+```
+
+- Balances are debit-positive: `closing = opening + debit − credit`.
+  Liabilities, equity and income are therefore negative.
+- **Opening**: balance-sheet accounts (classes 1–5) carry everything
+  posted before `periodStart`. Income and expense accounts (classes 6–7)
+  start at `fiscalStart`, the start of the fiscal year containing
+  1 January (from the annual accounts periods). It is 1 January except
+  when a fiscal year spans two calendar years: FY "2023" ran from
+  1 July 2023 to 31 December 2024, so 2024 opens its classes 6–7 with
+  July–December 2023.
+- `totals.debit` equals `totals.credit` when the books balance.
+  `totals.opening` (and so `totals.closing`) is the result of earlier
+  fiscal years not yet booked to equity (account 14) in Odoo; it is 0
+  once every earlier year is closed.
+- The current year changes every hour. A past year changes when the
+  accountant posts closing or correcting entries.
+
+### What each tier shows
+
+| | public | members | stewards |
+|---|---|---|---|
+| chart | every account; accounts named after a person get a neutral label (`"Account of an individual"`) and `"individual": true` | = public | real labels |
+| ledger: accounts named after a person (current accounts of directors or members, a person's fees) | merged per two-digit group into one row (`"Current accounts of individuals"`, `"Charges: individuals"`, `"Income: individuals"`), `merged` = the number of accounts | = public | one row per account, real label |
+| ledger: payroll (62) | one row `62` for all remuneration and social charges, so no salary can be read | = public | one row per account |
+| labels | account numbers and BICs in labels masked | masked | as in Odoo |
+
+An account counts as "named after a person" when its label starts with a
+current-account or remuneration prefix (`C/C`, `compte courant`,
+`rétributions`, `rémunération`) followed by something other than a role
+or an organisation (a legal form, or the name of a company partner in
+Odoo). The setting `accounting.privateAccounts` (codes) forces an account
+private, `accounting.publicAccounts` forces it public.
+
+Totals are identical in every tier: merging changes rows, never amounts.
+
+### Pages
+
+- **Balance sheet / P&L for a year:** group `accounts[]` by `class` (1–5
+  balance sheet, 6–7 income statement) and by `group`, show `closing`;
+  label each group from the chart.
+- **Account page:** the chart entry for its labels; its row in each year's
+  `ledger-balances.json` for the history.
+- **Check against the annual accounts:** the class totals for the fiscal
+  year's end match the figures in `annual-accounts.json`
+  ([annual-accounts.md](annual-accounts.md)), allowing for the closing
+  entries posted after the filing.

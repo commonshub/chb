@@ -972,6 +972,15 @@ func Generate(args []string) error {
 		return Pluralize(n, "month", "")
 	})
 
+	// Chart of accounts + yearly ledger balances (cmd/ledger_generate.go).
+	genStep("Chart & ledger", func() string {
+		n, years := generateChartAndLedger(dataDir)
+		if n == 0 {
+			return "no chart pulled (chb odoo pull)"
+		}
+		return fmt.Sprintf("%d accounts, %s", n, Pluralize(years, "year", ""))
+	})
+
 	// Annual accounts (NBB filing) → YYYY/<tier>/annual-accounts.json
 	// (cmd/annual_accounts_generate.go).
 	genStep("Annual accounts", func() string {

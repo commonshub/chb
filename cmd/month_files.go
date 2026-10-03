@@ -140,6 +140,11 @@ var monthFileSpecs = []monthFileSpec{
 // yearFileSpecs: the per-year files every year must have. Year events are
 // rebuilt from the month stewards files (offline) when a tier lacks them.
 var yearFileSpecs = []monthFileSpec{
+	{rel: ledgerBalancesFile,
+		empty: func(y, _, now string) interface{} {
+			return LedgerBalancesFile{GeneratedAt: now, Year: y, PeriodStart: y + "-01-01", PeriodEnd: y + "-12-31",
+				FiscalStart: y + "-01-01", Currency: "EUR", Accounts: []LedgerOut{}}
+		}},
 	{rel: annualAccountsFile,
 		empty: func(y, _, now string) interface{} {
 			return AnnualAccountsFile{GeneratedAt: now, Scope: "year", Year: y,
