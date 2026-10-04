@@ -796,6 +796,14 @@ func Generate(args []string) error {
 		return Pluralize(total, "image", "")
 	})
 
+	// #contributions as a public feed (cmd/contributions_generate.go).
+	genStep("Contributions", func() string {
+		if contributionsChannelID() == "" {
+			return "channel not public"
+		}
+		return Pluralize(generateContributions(dataDir), "message", "") + " in the last 60 days"
+	})
+
 	genStep("Activity grids", func() string {
 		grid := generateActivityGridGo(dataDir, years)
 		for _, year := range scopeYears {

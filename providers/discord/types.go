@@ -20,6 +20,7 @@ type Author struct {
 	Username   string  `json:"username"`
 	GlobalName *string `json:"global_name"`
 	Avatar     *string `json:"avatar"`
+	Bot        bool    `json:"bot,omitempty"`
 }
 
 type Attachment struct {

@@ -90,6 +90,10 @@ var monthFileSpecs = []monthFileSpec{
 		project: func(data []byte, a Audience) (interface{}, error) {
 			return decodeAndProject(data, a, imagesFileForAudience)
 		}},
+	{rel: contributionsFile,
+		empty: func(y, m, now string) interface{} {
+			return ContributionsFile{GeneratedAt: now, ChannelID: contributionsChannelID(), Messages: []ContributionMessage{}}
+		}},
 	{rel: "members.json",
 		empty: func(y, m, now string) interface{} {
 			return MembersOutputFile{Year: y, Month: m, ProductID: "mixed", GeneratedAt: now, Members: []Member{}}

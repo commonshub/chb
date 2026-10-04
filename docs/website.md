@@ -43,7 +43,7 @@ the file with empty lists (`"expenses": []`, `"transactions": []`, …),
 never a missing file. There are no exceptions for older months. Month
 files: `transactions.json`, `counterparties.json`, `summary.json`,
 `commissions.json`, `contributors.json`, `images.json`, `members.json`,
-`door.json`, `events.json`, `calendars/public.ics`, `expenses.json`,
+`door.json`, `events.json`, `calendars/public.ics`, `contributions.json`, `expenses.json`,
 `vendors.json`, `customers.json`, `bookings.json` (plus, in `public/`,
 `events/images/` when a month has event covers and `images/` when it has
 photos from public channels). Year files:
@@ -54,7 +54,8 @@ photos from public channels). Year files:
 `latest/<tier>/` holds the newest month's files plus the lifetime and
 upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 = every year, `events.json` = upcoming, `events.csv` = current year,
-`pending-bills.json`, `accounts-chart.json`, `categories.json`). Year files are never copied
+`pending-bills.json`, `accounts-chart.json`, `categories.json`,
+`contributions.json` = the last 60 days). Year files are never copied
 there.
 
 | file | public (anyone) | members (Discord `member` role) | where |
@@ -74,6 +75,7 @@ there.
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photos from public channels only: author identity, reactions, `filePath` to the public copy — `message` is empty | every photo + message text; `filePath` to the public copy (empty for non-public channels) | month, `latest/` |
 | `images/<attachment id>.<ext>` | the photo files themselves, public channels only — **only in public/** (§10) | (read from public) | month |
+| `contributions.json` | #contributions as a feed, newest first: message id, timestamp, author and mentioned users (Discord id + display name, bots dropped), total reactions, public photo paths — no message text; only when #contributions is a public channel (identical in all tiers) | = | month, `latest/` (last 60 days) |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
 | `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; sole traders' and individuals' free text and event tags dropped (no person linked to an event); individuals typed only; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
 | `vendors.json` | one row per vendor: category, documents, total, paid, due; individuals merged per category | one row per vendor, all named | month, year (§7) |
@@ -332,7 +334,27 @@ every total, as `summary.json` and `contributors.json` already do. They
 come from trusted `exclude` annotations ([annotations.md](annotations.md))
 or from settings `excluded-transactions.json` entries with `"keep": true`.
 
-## 14. Checklist for a new page
+## 14. Contributions feed — who was thanked
+
+`YYYY/MM/public/contributions.json` and `latest/public/contributions.json`
+(the last 60 days) list the #contributions messages, newest first:
+
+```json
+{ "generatedAt": "…", "channelId": "1297965144579637248",
+  "messages": [ { "id": "…", "timestamp": "2026-08-15T13:38:45Z",
+      "author": { "id": "…", "displayName": "Miriam" },
+      "mentions": [ { "id": "…", "displayName": "Yin" } ],
+      "totalReactions": 1,
+      "images": ["2026/08/public/images/1538180147050446899.jpg"] } ] }
+```
+
+`mentions` are the people thanked (deduped per message, bots dropped);
+`images` are the public photo copies (§10). Timestamps are UTC (RFC3339);
+show them in Europe/Brussels. No message text. The file exists only while
+#contributions is in `discord.publicChannels`; otherwise every month has
+an empty `messages`.
+
+## 15. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.
