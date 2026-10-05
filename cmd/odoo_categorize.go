@@ -517,7 +517,7 @@ func applyCategorizeJournal(creds *OdooCredentials, uid int, plan categorizeJour
 	}
 	sort.Strings(codes)
 	for _, code := range codes {
-		if err := applyOdooMappingAccount(creds, uid, byAccountCode[code], code); err != nil {
+		if err := applyOdooMappingAccountUnlessDocument(creds, uid, byAccountCode[code], code); err != nil {
 			Warnf("  %s⚠ apply account %s on %d line(s): %v%s",
 				Fmt.Yellow, code, len(byAccountCode[code]), err, Fmt.Reset)
 		}

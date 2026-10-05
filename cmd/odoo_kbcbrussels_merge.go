@@ -1139,7 +1139,7 @@ func applyKBCRuleAccounts(creds *OdooCredentials, uid int, journalID int, accoun
 	for _, code := range codes {
 		ids := byCode[code]
 		status.Update("  account %s — line %d/%d total", code, done, totalLines)
-		if err := applyOdooMappingAccount(creds, uid, ids, code, status); err != nil {
+		if err := applyOdooMappingAccountUnlessDocument(creds, uid, ids, code, status); err != nil {
 			return fmt.Errorf("set account %s on %d line(s): %v", code, len(ids), err)
 		}
 		done += len(ids)

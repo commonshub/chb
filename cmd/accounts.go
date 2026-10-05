@@ -5019,7 +5019,7 @@ func syncBlockchainToOdoo(acc *AccountConfig, creds *OdooCredentials, uid int, m
 			reconcileCreatedStatementLines(creds, uid, createdIDs, false, stats)
 		}
 		if tx.AccountCode != "" {
-			if err := applyOdooMappingAccount(creds, uid, createdIDs, tx.AccountCode); err != nil {
+			if err := applyOdooMappingAccountUnlessDocument(creds, uid, createdIDs, tx.AccountCode); err != nil {
 				Warnf("  %s⚠ mapping account %s: %v%s", Fmt.Yellow, tx.AccountCode, err, Fmt.Reset)
 			} else {
 				odooLog("    %s↳ mapping: account %s%s\n", Fmt.Dim, tx.AccountCode, Fmt.Reset)

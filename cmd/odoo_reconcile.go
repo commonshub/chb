@@ -432,6 +432,12 @@ func tryReconcileStatementLine(creds *OdooCredentials, uid int, line odooStateme
 	if err != nil {
 		return odooLineReconcileResult{Err: err, Message: "find invoice/bill by reference"}
 	}
+	if len(refCandidates) == 0 && !line.IsReconciled {
+		// The vendor's own reference (bill ref / payment reference).
+		if refCandidates, err = findOpenMoveCandidatesByVendorRef(creds, uid, line); err != nil {
+			return odooLineReconcileResult{Err: err, Message: "find invoice/bill by vendor reference"}
+		}
+	}
 	return tryReconcileStatementLineWithReferenceCandidates(creds, uid, line, dryRun, refCandidates)
 }
 
@@ -491,6 +497,15 @@ func tryReconcileStatementLineWithReferenceCandidates(creds *OdooCredentials, ui
 	candidates, err := findOpenMoveCandidatesForStatementLine(creds, uid, line, partnerID)
 	if err != nil {
 		return odooLineReconcileResult{Err: err, Message: "find matching invoice/bill"}
+	}
+	if len(candidates) == 0 {
+		// The same IBAN on another contact of the same party (or another
+		// contact of the same company): look at their documents too.
+		if related := relatedCommercialPartnerIDs(creds, uid, line, partnerID); len(related) > 0 {
+			if candidates, err = findOpenMoveCandidatesForPartners(creds, uid, line, related, 0); err != nil {
+				return odooLineReconcileResult{Err: err, Message: "find matching invoice/bill (related partners)"}
+			}
+		}
 	}
 	if len(candidates) == 0 {
 		return odooLineReconcileResult{NoMatch: true, Message: "no matching open invoice/bill"}
@@ -1260,6 +1275,48 @@ func findOpenMoveCandidates(creds *OdooCredentials, uid int, line odooStatementL
 		return nil, err
 	}
 	return parseOdooMoveCandidates(rows), nil
+}
+
+// findOpenMoveCandidatesForPartners is findOpenMoveCandidates over the
+// documents of commercial partners (limit 0 = all).
+func findOpenMoveCandidatesForPartners(creds *OdooCredentials, uid int, line odooStatementLineForReconcile, commercialIDs []int, limit int) ([]odooMoveCandidate, error) {
+	lineDate, err := time.Parse("2006-01-02", line.Date)
+	if err != nil {
+		lineDate = time.Now()
+	}
+	absAmount := math.Abs(line.Amount)
+	if absAmount < 0.005 || len(commercialIDs) == 0 {
+		return nil, nil
+	}
+	moveTypes := []interface{}{"out_invoice"}
+	if line.Amount < 0 {
+		moveTypes = []interface{}{"in_invoice"}
+	}
+	ids := make([]interface{}, len(commercialIDs))
+	for i, id := range commercialIDs {
+		ids[i] = id
+	}
+	domain := []interface{}{
+		[]interface{}{"state", "=", "posted"},
+		[]interface{}{"move_type", "in", moveTypes},
+		[]interface{}{"payment_state", "not in", []interface{}{"paid", "in_payment", "reversed"}},
+		[]interface{}{"amount_residual", ">=", roundCents(absAmount - 0.01)},
+		[]interface{}{"amount_residual", "<=", roundCents(absAmount + 0.01)},
+		[]interface{}{"invoice_date", ">=", lineDate.AddDate(0, -3, 0).Format("2006-01-02")},
+		[]interface{}{"invoice_date", "<=", lineDate.AddDate(0, 1, 0).Format("2006-01-02")},
+		[]interface{}{"commercial_partner_id", "in", ids},
+	}
+	rows, err := odooSearchReadAllMaps(creds, uid, "account.move", domain,
+		[]string{"id", "name", "invoice_date", "date", "move_type", "partner_id", "amount_residual"},
+		"invoice_date desc, id desc")
+	if err != nil {
+		return nil, err
+	}
+	c := parseOdooMoveCandidates(rows)
+	if limit > 0 && len(c) > limit {
+		c = c[:limit]
+	}
+	return c, nil
 }
 
 func parseOdooMoveCandidates(rows []map[string]interface{}) []odooMoveCandidate {
