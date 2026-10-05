@@ -804,6 +804,12 @@ func Generate(args []string) error {
 		return Pluralize(generateContributions(dataDir), "message", "") + " in the last 60 days"
 	})
 
+	// Contribution tokens issued (cmd/tokens_issued_generate.go). After
+	// contributors (wallet → Discord map).
+	genStep("Tokens issued", func() string {
+		return Pluralize(generateTokensIssued(dataDir), "mint", "") + " in the last 60 days"
+	})
+
 	genStep("Activity grids", func() string {
 		grid := generateActivityGridGo(dataDir, years)
 		for _, year := range scopeYears {

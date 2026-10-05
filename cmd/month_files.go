@@ -94,6 +94,17 @@ var monthFileSpecs = []monthFileSpec{
 		empty: func(y, m, now string) interface{} {
 			return ContributionsFile{GeneratedAt: now, ChannelID: contributionsChannelID(), Messages: []ContributionMessage{}}
 		}},
+	{rel: tokensIssuedFile,
+		empty: func(y, m, now string) interface{} {
+			sym := ""
+			if t := ContributionTokenConfig(LoadTokenConfigs()); t != nil {
+				sym = t.Symbol
+			}
+			return TokensIssuedFile{GeneratedAt: now, Token: sym, Issued: []TokenIssued{}}
+		},
+		project: func(data []byte, a Audience) (interface{}, error) {
+			return decodeAndProject(data, a, tokensIssuedForAudience)
+		}},
 	{rel: "members.json",
 		empty: func(y, m, now string) interface{} {
 			return MembersOutputFile{Year: y, Month: m, ProductID: "mixed", GeneratedAt: now, Members: []Member{}}

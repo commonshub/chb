@@ -43,7 +43,7 @@ the file with empty lists (`"expenses": []`, `"transactions": []`, …),
 never a missing file. There are no exceptions for older months. Month
 files: `transactions.json`, `counterparties.json`, `summary.json`,
 `commissions.json`, `contributors.json`, `images.json`, `members.json`,
-`door.json`, `events.json`, `calendars/public.ics`, `contributions.json`, `expenses.json`,
+`door.json`, `events.json`, `calendars/public.ics`, `contributions.json`, `tokens-issued.json`, `expenses.json`,
 `vendors.json`, `customers.json`, `bookings.json` (plus, in `public/`,
 `events/images/` when a month has event covers and `images/` when it has
 photos from public channels). Year files:
@@ -55,7 +55,7 @@ photos from public channels). Year files:
 upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 = every year, `events.json` = upcoming, `events.csv` = current year,
 `pending-bills.json`, `accounts-chart.json`, `categories.json`,
-`contributions.json` = the last 60 days). Year files are never copied
+`contributions.json` and `tokens-issued.json` = the last 60 days). Year files are never copied
 there.
 
 | file | public (anyone) | members (Discord `member` role) | where |
@@ -76,6 +76,7 @@ there.
 | `images.json` | photos from public channels only: author identity, reactions, `filePath` to the public copy — `message` is empty | every photo + message text; `filePath` to the public copy (empty for non-public channels) | month, `latest/` |
 | `images/<attachment id>.<ext>` | the photo files themselves, public channels only — **only in public/** (§10) | (read from public) | month |
 | `contributions.json` | #contributions as a feed, newest first: message id, timestamp, author and mentioned users (Discord id + display name, bots dropped), total reactions, public photo paths — no message text; only when #contributions is a public channel (identical in all tiers) | = | month, `latest/` (last 60 days) |
+| `tokens-issued.json` | contribution-token mints, newest first: timestamp, amount, recipient (Discord id + display name, null if unlinked), reason and kind from the token bot's trusted annotation, Discord link — no transaction id, no wallet | = public | month, `latest/` (last 60 days) |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
 | `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; sole traders' and individuals' free text and event tags dropped (no person linked to an event); individuals typed only; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
 | `vendors.json` | one row per vendor: category, documents, total, paid, due; individuals merged per category | one row per vendor, all named | month, year (§7) |
@@ -354,7 +355,34 @@ show them in Europe/Brussels. No message text. The file exists only while
 #contributions is in `discord.publicChannels`; otherwise every month has
 an empty `messages`.
 
-## 15. Checklist for a new page
+## 15. Tokens issued — recent awards
+
+`YYYY/MM/public/tokens-issued.json` and `latest/public/tokens-issued.json`
+(the last 60 days) list every mint of the contribution token, newest
+first:
+
+```json
+{ "generatedAt": "…", "token": "CHT",
+  "issued": [ { "timestamp": "2026-10-02T08:30:00Z", "amount": 3,
+      "recipient": { "id": "…", "displayName": "Leen" },
+      "reason": "3h shift on 02/10/2026 at 08:30", "kind": "shift",
+      "discordUrl": null } ] }
+```
+
+- `recipient` is null when the wallet is not linked to a Discord account.
+- `reason` and `kind` come from the token bot's Nostr annotation, only
+  when its author is trusted ([annotations.md](annotations.md): a seed
+  follows or attests it); otherwise they are absent. The bot's
+  "Issued N CHT to <user> for" prefix is dropped. `kind` is the
+  annotation's `t` tag (`shift`, `mint`, …) or `role` for steward-role
+  issuance.
+- No transaction id and no wallet address below stewards. An amount and a
+  time can still be matched with the public on-chain mint (and the bot
+  publishes its annotations on Nostr), so treat the link between a person
+  and a wallet as public knowledge, not as a secret this file keeps.
+- Excluded mints (test mints, `metadata.excluded`) are left out.
+
+## 16. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.
