@@ -7,7 +7,7 @@
       "capacity": 80,
       "description": "Our largest and most versatile space, named after Nobel laureate Elinor Ostrom. Perfect for events, big circles, panels, fishbowls, facilitation workshops, and community gatherings.",
       "shortDescription": "Perfect for events, big circles, panels, fishbowls, facilitation...",
-      "pricePerHour": 100,
+      "pricePerHour": 130,
       "tokensPerHour": 3,
       "heroImage": "/images/img-2144.jpeg",
       "features": [
@@ -37,7 +37,7 @@
       "capacity": 15,
       "description": "A professional meeting room named after Bitcoin's mysterious creator. Ideal for focused meetings, strategy sessions, and collaborative work.",
       "shortDescription": "Perfect for larger meetings",
-      "pricePerHour": 50,
+      "pricePerHour": 60,
       "tokensPerHour": 1.5,
       "heroImage": "/images/satoshi-room.jpg",
       "features": [
@@ -86,7 +86,7 @@
       "capacity": 12,
       "description": "A cozy and intimate space perfect for circle conversations, small workshops, and community gatherings. Features comfortable seating and a warm atmosphere.",
       "shortDescription": "Perfect for circles",
-      "pricePerHour": 35,
+      "pricePerHour": 50,
       "tokensPerHour": 1,
       "heroImage": "/images/angel-room.jpeg",
       "features": [
@@ -115,7 +115,7 @@
       "capacity": 10,
       "description": "A bright and functional workspace perfect for small meetings and collaborative work. Named after the mycelium networks that connect forest ecosystems.",
       "shortDescription": "Perfect for small meetings",
-      "pricePerHour": 25,
+      "pricePerHour": 40,
       "tokensPerHour": 1,
       "heroImage": "/images/mush-room.jpg",
       "features": [
