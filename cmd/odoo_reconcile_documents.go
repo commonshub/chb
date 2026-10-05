@@ -66,22 +66,13 @@ func findOpenMoveCandidatesByVendorRef(creds *OdooCredentials, uid int, line odo
 	if line.Amount < 0 {
 		moveTypes = []interface{}{"in_invoice"}
 	}
-	// (ref ilike r1) OR (payment_reference ilike r1) OR … — narrowed
-	// client-side to exact digit equality.
-	var or []interface{}
-	for i, r := range refs {
-		if i > 0 {
-			or = append(or, "|")
-		}
-		or = append(or, "|", []interface{}{"ref", "ilike", r}, []interface{}{"payment_reference", "ilike", r})
-	}
 	domain := append([]interface{}{
 		[]interface{}{"state", "=", "posted"},
 		[]interface{}{"move_type", "in", moveTypes},
 		[]interface{}{"payment_state", "not in", []interface{}{"paid", "in_payment", "reversed"}},
 		[]interface{}{"amount_residual", ">=", roundCents(absAmount - 0.01)},
 		[]interface{}{"amount_residual", "<=", roundCents(absAmount + 0.01)},
-	}, or...)
+	}, vendorRefDomain(refs)...)
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.move", domain,
 		[]string{"id", "name", "invoice_date", "date", "move_type", "partner_id", "amount_residual", "ref", "payment_reference"},
 		"invoice_date desc, id desc")
@@ -219,4 +210,19 @@ func applyOdooMappingAccountUnlessDocument(creds *OdooCredentials, uid int, line
 		return nil
 	}
 	return applyOdooMappingAccount(creds, uid, keep, accountCode, progress...)
+}
+
+// vendorRefDomain: (ref ilike r1) OR (payment_reference ilike r1) OR … in
+// Odoo's prefix notation (n leaves need n-1 "|"), narrowed client-side to
+// exact digit equality.
+func vendorRefDomain(refs []string) []interface{} {
+	var leaves []interface{}
+	for _, r := range refs {
+		leaves = append(leaves, []interface{}{"ref", "ilike", r}, []interface{}{"payment_reference", "ilike", r})
+	}
+	out := make([]interface{}, 0, 2*len(leaves))
+	for i := 1; i < len(leaves); i++ {
+		out = append(out, "|")
+	}
+	return append(out, leaves...)
 }
