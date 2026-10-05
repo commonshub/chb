@@ -1419,6 +1419,26 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 	if err := assertNotBankCashLine(creds, uid, counterpartID); err != nil {
 		return fmt.Errorf("counterpart line #%d: %v", counterpartID, err)
 	}
+	// Remember the counterpart's account: if Odoo creates no match (e.g. a
+	// debit against a debit), the rewrite is undone below.
+	originalAccountID := 0
+	counterpartBalance := 0.0
+	if rows, rerr := odooReadMapsByIDs(creds, uid, "account.move.line", []int{counterpartID}, []string{"account_id", "balance"}); rerr == nil && len(rows) > 0 {
+		originalAccountID = odooFieldID(rows[0]["account_id"])
+		counterpartBalance = odooFloat(rows[0]["balance"])
+	}
+	// A payment settles a document only from the opposite side: refuse
+	// (before any write) a pair whose lines are both debits or both
+	// credits, e.g. an outgoing fee against a vendor credit note.
+	if rows, rerr := odooReadMapsByIDs(creds, uid, "account.move.line", []int{invoiceLineID}, []string{"amount_residual", "balance"}); rerr == nil && len(rows) > 0 {
+		docSide := odooFloat(rows[0]["amount_residual"])
+		if docSide == 0 {
+			docSide = odooFloat(rows[0]["balance"])
+		}
+		if docSide != 0 && counterpartBalance != 0 && (docSide > 0) == (counterpartBalance > 0) {
+			return fmt.Errorf("line #%d and %s are on the same side (both debit or both credit): a payment cannot settle that document", line.ID, candidateDisplayName(move))
+		}
+	}
 
 	// Draft → rewrite counterpart account → repost. Same shape as
 	// applyOdooMappingAccount / markStatementLineInternalTransfer.
@@ -1478,6 +1498,26 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 		if !reattached {
 			return alreadyReconciledAttachError(creds, moveKindLabelFromOdoo(creds, uid, move.ID), line, move, states)
 		}
+	}
+
+	// Verify Odoo actually matched the lines: reconcile() of two lines on
+	// the same side succeeds without creating a partial. Undo the account
+	// rewrite and report an error instead of a phantom "reconciled".
+	if matched, verr := moveLineHasMatch(creds, uid, counterpartID); verr == nil && !matched {
+		restoreErr := error(nil)
+		if originalAccountID > 0 && originalAccountID != arAccountID {
+			restoreErr = withOdooMoveTemporarilyDraft(creds, uid, line.MoveID, func() error {
+				_, werr := odooExec(creds.URL, creds.DB, uid, creds.Password,
+					"account.move.line", "write",
+					[]interface{}{[]interface{}{counterpartID}, map[string]interface{}{"account_id": originalAccountID}},
+					odooStatementLineMetadataWriteContext())
+				return werr
+			})
+		}
+		if restoreErr != nil {
+			return fmt.Errorf("Odoo created no match between line #%d and %s, and restoring the counterpart account failed: %v", line.ID, candidateDisplayName(move), restoreErr)
+		}
+		return fmt.Errorf("Odoo created no match between line #%d and %s (same side: a payment cannot settle that document) — counterpart restored", line.ID, candidateDisplayName(move))
 	}
 
 	// Attribute the bank line to the invoice's partner + register the
@@ -2151,4 +2191,18 @@ func parseOdooCreatedIDs(raw json.RawMessage) []int {
 		return []int{int(f)}
 	}
 	return nil
+}
+
+// moveLineHasMatch reports whether a journal item has any partial
+// reconcile.
+func moveLineHasMatch(creds *OdooCredentials, uid int, lineID int) (bool, error) {
+	rows, err := odooReadMapsByIDs(creds, uid, "account.move.line", []int{lineID}, []string{"matched_debit_ids", "matched_credit_ids", "reconciled"})
+	if err != nil || len(rows) == 0 {
+		return true, err // unknown: do not undo
+	}
+	r := rows[0]
+	if b, _ := r["reconciled"].(bool); b {
+		return true, nil
+	}
+	return len(odooIDList(r["matched_debit_ids"]))+len(odooIDList(r["matched_credit_ids"])) > 0, nil
 }

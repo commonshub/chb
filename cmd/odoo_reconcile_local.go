@@ -45,6 +45,10 @@ func parseOdooDate(s string) (time.Time, error) {
 type reconcileLineMatch struct {
 	Line OdooCacheLine
 	Hits []reconcileCandidate
+	// AmountOnly: the hits share only the amount with the line (no
+	// reference, partner or name). Never applied by a batch run; the
+	// interactive resolver asks.
+	AmountOnly bool
 }
 
 // reconcileDup is one group of bank lines that all matched the same
@@ -77,6 +81,7 @@ type reconcileMatchSet struct {
 type reconcileCandidate struct {
 	ID                 int    // Odoo account.move id — primary dedupe key
 	Kind               string // "invoice" or "bill"
+	MoveType           string // out_invoice, out_refund, in_invoice, in_refund
 	Number             string
 	Residual           float64
 	SignedTotal        float64 // total_signed (signed; negative for credit notes / refunds)
@@ -144,6 +149,7 @@ func (c reconcileCandidate) label() string {
 //     label clearly matches.
 //  4. amount-only with exactly one open candidate → likely.
 //  5. multiple amount-only candidates → flagged ambiguous.
+//
 // reconcileMatcherSkipsLine reports whether the reconcile matcher should ignore a
 // cached bank line. Synthetic and zero-amount lines are always skipped. A
 // reconciled line is skipped ONLY when it's truly matched to an invoice/bill (its
@@ -247,14 +253,14 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 		if reconcileMatcherSkipsLine(ln) {
 			continue
 		}
-		hits := matchLineToCandidates(ln, candidates, refMatchable, byPartner, byAmount)
+		hits, amountOnly := matchLineToCandidates(ln, candidates, refMatchable, byPartner, byAmount)
 		if len(hits) > 1 {
 			lineDate := ln.Date
 			sort.SliceStable(hits, func(i, j int) bool {
 				return dateDeltaDaysAbs(hits[i].Date, lineDate) < dateDeltaDaysAbs(hits[j].Date, lineDate)
 			})
 		}
-		results = append(results, reconcileLineMatch{Line: ln, Hits: hits})
+		results = append(results, reconcileLineMatch{Line: ln, Hits: hits, AmountOnly: amountOnly})
 	}
 
 	// Interactive resolution of ambiguous matches. The user steps through
@@ -273,7 +279,7 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 	groupedByCandidate := map[string][]int{} // candidate key → indices into results
 	candidateByKey := map[string]reconcileCandidate{}
 	for i, r := range results {
-		if len(r.Hits) != 1 {
+		if len(r.Hits) != 1 || r.AmountOnly {
 			continue
 		}
 		key := r.Hits[0].key()
@@ -344,7 +350,7 @@ func (s *reconcileMatchSet) counts() reconcileMatchCounts {
 		switch {
 		case len(r.Hits) == 0:
 			c.NoMatch++
-		case len(r.Hits) == 1:
+		case len(r.Hits) == 1 && !r.AmountOnly:
 			c.Matched++
 		default:
 			c.Ambiguous++
@@ -363,7 +369,7 @@ func (s *reconcileMatchSet) unambiguousWinners() []reconcileLineMatch {
 		if s.DemotedToDuplicate[i] {
 			continue
 		}
-		if len(r.Hits) == 1 {
+		if len(r.Hits) == 1 && !r.AmountOnly {
 			out = append(out, r)
 		}
 	}
@@ -525,7 +531,7 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 	reader := bufio.NewReader(os.Stdin)
 	ambIdxs := make([]int, 0)
 	for i, r := range results {
-		if len(r.Hits) > 1 {
+		if len(r.Hits) > 1 || (r.AmountOnly && len(r.Hits) == 1) {
 			ambIdxs = append(ambIdxs, i)
 		}
 	}
@@ -625,6 +631,7 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 		switch choice {
 		case "":
 			results[i].Hits = []reconcileCandidate{hits[0]}
+			results[i].AmountOnly = false
 			suffix := ""
 			if line := candidateStatusLine(hits[0]); line != "" {
 				suffix = "  " + line
@@ -645,6 +652,7 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 			continue
 		}
 		results[i].Hits = []reconcileCandidate{hits[n-1]}
+		results[i].AmountOnly = false
 	}
 }
 
@@ -835,7 +843,9 @@ func dateRelativePhrase(candidateDate, lineDate string) string {
 // for a non-open candidate. Prefers the actual payer's name + IBAN
 // when the cache has them; falls back to the booking journal otherwise.
 // Format:
-//   "paid on DATE by NAME (IBAN) via JOURNAL (will unreconcile + reattach)"
+//
+//	"paid on DATE by NAME (IBAN) via JOURNAL (will unreconcile + reattach)"
+//
 // — with each segment dropped when its data is missing.
 func candidateStatusLine(c reconcileCandidate) string {
 	state := strings.ToLower(c.PaymentState)
@@ -987,7 +997,7 @@ func buildRefMatchIndex(allPosted []reconcileCandidate) []refMatchEntry {
 	return out
 }
 
-func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate, refIndex []refMatchEntry, byPartner map[int][]reconcileCandidate, byAmount map[int64][]reconcileCandidate) []reconcileCandidate {
+func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate, refIndex []refMatchEntry, byPartner map[int][]reconcileCandidate, byAmount map[int64][]reconcileCandidate) ([]reconcileCandidate, bool) {
 	amt := math.Abs(ln.Amount)
 	ref := strings.ToLower(ln.PaymentRef)
 
@@ -1002,12 +1012,13 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 	filter := func(in []reconcileCandidate) []reconcileCandidate {
 		out := in[:0:0]
 		for _, c := range in {
-			if c.Kind == wantKind {
+			if candidateFitsDirection(c, ln.Amount) {
 				out = append(out, c)
 			}
 		}
 		return out
 	}
+	_ = wantKind
 
 	// 1. payment_ref contains the candidate number. Skip number tokens
 	// that are short or purely digits — Odoo bill IDs sometimes leak
@@ -1025,7 +1036,7 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 		var refHits []reconcileCandidate
 		seen := map[int]bool{}
 		for _, e := range refIndex {
-			if e.Kind != wantKind {
+			if !candidateFitsDirection(e.Cand, ln.Amount) {
 				continue
 			}
 			if seen[e.Cand.ID] {
@@ -1037,7 +1048,7 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 			}
 		}
 		if len(refHits) > 0 {
-			return refHits
+			return refHits, false
 		}
 	}
 	// Amount-based strategies (2/3/4) below stay open-only via
@@ -1049,7 +1060,7 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 	if ln.PartnerID > 0 {
 		for _, c := range filter(byPartner[ln.PartnerID]) {
 			if math.Abs(c.Residual-amt) < 0.005 {
-				return []reconcileCandidate{c}
+				return []reconcileCandidate{c}, false
 			}
 		}
 	}
@@ -1070,12 +1081,33 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 			}
 		}
 		if len(nameHits) > 0 {
-			return nameHits
+			return nameHits, false
 		}
 	}
 
-	// 4 + 5. amount-only.
-	return amountHits
+	// 4 + 5. amount-only: suggestions for the interactive resolver, never
+	// applied by a batch run (a €0.41 Stripe fee once "matched" a KBC
+	// credit note this way).
+	return amountHits, len(amountHits) > 0
+}
+
+// candidateFitsDirection: an outgoing bank line pays a vendor bill or
+// refunds a customer (in_invoice, out_refund); an incoming one is paid by
+// a customer or refunded by a vendor (out_invoice, in_refund). Without a
+// move type, fall back to the kind and the sign of the signed total.
+func candidateFitsDirection(c reconcileCandidate, lineAmount float64) bool {
+	out := lineAmount < 0
+	switch c.MoveType {
+	case "in_invoice", "out_refund":
+		return out
+	case "out_invoice", "in_refund":
+		return !out
+	}
+	if c.Kind == "bill" {
+		// bills: total_signed < 0 for a bill, > 0 for a credit note
+		return out == (c.SignedTotal <= 0)
+	}
+	return out == (c.SignedTotal < 0)
 }
 
 func centsKey(v float64) int64 { return int64(math.Round(math.Abs(v) * 100)) }
@@ -1109,6 +1141,7 @@ func loadLocalCandidatePartitions() ([]reconcileCandidate, []reconcileCandidate,
 				c := reconcileCandidate{
 					ID:                 inv.ID,
 					Kind:               "invoice",
+					MoveType:           inv.MoveType,
 					Number:             firstNonEmpty(inv.Number, inv.Reference),
 					Residual:           candidateResidual(inv.ResidualAmount, inv.TotalSignedAmount),
 					SignedTotal:        inv.TotalSignedAmount,
@@ -1142,6 +1175,7 @@ func loadLocalCandidatePartitions() ([]reconcileCandidate, []reconcileCandidate,
 			c := reconcileCandidate{
 				ID:                 b.ID,
 				Kind:               "bill",
+				MoveType:           b.MoveType,
 				Number:             firstNonEmpty(b.Number, b.Reference),
 				Residual:           candidateResidual(b.ResidualAmount, b.TotalSignedAmount),
 				SignedTotal:        b.TotalSignedAmount,
@@ -1215,6 +1249,7 @@ func loadLocalCandidates(onlyOpen bool) ([]reconcileCandidate, error) {
 				c := reconcileCandidate{
 					ID:                 inv.ID,
 					Kind:               "invoice",
+					MoveType:           inv.MoveType,
 					Number:             firstNonEmpty(inv.Number, inv.Reference),
 					Residual:           candidateResidual(inv.ResidualAmount, inv.TotalSignedAmount),
 					SignedTotal:        inv.TotalSignedAmount,
@@ -1248,6 +1283,7 @@ func loadLocalCandidates(onlyOpen bool) ([]reconcileCandidate, error) {
 			c := reconcileCandidate{
 				ID:                 b.ID,
 				Kind:               "bill",
+				MoveType:           b.MoveType,
 				Number:             firstNonEmpty(b.Number, b.Reference),
 				Residual:           candidateResidual(b.ResidualAmount, b.TotalSignedAmount),
 				SignedTotal:        b.TotalSignedAmount,
