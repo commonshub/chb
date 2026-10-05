@@ -4843,8 +4843,8 @@ func OdooSyncAll(args []string) error {
 	step("categories", func() error { _, err := OdooAnalyticSync(args); return err })
 	step("analytic plans", func() error { _, err := OdooAnalyticPlansSync(args); return err })
 	step("partners", func() error { _, err := OdooPartnersSync(args); return err })
-	step("invoices", func() error { _, err := InvoicesSync(args); return err })
-	step("bills", func() error { _, err := BillsSync(args); return err })
+	step("invoices", func() error { _, err := InvoicesSync(args); markOdooDocumentsPulled("invoices", err); return err })
+	step("bills", func() error { _, err := BillsSync(args); markOdooDocumentsPulled("bills", err); return err })
 	step("journal lines", func() error { return refreshAllOdooJournalLineCaches() })
 	step("chart & ledger", func() error {
 		summary, err := OdooLedgerSync(args)
@@ -4892,8 +4892,8 @@ func OdooProviderSync(args []string) error {
 	step("categories", func() error { _, err := OdooAnalyticSync(args); return err })
 	step("analytic plans", func() error { _, err := OdooAnalyticPlansSync(args); return err })
 	step("partners", func() error { _, err := OdooPartnersSync(args); return err })
-	step("invoices", func() error { _, err := InvoicesSync(args); return err })
-	step("bills", func() error { _, err := BillsSync(args); return err })
+	step("invoices", func() error { _, err := InvoicesSync(args); markOdooDocumentsPulled("invoices", err); return err })
+	step("bills", func() error { _, err := BillsSync(args); markOdooDocumentsPulled("bills", err); return err })
 	step("journal lines", func() error { return refreshAllOdooJournalLineCaches() })
 	step("chart & ledger", func() error {
 		summary, err := OdooLedgerSync(args)

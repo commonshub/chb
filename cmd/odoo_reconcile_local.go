@@ -220,6 +220,12 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 	// unreconcile+reattach in the apply phase — the operator's
 	// surgical override stays trustworthy.
 	Progress("scanning local invoices/bills")
+	// Plans are only as good as the cached payment status: refuse a cache
+	// older than odooDocumentsMaxAge (offline-first: pull, then plan). The
+	// apply step re-checks each document live in any case.
+	if err := checkOdooDocumentsFresh(DataDir()); err != nil {
+		return nil, nil, err
+	}
 	candidates, allCandidates, err := loadLocalCandidatePartitions()
 	if err != nil {
 		return nil, nil, err
@@ -1560,4 +1566,73 @@ func localTxAddress(tx TransactionEntry) string {
 		return tx.CounterpartyID
 	}
 	return ""
+}
+
+// odooDocumentsMaxAge: how old the invoices/bills cache may be for a
+// reconcile plan. The hourly cron pulls right before it syncs.
+const odooDocumentsMaxAge = 3 * time.Hour
+
+// odooDocumentsFetchedAt returns the newest fetchedAt of the cached
+// invoices and bills (zero when none).
+func odooDocumentsFetchedAt(dataDir string) time.Time {
+	var newest time.Time
+	for _, name := range []string{odoosource.InvoicesFile, odoosource.BillsFile} {
+		for _, p := range globOdooMonthFiles(dataDir, name) {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			var f struct {
+				FetchedAt string `json:"fetchedAt"`
+			}
+			if json.Unmarshal(data, &f) != nil {
+				continue
+			}
+			if t, err := time.Parse(time.RFC3339, f.FetchedAt); err == nil && t.After(newest) {
+				newest = t
+			}
+		}
+	}
+	return newest
+}
+
+// odooDocumentsCursorKey: when the invoices/bills of this Odoo database
+// were last pulled successfully (cmd/odoo_sync.go stamps it).
+func odooDocumentsCursorKey(kind string) string {
+	if ns := odoosource.PathNamespace(); ns != "" {
+		return "odoo." + ns + ".documents." + kind
+	}
+	return "odoo.documents." + kind
+}
+
+func markOdooDocumentsPulled(kind string, err error) {
+	if err == nil {
+		_ = SaveSyncCursor(SyncCursor{Key: odooDocumentsCursorKey(kind)})
+	}
+}
+
+// odooDocumentsPulledAt: the older of the last successful invoices and
+// bills pulls, falling back to the cache files' fetchedAt.
+func odooDocumentsPulledAt(dataDir string) time.Time {
+	inv := LoadSyncCursor(odooDocumentsCursorKey("invoices")).UpdatedAt
+	bills := LoadSyncCursor(odooDocumentsCursorKey("bills")).UpdatedAt
+	if inv.IsZero() || bills.IsZero() {
+		return odooDocumentsFetchedAt(dataDir)
+	}
+	if bills.Before(inv) {
+		return bills
+	}
+	return inv
+}
+
+func checkOdooDocumentsFresh(dataDir string) error {
+	at := odooDocumentsPulledAt(dataDir)
+	if at.IsZero() {
+		return fmt.Errorf("no cached invoices/bills — run `chb odoo pull` first")
+	}
+	if age := time.Since(at); age > odooDocumentsMaxAge {
+		return fmt.Errorf("cached invoices/bills are from %s (%s old): payment states may have changed — run `chb odoo pull` first",
+			at.In(BrusselsTZ()).Format("2006-01-02 15:04"), age.Round(time.Minute))
+	}
+	return nil
 }
