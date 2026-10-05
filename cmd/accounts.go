@@ -3565,7 +3565,11 @@ func AccountOdooPush(slug string, args []string) error {
 		}
 		printOdooSyncSummary(syncedCount, reviewedCount, updatedCount, dryRun, localAfter, odooAfter, odooAfterErr)
 		if !dryRun && odooAfterErr == nil {
-			if hint := localJournalBalanceMismatchHint(acc, localAfter, odooAfter); hint != "" {
+			ledgerAgrees := false
+			if ledger, lerr := odooJournalLedgerBalance(creds, uid, acc.OdooJournalID); lerr == nil {
+				ledgerAgrees = math.Abs(ledger-localAfter.Balance) < 0.01
+			}
+			if hint := localJournalBalanceMismatchHint(acc, localAfter, odooAfter); hint != "" && !ledgerAgrees {
 				fmt.Print(hint)
 			}
 		}
@@ -3679,7 +3683,16 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 		}
 		return live, warn
 	}
+	// Drift is measured on the books: the posted balance of the journal's
+	// bank account (odoo_journal_ledger.go). The statement-line sum stays a
+	// hint: migrated journals (opening line + history, restatements booked
+	// on the account) have statement lines that never add up to it.
 	odooBalance := odooSnap.Balance
+	statementHint := ""
+	if ledger, lerr := odooJournalLedgerBalance(creds, uid, acc.OdooJournalID); lerr == nil {
+		statementHint = statementLinesHint(odooSnap.Balance, ledger, accCurrency(acc))
+		odooBalance = ledger
+	}
 	if math.Abs(odooBalance-live) < 0.01 {
 		return live, "" // balances agree — stay silent
 	}
@@ -3700,7 +3713,7 @@ func verifyJournalBalanceAgainstLive(acc *AccountConfig, creds *OdooCredentials,
 		liveLabel = acc.Provider
 	}
 	localBalance := accountLocalOdooSyncSnapshot(acc).Balance
-	detail := liveDriftDetail(acc, odooBalance, localBalance, live, currency, liveLabel)
+	detail := liveDriftDetail(acc, odooBalance, localBalance, live, currency, liveLabel) + statementHint
 	if !quietOdooContext() {
 		Warnf("%s", strings.TrimRight(detail, "\n"))
 	}
