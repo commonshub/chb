@@ -26,6 +26,11 @@ type TokenTransfer struct {
 	TokenName    string `json:"tokenName"`
 	TokenSymbol  string `json:"tokenSymbol"`
 	TokenDecimal string `json:"tokenDecimal"`
+	// LogIndex is the transfer's log index in its transaction receipt. The
+	// explorer's tokentx list does not carry it; EnrichLogIndexes fills it
+	// for transactions with several transfers of the account, where the
+	// position in the list is not a stable identity.
+	LogIndex *int `json:"logIndex,omitempty"`
 }
 
 // CacheFile is the monthly source archive saved to disk.

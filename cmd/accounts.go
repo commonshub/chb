@@ -7199,6 +7199,9 @@ func internalTransactionDirectionFromRaw(acc *AccountConfig, tx TransactionEntry
 // Blockchain format (matching odoo-web3): {chain}:{walletAddress}:{txHash}:{logIndex}
 // Stripe format:                          stripe:{accountId}:{txn_id}
 func buildUniqueImportID(acc *AccountConfig, tx TransactionEntry) string {
+	if tx.ImportID != "" {
+		return tx.ImportID
+	}
 	if acc.Provider == "stripe" {
 		accountID := acc.AccountID
 		if accountID == "" {

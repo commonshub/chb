@@ -259,6 +259,11 @@ type TransactionEntry struct {
 	// Single-transfer txs — the common case — keep LogIndex=0 and
 	// remain compatible with existing Odoo unique_import_id values.
 	LogIndex       int    `json:"logIndex,omitempty"`
+	// ImportID: the Odoo unique_import_id of a transfer in a transaction
+	// with several transfers of the account, when the position-based id
+	// is not stable: the existing Odoo line's id, else
+	// <chain>:<account>:<hash>:log<logIndex>. buildUniqueImportID uses it.
+	ImportID string `json:"importId,omitempty"`
 	Account        string `json:"account,omitempty"`
 	Counterparty   string `json:"counterparty,omitempty"`
 	StripeChargeID string `json:"stripeChargeId,omitempty"`
@@ -2734,6 +2739,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			// etc. The cache file is already scoped to one account+token, so
 			// resetting per file is correct.
 			txHashCounter := map[string]int{}
+			// Transactions with several transfers of this account carry the
+			// real receipt log index (providers/etherscan/receipts.go); their
+			// import ids are resolved against Odoo after the loop.
+			multiTransfer := etherscansource.MultiTransferHashes(txFile.Transactions)
+			var realLogEntries []int
 
 			for _, tx := range txFile.Transactions {
 				// Drop transfers on the exclusion list (e.g. EURe V1->V2
@@ -2746,6 +2756,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				// Drop the second sighting of a transfer that the V1->V2 upgrade
 				// lists under both contracts for this account.
 				dupKey := accountSlug + "|" + strings.ToLower(tx.Hash) + "|" + strings.ToLower(tx.From) + "|" + strings.ToLower(tx.To) + "|" + tx.Value
+				if tx.LogIndex != nil {
+					// The same event listed twice (V1/V2) has the same log
+					// index; two identical transfers in one tx do not.
+					dupKey = accountSlug + "|" + strings.ToLower(tx.Hash) + "|log" + strconv.Itoa(*tx.LogIndex)
+				}
 				if seenAccountTransfer[dupKey] {
 					continue
 				}
@@ -2928,8 +2943,13 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					}
 				}
 
+				if tx.LogIndex != nil && multiTransfer[strings.ToLower(tx.Hash)] > 0 {
+					entry.LogIndex = *tx.LogIndex
+					realLogEntries = append(realLogEntries, len(transactions))
+				}
 				transactions = append(transactions, entry)
 			}
+			resolveMultiTransferImportIDs(transactions, realLogEntries, accountSlug, chain, accountAddr)
 		}
 	}
 

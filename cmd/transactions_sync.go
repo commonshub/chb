@@ -389,6 +389,7 @@ func TransactionsSync(args []string) (int, error) {
 				}
 			}
 		}
+		enrichEtherscanAccountsLogIndexes(DataDir(), etherscanAccounts)
 	}
 
 	// --- Stripe sync ---

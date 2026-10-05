@@ -130,16 +130,35 @@ func parseInt64(s string) int64 {
 // Fetched copies win (confirmations etc. refresh), order is newest-first by
 // block then timestamp — the same order the explorers return.
 func MergeTokenTransfers(existing, fetched []TokenTransfer) []TokenTransfer {
-	byKey := make(map[string]TokenTransfer, len(existing)+len(fetched))
+	// Key() ignores the log index, and one transaction can hold several
+	// identical transfers (two 4.15 mints): keep, per key, as many entries
+	// as the larger side has, preferring the existing (enriched) ones.
+	byKey := map[string][]TokenTransfer{}
+	var keys []string
 	for _, t := range existing {
-		byKey[t.Key()] = t
+		k := t.Key()
+		if _, ok := byKey[k]; !ok {
+			keys = append(keys, k)
+		}
+		byKey[k] = append(byKey[k], t)
 	}
+	fetchedByKey := map[string][]TokenTransfer{}
 	for _, t := range fetched {
-		byKey[t.Key()] = t
+		k := t.Key()
+		if _, ok := byKey[k]; !ok {
+			if _, seen := fetchedByKey[k]; !seen {
+				keys = append(keys, k)
+			}
+		}
+		fetchedByKey[k] = append(fetchedByKey[k], t)
 	}
-	out := make([]TokenTransfer, 0, len(byKey))
-	for _, t := range byKey {
-		out = append(out, t)
+	var out []TokenTransfer
+	for _, k := range keys {
+		have := byKey[k]
+		out = append(out, have...)
+		if extra := fetchedByKey[k]; len(extra) > len(have) {
+			out = append(out, extra[len(have):]...)
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		bi, bj := parseInt64(out[i].BlockNumber), parseInt64(out[j].BlockNumber)
@@ -150,9 +169,19 @@ func MergeTokenTransfers(existing, fetched []TokenTransfer) []TokenTransfer {
 		if ti != tj {
 			return ti > tj
 		}
-		return out[i].Key() > out[j].Key()
+		if out[i].Key() != out[j].Key() {
+			return out[i].Key() > out[j].Key()
+		}
+		return logIndexOr(out[i], -1) < logIndexOr(out[j], -1)
 	})
 	return out
+}
+
+func logIndexOr(t TokenTransfer, def int) int {
+	if t.LogIndex != nil {
+		return *t.LogIndex
+	}
+	return def
 }
 
 // NewestBlock returns the highest block number among the transfers (0 if none).
