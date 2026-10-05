@@ -45,10 +45,13 @@ func parseOdooDate(s string) (time.Time, error) {
 type reconcileLineMatch struct {
 	Line OdooCacheLine
 	Hits []reconcileCandidate
-	// AmountOnly: the hits share only the amount with the line (no
-	// reference, partner or name). Never applied by a batch run; the
-	// interactive resolver asks.
-	AmountOnly bool
+	// NeedsReview: a single hit a batch run must not apply — an
+	// amount-only match (no reference, partner or name in common), or a
+	// reference match whose amount differs from the document's open
+	// residual (partial, over/under payment, already paid). The
+	// interactive resolver asks, showing ReviewNote.
+	NeedsReview bool
+	ReviewNote  string
 }
 
 // reconcileDup is one group of bank lines that all matched the same
@@ -259,14 +262,14 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 		if reconcileMatcherSkipsLine(ln) {
 			continue
 		}
-		hits, amountOnly := matchLineToCandidates(ln, candidates, refMatchable, byPartner, byAmount)
+		hits, reviewNote := matchLineToCandidates(ln, candidates, refMatchable, byPartner, byAmount)
 		if len(hits) > 1 {
 			lineDate := ln.Date
 			sort.SliceStable(hits, func(i, j int) bool {
 				return dateDeltaDaysAbs(hits[i].Date, lineDate) < dateDeltaDaysAbs(hits[j].Date, lineDate)
 			})
 		}
-		results = append(results, reconcileLineMatch{Line: ln, Hits: hits, AmountOnly: amountOnly})
+		results = append(results, reconcileLineMatch{Line: ln, Hits: hits, NeedsReview: reviewNote != "", ReviewNote: reviewNote})
 	}
 
 	// Interactive resolution of ambiguous matches. The user steps through
@@ -285,7 +288,7 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 	groupedByCandidate := map[string][]int{} // candidate key → indices into results
 	candidateByKey := map[string]reconcileCandidate{}
 	for i, r := range results {
-		if len(r.Hits) != 1 || r.AmountOnly {
+		if len(r.Hits) != 1 || r.NeedsReview {
 			continue
 		}
 		key := r.Hits[0].key()
@@ -356,7 +359,7 @@ func (s *reconcileMatchSet) counts() reconcileMatchCounts {
 		switch {
 		case len(r.Hits) == 0:
 			c.NoMatch++
-		case len(r.Hits) == 1 && !r.AmountOnly:
+		case len(r.Hits) == 1 && !r.NeedsReview:
 			c.Matched++
 		default:
 			c.Ambiguous++
@@ -375,7 +378,7 @@ func (s *reconcileMatchSet) unambiguousWinners() []reconcileLineMatch {
 		if s.DemotedToDuplicate[i] {
 			continue
 		}
-		if len(r.Hits) == 1 && !r.AmountOnly {
+		if len(r.Hits) == 1 && !r.NeedsReview {
 			out = append(out, r)
 		}
 	}
@@ -537,7 +540,7 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 	reader := bufio.NewReader(os.Stdin)
 	ambIdxs := make([]int, 0)
 	for i, r := range results {
-		if len(r.Hits) > 1 || (r.AmountOnly && len(r.Hits) == 1) {
+		if len(r.Hits) > 1 || (r.NeedsReview && len(r.Hits) == 1) {
 			ambIdxs = append(ambIdxs, i)
 		}
 	}
@@ -578,6 +581,17 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 			direction = "bill"
 		}
 		hits := topCandidatesByDateAmount(ln, byAmountAll, direction, interactiveSuggestionCount)
+		if results[i].NeedsReview && len(results[i].Hits) == 1 {
+			// The matcher's own hit first, then the other suggestions.
+			own := results[i].Hits[0]
+			merged := []reconcileCandidate{own}
+			for _, h := range hits {
+				if h.ID != own.ID {
+					merged = append(merged, h)
+				}
+			}
+			hits = merged
+		}
 		if len(hits) == 0 {
 			// Fall back to the matcher's own hits (sorted by date proximity).
 			hits = results[i].Hits
@@ -590,6 +604,9 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 		fmt.Printf("        Counterparty: %s\n", reconcileLineCounterparty(ln, partners))
 		if d := reconcileLineDescription(ln); d != "" {
 			fmt.Printf("        Description:  %s\n", d)
+		}
+		if results[i].ReviewNote != "" {
+			fmt.Printf("        %sReview:       %s%s\n", Fmt.Yellow, results[i].ReviewNote, Fmt.Reset)
 		}
 		if localCp, localURI := localTxPreview(localByImportID, ln.UniqueImportID); localCp != "" || localURI != "" {
 			if localCp != "" {
@@ -637,7 +654,7 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 		switch choice {
 		case "":
 			results[i].Hits = []reconcileCandidate{hits[0]}
-			results[i].AmountOnly = false
+			results[i].NeedsReview = false
 			suffix := ""
 			if line := candidateStatusLine(hits[0]); line != "" {
 				suffix = "  " + line
@@ -658,7 +675,7 @@ func resolveAmbiguousInteractively(journalID int, results []reconcileLineMatch, 
 			continue
 		}
 		results[i].Hits = []reconcileCandidate{hits[n-1]}
-		results[i].AmountOnly = false
+		results[i].NeedsReview = false
 	}
 }
 
@@ -672,7 +689,7 @@ func topCandidatesByDateAmount(ln OdooCacheLine, byAmount map[int64][]reconcileC
 	pool := byAmount[amt]
 	matches := make([]reconcileCandidate, 0, len(pool))
 	for _, c := range pool {
-		if c.Kind != wantKind {
+		if c.Kind != wantKind || !candidateFitsDirection(c, ln.Amount) {
 			continue
 		}
 		// Direction-gate by signed total: incoming bank lines should
@@ -1003,7 +1020,7 @@ func buildRefMatchIndex(allPosted []reconcileCandidate) []refMatchEntry {
 	return out
 }
 
-func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate, refIndex []refMatchEntry, byPartner map[int][]reconcileCandidate, byAmount map[int64][]reconcileCandidate) ([]reconcileCandidate, bool) {
+func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate, refIndex []refMatchEntry, byPartner map[int][]reconcileCandidate, byAmount map[int64][]reconcileCandidate) ([]reconcileCandidate, string) {
 	amt := math.Abs(ln.Amount)
 	ref := strings.ToLower(ln.PaymentRef)
 
@@ -1053,8 +1070,15 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 				seen[e.Cand.ID] = true
 			}
 		}
+		if len(refHits) == 1 && math.Abs(refHits[0].Residual-amt) > 0.01 {
+			// The reference names the document but the amount does not
+			// settle it exactly: never automatic.
+			return refHits, fmt.Sprintf("reference match, amounts differ: payment %s, open %s (difference %s)",
+				formatBalancePlain(amt, "EUR"), formatBalancePlain(refHits[0].Residual, "EUR"),
+				formatBalancePlain(amt-refHits[0].Residual, "EUR"))
+		}
 		if len(refHits) > 0 {
-			return refHits, false
+			return refHits, ""
 		}
 	}
 	// Amount-based strategies (2/3/4) below stay open-only via
@@ -1066,7 +1090,7 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 	if ln.PartnerID > 0 {
 		for _, c := range filter(byPartner[ln.PartnerID]) {
 			if math.Abs(c.Residual-amt) < 0.005 {
-				return []reconcileCandidate{c}, false
+				return []reconcileCandidate{c}, ""
 			}
 		}
 	}
@@ -1087,14 +1111,17 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 			}
 		}
 		if len(nameHits) > 0 {
-			return nameHits, false
+			return nameHits, ""
 		}
 	}
 
 	// 4 + 5. amount-only: suggestions for the interactive resolver, never
 	// applied by a batch run (a €0.41 Stripe fee once "matched" a KBC
 	// credit note this way).
-	return amountHits, len(amountHits) > 0
+	if len(amountHits) > 0 {
+		return amountHits, "amount-only match (no reference, partner or name in common)"
+	}
+	return amountHits, ""
 }
 
 // candidateFitsDirection: an outgoing bank line pays a vendor bill or
