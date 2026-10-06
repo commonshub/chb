@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	discordsource "github.com/CommonsHub/chb/providers/discord"
@@ -70,5 +71,28 @@ func TestPraiseFeedSkipsBotsAndEmptyText(t *testing.T) {
 	}
 	if got := contributionsFeed.monthMessages(dir, "2026", "10", "c", discordNames{}); len(got) != 2 {
 		t.Errorf("contributions keeps photo-only posts: %d", len(got))
+	}
+}
+
+func TestMaskEmailsKeepsJSONEscapes(t *testing.T) {
+	for _, text := range []string{
+		"thanks\n@Leen.v and\n@Inge",
+		"line\nann@example.org end",
+		"café bob@example.org",
+		`back\slash x@example.org`,
+	} {
+		in, _ := json.Marshal(map[string]string{"content": text})
+		out := maskEmails(in)
+		var v map[string]string
+		if err := json.Unmarshal(out, &v); err != nil {
+			t.Fatalf("%q → invalid JSON %s: %v", text, out, err)
+		}
+		if strings.Contains(v["content"], "example.org") {
+			t.Errorf("email not masked: %q", v["content"])
+		}
+	}
+	in, _ := json.Marshal("hi\n@Leen.v")
+	if out := maskEmails(in); string(out) != string(in) {
+		t.Errorf("a mention after a newline is not an email: %s", out)
 	}
 }

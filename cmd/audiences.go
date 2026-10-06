@@ -239,15 +239,50 @@ func isRoleMailbox(addr string) bool {
 
 // maskEmails replaces every personal email-shaped substring with emailMask.
 // Emails contain no quotes or backslashes, so a textual replacement keeps
-// JSON valid.
+// JSON valid — as long as a match never starts inside an escape sequence:
+// in `\n@Leen.v` the pattern sees `n@Leen.v`, and masking it would leave a
+// lone backslash. The escape's characters are kept and only what follows
+// them is considered.
 func maskEmails(data []byte) []byte {
-	return emailPattern.ReplaceAllFunc(data, func(m []byte) []byte {
-		s := string(m)
-		if isNonMailboxIdentifier(s) || calendarUIDPattern.MatchString(s) || isRoleMailbox(s) {
-			return m
+	var out []byte
+	last := 0
+	for _, loc := range emailPattern.FindAllIndex(data, -1) {
+		start, end := loc[0], loc[1]
+		if escapedAt(data, start) {
+			skip := 1
+			if data[start] == 'u' || data[start] == 'U' {
+				skip = 5
+			}
+			start += skip
+			if start >= end {
+				continue
+			}
+			if l := emailPattern.FindIndex(data[start:end]); l == nil || l[0] != 0 || l[1] != end-start {
+				continue
+			}
 		}
-		return []byte(emailMask)
-	})
+		s := string(data[start:end])
+		if isNonMailboxIdentifier(s) || calendarUIDPattern.MatchString(s) || isRoleMailbox(s) {
+			continue
+		}
+		out = append(out, data[last:start]...)
+		out = append(out, emailMask...)
+		last = end
+	}
+	if out == nil {
+		return data
+	}
+	return append(out, data[last:]...)
+}
+
+// escapedAt reports whether data[i] is escaped by an odd run of
+// backslashes just before it.
+func escapedAt(data []byte, i int) bool {
+	n := 0
+	for j := i - 1; j >= 0 && data[j] == '\\'; j-- {
+		n++
+	}
+	return n%2 == 1
 }
 
 // ownAccountIBANs is the set of IBANs of the org's own tracked accounts
