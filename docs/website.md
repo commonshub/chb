@@ -43,7 +43,7 @@ the file with empty lists (`"expenses": []`, `"transactions": []`, …),
 never a missing file. There are no exceptions for older months. Month
 files: `transactions.json`, `counterparties.json`, `summary.json`,
 `commissions.json`, `contributors.json`, `images.json`, `members.json`,
-`door.json`, `events.json`, `calendars/public.ics`, `contributions.json`, `tokens-issued.json`, `expenses.json`,
+`door.json`, `events.json`, `calendars/public.ics`, `contributions.json`, `praise.json`, `tokens-issued.json`, `expenses.json`,
 `vendors.json`, `customers.json`, `bookings.json` (plus, in `public/`,
 `events/images/` when a month has event covers and `images/` when it has
 photos from public channels). Year files:
@@ -55,7 +55,7 @@ photos from public channels). Year files:
 upcoming views (`contributors.json` = top contributors, `activitygrid.json`
 = every year, `events.json` = upcoming, `events.csv` = current year,
 `pending-bills.json`, `accounts-chart.json`, `categories.json`,
-`contributions.json` and `tokens-issued.json` = the last 60 days). Year files are never copied
+`contributions.json`, `praise.json` and `tokens-issued.json` = the last 60 days). Year files are never copied
 there.
 
 | file | public (anyone) | members (Discord `member` role) | where |
@@ -75,7 +75,8 @@ there.
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photos from public channels only: author identity, reactions, `filePath` to the public copy — `message` is empty | every photo + message text; `filePath` to the public copy (empty for non-public channels) | month, `latest/` |
 | `images/<attachment id>.<ext>` | the photo files themselves, public channels only — **only in public/** (§10) | (read from public) | month |
-| `contributions.json` | #contributions as a feed, newest first: message id, timestamp, author and mentioned users (Discord id + display name, bots dropped), total reactions, public photo paths — no message text; only when #contributions is a public channel (identical in all tiers) | = | month, `latest/` (last 60 days) |
+| `contributions.json` | #contributions as a feed, newest first: message id, timestamp, author and mentioned users (Discord id + display name + avatar, bots dropped), text with mentions/emoji resolved, reactions, public photo paths; only when #contributions is a public channel (identical in all tiers) | = | month, `latest/` (last 60 days) |
+| `praise.json` | 💝praise as a feed, same shape as `contributions.json`; messages without text dropped | = | month, `latest/` (last 60 days) |
 | `tokens-issued.json` | contribution-token mints, newest first: timestamp, amount, recipient (Discord id + display name, null if unlinked), reason and kind from the token bot's trusted annotation, Discord link — no transaction id, no wallet | = public | month, `latest/` (last 60 days) |
 | `door.json` | counts only (`openers`, `openDays`, `tokenOpens`, `totalOpens`) | who (identity), days, opens, via — no dates | month, `latest/` |
 | `expenses.json` | every vendor bill, credit note and expense claim, **line by line** (what was bought): organisations and sole traders named; sole traders' and individuals' free text and event tags dropped (no person linked to an event); individuals typed only; payroll text dropped; account code + class | + individuals' names and texts, account names | month, year (§7) |
@@ -336,25 +337,43 @@ every total, as `summary.json` and `contributors.json` already do. They
 come from trusted `exclude` annotations ([annotations.md](annotations.md))
 or from settings `excluded-transactions.json` entries with `"keep": true`.
 
-## 14. Contributions feed — who was thanked
+## 14. Contributions and praise feeds — who was thanked
 
 `YYYY/MM/public/contributions.json` and `latest/public/contributions.json`
-(the last 60 days) list the #contributions messages, newest first:
+(the last 60 days) list the #contributions messages, newest first.
+`praise.json` (same places) lists the 💝praise messages in the same shape.
+Both channel contents are public (Xavier's decision, v3.34.0).
 
 ```json
 { "generatedAt": "…", "channelId": "1297965144579637248",
   "messages": [ { "id": "…", "timestamp": "2026-08-15T13:38:45Z",
-      "author": { "id": "…", "displayName": "Miriam" },
-      "mentions": [ { "id": "…", "displayName": "Yin" } ],
-      "totalReactions": 1,
+      "author": { "id": "…", "displayName": "Miriam",
+                  "avatarUrl": "https://cdn.discordapp.com/avatars/…/….png?size=128" },
+      "content": "Thanks @Yin for fixing the fridge :chb:",
+      "mentions": [ { "id": "…", "displayName": "Yin", "avatarUrl": "…" } ],
+      "totalReactions": 4,
+      "reactions": [ { "emoji": "🙏", "count": 3 },
+                     { "emoji": ":chb:", "count": 1,
+                       "imageUrl": "https://cdn.discordapp.com/emojis/….png" } ],
       "images": ["2026/08/public/images/1538180147050446899.jpg"] } ] }
 ```
 
-`mentions` are the people thanked (deduped per message, bots dropped);
-`images` are the public photo copies (§10). Timestamps are UTC (RFC3339);
-show them in Europe/Brussels. No message text. The file exists only while
-#contributions is in `discord.publicChannels`; otherwise every month has
-an empty `messages`.
+- `content` is the message text with Discord markup resolved: `<@id>` →
+  `@DisplayName` (`@someone` when the user is unknown), `<@&id>` → `@role`,
+  `<#id>` → `#channel`, custom emoji `<:name:id>` → `:name:`, `<t:…>` →
+  Brussels date and time. Third-party IBANs and personal emails are masked.
+  Other Markdown (bold, links) is left as Discord wrote it.
+- `avatarUrl` is present only for users with a custom Discord avatar.
+- `reactions`: unicode emoji as-is; custom emoji as `:name:` with
+  `imageUrl`. `totalReactions` is their sum.
+- `mentions` are the people thanked (deduped per message, bots dropped);
+  `images` are the public photo copies (§10).
+- `praise.json` drops messages without text; `contributions.json` keeps
+  photo-only posts (`content: ""`). Bots are dropped in both.
+- Timestamps are UTC (RFC3339); show them in Europe/Brussels. A feed is
+  written only while its channel is in `discord.publicChannels`
+  (`activities.contributions`, `activities.tokens` = 💝praise); otherwise
+  every month has an empty `messages`.
 
 ## 15. Tokens issued — recent awards
 

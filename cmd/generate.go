@@ -809,6 +809,14 @@ func Generate(args []string) error {
 		return Pluralize(generateContributions(dataDir), "message", "") + " in the last 60 days"
 	})
 
+	// 💝praise as a public feed, same shape (cmd/contributions_generate.go).
+	genStep("Praise", func() string {
+		if praiseFeed.channelID() == "" {
+			return "channel not public"
+		}
+		return Pluralize(generatePraise(dataDir), "message", "") + " in the last 60 days"
+	})
+
 	// Contribution tokens issued (cmd/tokens_issued_generate.go). After
 	// contributors (wallet → Discord map).
 	genStep("Tokens issued", func() string {

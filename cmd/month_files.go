@@ -97,6 +97,10 @@ var monthFileSpecs = []monthFileSpec{
 		empty: func(y, m, now string) interface{} {
 			return ContributionsFile{GeneratedAt: now, ChannelID: contributionsChannelID(), Messages: []ContributionMessage{}}
 		}},
+	{rel: praiseFile,
+		empty: func(y, m, now string) interface{} {
+			return ContributionsFile{GeneratedAt: now, ChannelID: praiseFeed.channelID(), Messages: []ContributionMessage{}}
+		}},
 	{rel: tokensIssuedFile,
 		empty: func(y, m, now string) interface{} {
 			sym := ""
