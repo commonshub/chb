@@ -118,7 +118,8 @@ func MembersSync(args []string) error {
 	if salt == "" {
 		// Generate a random salt and persist it
 		salt = generateAndSaveSalt()
-		fmt.Printf("  %sGenerated EMAIL_HASH_SALT: %s%s\n", Fmt.Dim, salt, Fmt.Reset)
+		// Never print the salt: this output lands in cron logs.
+		fmt.Printf("  %sGenerated a new EMAIL_HASH_SALT (saved to config.env)%s\n", Fmt.Dim, Fmt.Reset)
 	}
 
 	stripeOnly := HasFlag(args, "--stripe-only")
