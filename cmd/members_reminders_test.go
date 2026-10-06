@@ -18,6 +18,7 @@ func TestBuildReminderPlan(t *testing.T) {
 		{ID: "c", FirstName: "Cy", Status: "lapsed", StatusSince: "2026-09-20", StripeCustomerID: "cus_1"},
 		{ID: "d", FirstName: "Di", Status: "lapsed", StatusSince: "2026-08-01"}, // more than 30 days ago
 		{ID: "e", FirstName: "Ed", Status: "grace", StatusReason: "paused", StatusSince: "2026-10-03"},
+		{ID: "f", FirstName: "Fay", Status: "lapsed", StatusSince: "2026-10-10"}, // in the future
 	}
 	plan := buildReminderPlan(members, "2026-10-06")
 	keys := map[string]string{}

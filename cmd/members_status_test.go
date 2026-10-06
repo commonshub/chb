@@ -92,3 +92,13 @@ func TestMergeOdooFirstAndMismatches(t *testing.T) {
 		t.Error("members tier must not carry mismatches")
 	}
 }
+
+func TestStripeCancelledButPaidThrough(t *testing.T) {
+	snaps := []providerSnapshot{{Provider: "stripe", Subscriptions: []providerSubscription{
+		{ID: "sub_r", Source: "stripe", EmailHash: "r", FirstName: "Rebeka", Status: "canceled", CurrentPeriodEnd: "2099-10-10", CreatedAt: "2025-01-01"},
+	}}}
+	members, _ := mergeProviderSnapshotsAt(snaps, 2026, 10)
+	if len(members) != 1 || members[0].Status != "active" || members[0].StatusReason != "" {
+		t.Fatalf("a cancelled subscription still paid through is active: %+v", members)
+	}
+}

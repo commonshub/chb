@@ -203,6 +203,10 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 	var mismatches []MemberMismatch
 	for _, sub := range stripeSubs {
 		status := stripeMemberStatus(sub.Status)
+		paidThrough := status == "lapsed" && firstN(sub.CurrentPeriodEnd, 10) > refDate
+		if paidThrough {
+			status = "active" // cancelled, but paid until the period ends
+		}
 		key := sub.EmailHash
 		name := strings.TrimSpace(sub.FirstName + " " + sub.LastName)
 		if _, ok := odooStatus[key]; ok && sub.StripeCustomerID != "" {
@@ -235,8 +239,10 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 		case "past_due", "unpaid", "incomplete":
 			m.StatusReason = "payment_failed"
 		case "canceled", "incomplete_expired":
-			m.StatusReason = "ended"
-			m.StatusSince = firstN(sub.CurrentPeriodEnd, 10)
+			if !paidThrough {
+				m.StatusReason = "ended"
+				m.StatusSince = firstN(sub.CurrentPeriodEnd, 10)
+			}
 		}
 		seen[key] = m
 	}

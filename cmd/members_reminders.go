@@ -93,6 +93,9 @@ func buildReminderPlan(members []Member, today string) []ReminderPlanEntry {
 		if m.Status != "grace" && !(m.Status == "lapsed" && m.StatusSince != "" && m.StatusSince >= cutoff) {
 			continue
 		}
+		if m.StatusSince > today {
+			continue // not yet: never announce a change before it happens
+		}
 		reason := m.StatusReason
 		if m.Status == "lapsed" {
 			reason = "ended"
