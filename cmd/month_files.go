@@ -36,6 +36,9 @@ type monthFileSpec struct {
 	// project re-projects stewards bytes for tier a; nil = same bytes in
 	// every tier.
 	project func(data []byte, a Audience) (interface{}, error)
+	// pastOnly: no skeleton for months after the current one (an empty
+	// members.json for next month would read as "0 members").
+	pastOnly bool
 }
 
 func decodeAndProject[T any](data []byte, a Audience, project func(T, Audience) T) (interface{}, error) {
@@ -105,7 +108,7 @@ var monthFileSpecs = []monthFileSpec{
 		project: func(data []byte, a Audience) (interface{}, error) {
 			return decodeAndProject(data, a, tokensIssuedForAudience)
 		}},
-	{rel: "members.json",
+	{rel: "members.json", pastOnly: true,
 		empty: func(y, m, now string) interface{} {
 			return MembersOutputFile{Year: y, Month: m, ProductID: "mixed", GeneratedAt: now, Members: []Member{}}
 		},
@@ -306,6 +309,9 @@ func writeYearEventsStewards(dataDir, year, now string) bool {
 func completeFile(dataDir, year, month string, spec monthFileSpec, now string) (int, error) {
 	stewards := audiencePath(dataDir, year, month, AudienceStewards, spec.rel)
 	data, err := os.ReadFile(stewards)
+	if err != nil && spec.pastOnly && year+"-"+month > time.Now().In(BrusselsTZ()).Format("2006-01") {
+		return 0, nil
+	}
 	if err != nil {
 		// Nothing at all: an empty file in every tier.
 		written := 0
