@@ -331,10 +331,42 @@ USAGE
   chb members remind --yes           Send (needs RESEND_API_KEY, RENEW_LINK_SECRET)
   chb members remind --render-test [payment_failed|paused|ended] [--organisation]
                                      Print a rendered sample for a fictitious member
+  chb members remind --send-test <email> [reason] [--name N] [--organisation]
+                                     Send ONE sample (fictitious member) to <email>
 
 The plan is written by ` + "`chb generate`" + ` (latest/providers/members/pending-reminders.json);
 sent reminders are recorded in reminders-sent.json and never sent twice.
 `)
+		return nil
+	}
+	if to := GetOption(args, "--send-test"); to != "" {
+		// One reminder for a fictitious member to one address, through the
+		// real sending path. Never touches the plan or the ledger.
+		reason := "payment_failed"
+		for _, a := range args {
+			if a == "paused" || a == "ended" || a == "payment_failed" {
+				reason = a
+			}
+		}
+		name := GetOption(args, "--name")
+		if name == "" {
+			name = "Alex"
+		}
+		apiKey, secret := os.Getenv("RESEND_API_KEY"), os.Getenv("RENEW_LINK_SECRET")
+		if apiKey == "" || secret == "" {
+			return fmt.Errorf("RESEND_API_KEY and RENEW_LINK_SECRET must be set in config.env")
+		}
+		e := ReminderPlanEntry{Key: "test", Reason: reason, Status: "grace", FirstName: name, Organisation: HasFlag(args, "--organisation"),
+			GraceEndsAt: addDays(time.Now().In(BrusselsTZ()).Format("2006-01-02"), membershipGraceDays)}
+		m, err := renderReminder(e, to, reminderRenewBase+renewToken(secret, e, time.Now()))
+		if err != nil {
+			return err
+		}
+		id, err := sendReminderEmail(apiKey, fmt.Sprintf("test-%d", time.Now().UnixNano()), to, m)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("  ✓ test reminder (%s, fictitious member %q) sent to %s — Resend id %s\n", reason, name, maskEmail(to), id)
 		return nil
 	}
 	if HasFlag(args, "--render-test") {
