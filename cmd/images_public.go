@@ -21,8 +21,10 @@ import (
 
 // defaultPublicPhotoChannels applies when settings.json has no
 // `discord.publicChannels`: the channels every member of the Discord server
-// can read, minus #introductions (portraits).
-var defaultPublicPhotoChannels = []string{"general", "activities.contributions", "activities.tokens"}
+// can read, minus #introductions (portraits); the activity channels'
+// photos (potluck, heartbeat, park cleaning) show on /community.
+var defaultPublicPhotoChannels = []string{"general", "activities.contributions", "activities.tokens",
+	"activities.potluck", "activities.heartbeat", "activities.parkCleaning"}
 
 // publicPhotoChannelIDs resolves `discord.publicChannels` (names from
 // `discord.channels`, dotted for nested groups, a leaf name, or raw ids)

@@ -137,8 +137,20 @@ func providerCommandSpecs() []providerCommandSpec {
 			Name:        "stripe",
 			Description: "Stripe balance, charge, payout, and membership archives.",
 			Commands:    []string{"sync", "generate"},
-			Sync:        syncTransactionsProvider("stripe"),
-			Generate:    GenerateTransactions,
+			Sync: func(args []string) (string, error) {
+				summary, err := syncTransactionsProvider("stripe")(args)
+				if err != nil {
+					return summary, err
+				}
+				// Membership snapshots (Stripe subscriptions + Odoo
+				// memberships) feed members.json; without them every
+				// month's members.json is an empty skeleton.
+				if merr := MembersSync(args); merr != nil {
+					Warnf("⚠ members: %v", merr)
+				}
+				return summary, nil
+			},
+			Generate: GenerateTransactions,
 		},
 		{
 			Name:        "monerium",

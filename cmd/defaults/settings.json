@@ -22,7 +22,10 @@
     "publicChannels": [
       "general",
       "activities.contributions",
-      "activities.tokens"
+      "activities.tokens",
+      "activities.potluck",
+      "activities.heartbeat",
+      "activities.parkCleaning"
     ]
   },
   "membership": {

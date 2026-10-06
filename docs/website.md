@@ -287,7 +287,8 @@ consolidation) is [annotations.md](annotations.md). In short:
 
 Photos come from Discord. Only channels listed in settings.json
 `discord.publicChannels` are published (default: `general`,
-`activities.contributions`, `activities.tokens`). `chb images sync`, part of
+`activities.contributions`, `activities.tokens`, `activities.potluck`,
+`activities.heartbeat`, `activities.parkCleaning`). `chb images sync`, part of
 the hourly job, copies each photo to `YYYY/MM/public/images/<attachment
 id>.<ext>`, and `images.json` in `public/` and `members/` points `filePath`
 there (relative to the data root). Serve that file: the Discord `url` in the
