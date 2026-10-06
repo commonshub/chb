@@ -59,6 +59,13 @@ type Member struct {
 	StatusSince      string `json:"statusSince,omitempty"`
 	GraceEndsAt      string `json:"graceEndsAt,omitempty"`
 	OdooPartnerID    int    `json:"odooPartnerId,omitempty"` // stewards only
+	// StatusReason: why grace or lapsed — payment_failed, paused, ended
+	// (the reminder sent); stewards only.
+	StatusReason string `json:"statusReason,omitempty"`
+	// PaymentReference: the open invoice's structured communication;
+	// StripeCustomerID: for the renew link. Stewards only.
+	PaymentReference string `json:"paymentReference,omitempty"`
+	StripeCustomerID string `json:"stripeCustomerId,omitempty"`
 }
 
 type MembersSummary struct {
@@ -101,11 +108,13 @@ type providerSubscription struct {
 	IsOrganization     bool           `json:"isOrganization,omitempty"`
 	ProductID          interface{}    `json:"productId,omitempty"`
 	// Odoo subscriptions (the source of truth): raw state and invoices.
-	OdooState     string                         `json:"odooState,omitempty"`
-	EndDate       string                         `json:"endDate,omitempty"`
-	OdooPartnerID int                            `json:"odooPartnerId,omitempty"`
-	IsCompany     bool                           `json:"isCompany,omitempty"`
-	Invoices      []odoosource.MembershipInvoice `json:"invoices,omitempty"`
+	OdooState     string `json:"odooState,omitempty"`
+	EndDate       string `json:"endDate,omitempty"`
+	OdooPartnerID int    `json:"odooPartnerId,omitempty"`
+	IsCompany     bool   `json:"isCompany,omitempty"`
+	// StripeCustomerID: the member's Stripe customer (Stripe snapshots).
+	StripeCustomerID string                         `json:"stripeCustomerId,omitempty"`
+	Invoices         []odoosource.MembershipInvoice `json:"invoices,omitempty"`
 }
 
 type providerSnapshot struct {
@@ -383,6 +392,7 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 			CreatedAt:          time.Unix(sub.Created, 0).UTC().Format("2006-01-02"),
 			Discord:            discordPtr,
 			ProductID:          productID,
+			StripeCustomerID:   sub.Customer,
 		})
 
 		time.Sleep(50 * time.Millisecond) // Be polite

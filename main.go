@@ -289,7 +289,11 @@ func main() {
 			exitWithError(err)
 		}
 	case "members":
-		if len(args) > 1 && (args[1] == "pull" || args[1] == "sync") {
+		if len(args) > 1 && args[1] == "remind" {
+			if err := cmd.MembersRemind(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		} else if len(args) > 1 && (args[1] == "pull" || args[1] == "sync") {
 			if err := cmd.MembersSync(args[2:]); err != nil {
 				exitWithError(err)
 			}

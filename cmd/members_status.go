@@ -52,8 +52,15 @@ func firstN(s string, n int) string {
 // odooMemberStatus: status, since and graceEndsAt of an Odoo subscription
 // on refDate (YYYY-MM-DD).
 func odooMemberStatus(sub providerSubscription, refDate string) (status, since, graceEnds string) {
+	status, since, graceEnds, _, _ = odooMemberStatusDetail(sub, refDate)
+	return
+}
+
+// odooMemberStatusDetail also returns why (payment_failed, paused, ended)
+// and the overdue invoice's structured communication.
+func odooMemberStatusDetail(sub providerSubscription, refDate string) (status, since, graceEnds, reason, paymentRef string) {
 	if sub.OdooState == "6_churn" || sub.Status == "churned" {
-		return "lapsed", firstN(sub.EndDate, 10), ""
+		return "lapsed", firstN(sub.EndDate, 10), "", "ended", latestPaymentReference(sub)
 	}
 	// The oldest posted invoice still unpaid past its due date.
 	oldestDue := ""
@@ -74,23 +81,41 @@ func odooMemberStatus(sub providerSubscription, refDate string) (status, since, 
 		}
 		if due != "" && due < refDate && (oldestDue == "" || due < oldestDue) {
 			oldestDue = due
+			paymentRef = inv.PaymentReference
 		}
 	}
 	start := oldestDue
+	reason = "payment_failed"
 	if start == "" && (sub.OdooState == "4_paused" || sub.Status == "paused") {
+		reason = "paused"
 		start = firstN(sub.CurrentPeriodEnd, 10) // next invoice date
 		if start == "" || start > refDate {
 			start = refDate
 		}
 	}
+	if paymentRef == "" {
+		paymentRef = latestPaymentReference(sub)
+	}
 	if start == "" {
-		return "active", "", ""
+		return "active", "", "", "", paymentRef
 	}
 	graceEnds = addDays(start, membershipGraceDays)
 	if graceEnds != "" && refDate > graceEnds {
-		return "lapsed", graceEnds, ""
+		return "lapsed", graceEnds, "", "ended", paymentRef
 	}
-	return "grace", start, graceEnds
+	return "grace", start, graceEnds, reason, paymentRef
+}
+
+// latestPaymentReference: the structured communication of the newest
+// invoice that has one (Odoo's partner-based reference stays the same).
+func latestPaymentReference(sub providerSubscription) string {
+	best, ref := "", ""
+	for _, inv := range sub.Invoices {
+		if inv.PaymentReference != "" && inv.Date >= best {
+			best, ref = inv.Date, inv.PaymentReference
+		}
+	}
+	return ref
 }
 
 func stripeMemberStatus(status string) string {
@@ -159,7 +184,7 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 	odooStatus := map[string]string{}
 	odooURL := map[string]string{}
 	for _, sub := range odooSubs {
-		status, since, graceEnds := odooMemberStatus(sub, refDate)
+		status, since, graceEnds, reason, payRef := odooMemberStatusDetail(sub, refDate)
 		// A member who lapsed before this month is not one of its members.
 		if status == "lapsed" && since != "" && since < monthStartStr {
 			continue
@@ -168,7 +193,9 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 		if prev, ok := seen[key]; ok && statusRank(prev.Status) >= statusRank(status) {
 			continue // several subscriptions: keep the best standing
 		}
-		seen[key] = toMember(sub, status, since, graceEnds)
+		m := toMember(sub, status, since, graceEnds)
+		m.StatusReason, m.PaymentReference = reason, payRef
+		seen[key] = m
 		odooStatus[key] = status
 		odooURL[key] = sub.SubscriptionURL
 	}
@@ -178,6 +205,14 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 		status := stripeMemberStatus(sub.Status)
 		key := sub.EmailHash
 		name := strings.TrimSpace(sub.FirstName + " " + sub.LastName)
+		if _, ok := odooStatus[key]; ok && sub.StripeCustomerID != "" {
+			// The member's Stripe customer, for the renew link.
+			m := seen[key]
+			if m.StripeCustomerID == "" {
+				m.StripeCustomerID = sub.StripeCustomerID
+				seen[key] = m
+			}
+		}
 		if os, ok := odooStatus[key]; ok {
 			if os != status {
 				mismatches = append(mismatches, MemberMismatch{Kind: "status_differs", Name: name, EmailHash: key,
@@ -192,7 +227,18 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 			mismatches = append(mismatches, MemberMismatch{Kind: "no_odoo_subscription", Name: name, EmailHash: key,
 				StripeStatus: status, StripeURL: sub.SubscriptionURL})
 		}
-		seen[key] = toMember(sub, status, "", "")
+		m := toMember(sub, status, "", "")
+		m.StripeCustomerID = sub.StripeCustomerID
+		switch sub.Status {
+		case "paused":
+			m.StatusReason = "paused"
+		case "past_due", "unpaid", "incomplete":
+			m.StatusReason = "payment_failed"
+		case "canceled", "incomplete_expired":
+			m.StatusReason = "ended"
+			m.StatusSince = firstN(sub.CurrentPeriodEnd, 10)
+		}
+		seen[key] = m
 	}
 
 	var result []Member

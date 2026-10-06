@@ -71,6 +71,9 @@ type MembershipInvoice struct {
 	PaymentState string  `json:"paymentState,omitempty"` // not_paid, partial, in_payment, paid, reversed
 	Amount       float64 `json:"amount"`
 	Residual     float64 `json:"residual"`
+	// PaymentReference: the structured communication (+++…+++) Odoo puts
+	// on the invoice; reminders quote it for bank transfers.
+	PaymentReference string `json:"paymentReference,omitempty"`
 }
 
 type MembershipSnapshot struct {
@@ -172,7 +175,7 @@ func BuildMembershipSnapshot(products []MembershipProduct, odooURL, login, passw
 	invoiceMap := map[int]map[string]interface{}{}
 	if len(invoiceIDs) > 0 {
 		invRaw, err := exec(odooURL, db, uid, password, "account.move", "read", []interface{}{mapKeys(invoiceIDs)}, map[string]interface{}{
-			"fields": []string{"id", "invoice_date", "invoice_date_due", "amount_total", "amount_residual", "payment_state", "state"},
+			"fields": []string{"id", "invoice_date", "invoice_date_due", "amount_total", "amount_residual", "payment_state", "state", "payment_reference"},
 		})
 		if err == nil {
 			var invs []map[string]interface{}
@@ -306,7 +309,8 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 				ps, _ := inv["payment_state"].(string)
 				amt, _ := inv["amount_total"].(float64)
 				res, _ := inv["amount_residual"].(float64)
-				invoices = append(invoices, MembershipInvoice{ID: int(iid.(float64)), Date: d, DueDate: due, State: st, PaymentState: ps, Amount: amt, Residual: res})
+				ref, _ := inv["payment_reference"].(string)
+				invoices = append(invoices, MembershipInvoice{ID: int(iid.(float64)), Date: d, DueDate: due, State: st, PaymentState: ps, Amount: amt, Residual: res, PaymentReference: ref})
 			}
 		}
 

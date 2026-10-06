@@ -1,0 +1,23 @@
+Hi {{firstName}},
+
+Your membership of the Commons Hub has ended. We'd love to keep you with us.
+
+Memberships are how we pay the rent and keep this common space open for everyone. Thank you for being part of it.
+
+1. RESUME, OR UPDATE YOUR CARD
+{{renewUrl}}
+
+2. START A NEW MONTHLY MEMBERSHIP (€10 a month)
+https://buy.stripe.com/00g9C7dFH8EI07eaEJ
+
+3. PAY A YEAR BY BANK TRANSFER (€100)
+Beneficiary: Commons Hub Brussels ASBL
+IBAN: EE72 7777 0001 3831 7915
+BIC: LHVBEE22
+Amount: €100
+Communication: {{paymentReference}}
+Please use exactly this communication, so we can match your transfer to your membership.
+
+Questions, or would you rather stop? Just reply to this email.
+
+Commons Hub Brussels · Rue de la Madeleine 51, 1000 Brussels · https://commonshub.brussels

@@ -4072,6 +4072,9 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 		totalMonths++
 
 		ym := year + "-" + month
+		if ym == time.Now().In(BrusselsTZ()).Format("2006-01") {
+			writeReminderPlan(dataDir, members) // members_reminders.go
+		}
 		if ym > latestYM {
 			latestYM = ym
 			latestMembers = members

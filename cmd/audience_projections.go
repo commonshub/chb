@@ -87,6 +87,7 @@ func membersFileForAudience(f MembersOutputFile, a Audience) MembersOutputFile {
 			m.Accounts.EmailHash = ""
 			m.SubscriptionURL = ""
 			m.OdooPartnerID = 0
+			m.StatusReason, m.PaymentReference, m.StripeCustomerID = "", "", ""
 			if m.LatestPayment != nil {
 				lp := *m.LatestPayment
 				lp.URL = ""
