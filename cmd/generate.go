@@ -4043,6 +4043,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 	totalMonths := 0
 	var latestMembers []Member
 	var latestSummary MembersSummary
+	var latestMismatches []MemberMismatch
 	var latestYM string
 
 	for _, scope := range scopes {
@@ -4052,7 +4053,9 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			continue
 		}
 
-		members := mergeProviderSnapshots(snapshots)
+		y, _ := strconv.Atoi(year)
+		mo, _ := strconv.Atoi(month)
+		members, mismatches := mergeProviderSnapshotsAt(snapshots, y, mo)
 		summary := calculateMembersSummary(members)
 
 		out := MembersOutputFile{
@@ -4062,6 +4065,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 			Summary:     summary,
 			Members:     members,
+			Mismatches:  mismatches,
 		}
 
 		writeTiers(dataDir, year, month, "members.json", tierJSON(out, membersFileForAudience))
@@ -4072,6 +4076,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			latestYM = ym
 			latestMembers = members
 			latestSummary = summary
+			latestMismatches = mismatches
 		}
 
 		fmt.Printf("  ✓ %s-%s: %d members (active: %d, MRR: €%.2f)\n",
@@ -4088,6 +4093,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 			Summary:     latestSummary,
 			Members:     latestMembers,
+			Mismatches:  latestMismatches,
 		}
 		writeTiers(dataDir, "latest", "", "members.json", tierJSON(out, membersFileForAudience))
 	}

@@ -53,6 +53,23 @@ type MembershipSubscription struct {
 	Discord            *string            `json:"discord"`
 	IsOrganization     bool               `json:"isOrganization,omitempty"`
 	ProductID          interface{}        `json:"productId,omitempty"`
+	// Raw Odoo subscription data; generate derives active / grace / lapsed
+	// from it at generation time (the status depends on the date).
+	OdooState     string              `json:"odooState,omitempty"` // 3_progress, 4_paused, 6_churn, …
+	EndDate       string              `json:"endDate,omitempty"`
+	OdooPartnerID int                 `json:"odooPartnerId,omitempty"`
+	Invoices      []MembershipInvoice `json:"invoices,omitempty"`
+}
+
+// MembershipInvoice is one invoice of a subscription.
+type MembershipInvoice struct {
+	ID           int     `json:"id"`
+	Date         string  `json:"date"`
+	DueDate      string  `json:"dueDate,omitempty"`
+	State        string  `json:"state,omitempty"`        // posted, draft, cancel
+	PaymentState string  `json:"paymentState,omitempty"` // not_paid, partial, in_payment, paid, reversed
+	Amount       float64 `json:"amount"`
+	Residual     float64 `json:"residual"`
 }
 
 type MembershipSnapshot struct {
@@ -105,7 +122,7 @@ func BuildMembershipSnapshot(products []MembershipProduct, odooURL, login, passw
 		[]interface{}{[]interface{}{
 			[]interface{}{"is_subscription", "=", true},
 			[]interface{}{"order_line.product_id", "in", ppIDsIface},
-			[]interface{}{"subscription_state", "in", []string{"3_progress", "4_paused"}},
+			[]interface{}{"subscription_state", "in", []string{"3_progress", "4_paused", "6_churn"}},
 		}}, nil)
 	if err != nil {
 		return empty, fmt.Errorf("order search: %w", err)
@@ -116,8 +133,19 @@ func BuildMembershipSnapshot(products []MembershipProduct, odooURL, login, passw
 		return empty, nil
 	}
 
+	orderFields := []string{"id", "name", "partner_id", "subscription_state", "start_date", "next_invoice_date", "recurring_monthly", "invoice_ids", "order_line"}
+	// end_date exists on subscription orders in recent Odoo versions; only
+	// ask for it when this database has it.
+	if fg, ferr := exec(odooURL, db, uid, password, "sale.order", "fields_get", []interface{}{[]string{"end_date"}}, map[string]interface{}{"attributes": []string{"type"}}); ferr == nil {
+		var defs map[string]interface{}
+		if json.Unmarshal(fg, &defs) == nil {
+			if _, ok := defs["end_date"]; ok {
+				orderFields = append(orderFields, "end_date")
+			}
+		}
+	}
 	ordersRaw, err := exec(odooURL, db, uid, password, "sale.order", "read", []interface{}{intSliceToIface(orderIDs)}, map[string]interface{}{
-		"fields": []string{"id", "name", "partner_id", "subscription_state", "start_date", "next_invoice_date", "recurring_monthly", "invoice_ids", "order_line"},
+		"fields": orderFields,
 	})
 	if err != nil {
 		return empty, fmt.Errorf("order read: %w", err)
@@ -143,7 +171,7 @@ func BuildMembershipSnapshot(products []MembershipProduct, odooURL, login, passw
 	invoiceMap := map[int]map[string]interface{}{}
 	if len(invoiceIDs) > 0 {
 		invRaw, err := exec(odooURL, db, uid, password, "account.move", "read", []interface{}{mapKeys(invoiceIDs)}, map[string]interface{}{
-			"fields": []string{"id", "invoice_date", "amount_total", "payment_state"},
+			"fields": []string{"id", "invoice_date", "invoice_date_due", "amount_total", "amount_residual", "payment_state", "state"},
 		})
 		if err == nil {
 			var invs []map[string]interface{}
@@ -257,8 +285,28 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 
 		subState, _ := order["subscription_state"].(string)
 		status := "active"
-		if subState == "4_paused" {
+		switch subState {
+		case "4_paused":
 			status = "paused"
+		case "6_churn":
+			status = "churned"
+		}
+		endDate, _ := order["end_date"].(string)
+		var invoices []MembershipInvoice
+		if invIDs, ok := order["invoice_ids"].([]interface{}); ok {
+			for _, iid := range invIDs {
+				inv := invoiceMap[int(iid.(float64))]
+				if inv == nil {
+					continue
+				}
+				d, _ := inv["invoice_date"].(string)
+				due, _ := inv["invoice_date_due"].(string)
+				st, _ := inv["state"].(string)
+				ps, _ := inv["payment_state"].(string)
+				amt, _ := inv["amount_total"].(float64)
+				res, _ := inv["amount_residual"].(float64)
+				invoices = append(invoices, MembershipInvoice{ID: int(iid.(float64)), Date: d, DueDate: due, State: st, PaymentState: ps, Amount: amt, Residual: res})
+			}
 		}
 
 		recurringMonthly, _ := order["recurring_monthly"].(float64)
@@ -310,6 +358,10 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 			CreatedAt:          startDate,
 			IsOrganization:     isOrg,
 			ProductID:          tmplID,
+			OdooState:          subState,
+			EndDate:            endDate,
+			OdooPartnerID:      partnerID,
+			Invoices:           invoices,
 		})
 	}
 

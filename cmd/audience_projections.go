@@ -75,22 +75,46 @@ func membersFileForAudience(f MembersOutputFile, a Audience) MembersOutputFile {
 	case AudienceStewards:
 		return f
 	case AudienceMembers:
+		// Members in good standing (active, grace), by first name; no
+		// lapsed members, contact keys, Odoo ids or mismatches.
 		out := f
-		out.Members = make([]Member, len(f.Members))
-		for i, m := range f.Members {
+		out.Mismatches = nil
+		out.Members = []Member{}
+		for _, m := range f.Members {
+			if m.Status == "lapsed" {
+				continue
+			}
 			m.Accounts.EmailHash = ""
 			m.SubscriptionURL = ""
+			m.OdooPartnerID = 0
 			if m.LatestPayment != nil {
 				lp := *m.LatestPayment
 				lp.URL = ""
 				m.LatestPayment = &lp
 			}
-			out.Members[i] = m
+			out.Members = append(out.Members, m)
 		}
 		return out
 	default:
+		// Public: the counts, and organisations in good standing by name.
+		// Individuals are never listed.
 		out := f
+		out.Mismatches = nil
 		out.Members = []Member{}
+		for _, m := range f.Members {
+			if !m.IsOrganization || m.Status == "lapsed" {
+				continue
+			}
+			out.Members = append(out.Members, Member{
+				OrganizationName: m.OrganizationName,
+				FirstName:        m.FirstName,
+				Plan:             m.Plan,
+				Amount:           m.Amount,
+				Interval:         m.Interval,
+				Status:           m.Status,
+				IsOrganization:   true,
+			})
+		}
 		return out
 	}
 }

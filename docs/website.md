@@ -70,7 +70,7 @@ there.
 | `events/images/<id>.<ext>` | cover images — **only in public/**; every tier's `events.json` `coverImageLocal` points here | (read from public) | month |
 | `calendars/public.ics` | room bookings feed (identical in all tiers) | = | month |
 | `events.md`, `rooms.md`, `README.md` | markdown for bots and humans (identical) | = | `latest/` |
-| `members.json` | `summary` only (`members: []`) | who is a member, plan, status, amount; no email hash, no Stripe urls | month, `latest/` |
+| `members.json` | `summary` (active incl. grace, grace, lapsed, monthly/yearly, MRR) + organisations in good standing by name (`organizationName`, plan, status) — no individuals | members in good standing (status `active` or `grace`, `graceEndsAt`), first name, plan, amount — no email hash, no Odoo ids, no lapsed members | month, `latest/` (§16) |
 | `contributors.json` | Discord display identity (id, username, displayName, avatar), token counts, message counts — no wallet address | same | month, year, `latest/` (top contributors) |
 | `profiles/<username>.json` | **absent** | full (their own guild posts) | `latest/` |
 | `images.json` | photos from public channels only: author identity, reactions, `filePath` to the public copy — `message` is empty | every photo + message text; `filePath` to the public copy (empty for non-public channels) | month, `latest/` |
@@ -383,7 +383,27 @@ first:
   and a wallet as public knowledge, not as a secret this file keeps.
 - Excluded mints (test mints, `metadata.excluded`) are left out.
 
-## 16. Checklist for a new page
+## 16. Members — Odoo subscriptions are the source of truth
+
+`members.json` lists each member once, from the Odoo subscription
+(sale order, `is_subscription`) when there is one, otherwise from Stripe:
+
+- `status`: `active`, `grace` (an invoice unpaid past its due date, or the
+  subscription paused — still a member until `graceEndsAt`, 15 days later)
+  or `lapsed` (churned, or grace expired). `statusSince` is when the member
+  entered it. Stripe-only members: active/trialing → `active`,
+  past_due/paused → `grace`, canceled → `lapsed`.
+- `summary.activeMembers` counts members in good standing (active + grace);
+  `graceMembers` and `lapsedMembers` break it down. MRR counts active +
+  grace.
+- `public/`: counts, and organisations in good standing by name
+  (`organizationName`). `members/`: members in good standing by first
+  name; lapsed members are not listed. `stewards/`: everyone, with Odoo
+  ids, and `mismatches` (Odoo vs Stripe: `status_differs`,
+  `no_odoo_subscription`).
+- No file for months after the current one.
+
+## 17. Checklist for a new page
 
 1. Which audience? → which tier root. If the answer is "stewards", stop: not a website page.
 2. Does the file exist in that tier for that scope (month / year / latest)? See the table.

@@ -9,7 +9,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,11 +52,20 @@ type Member struct {
 	SubscriptionURL    string         `json:"subscriptionUrl,omitempty"`
 	CreatedAt          string         `json:"createdAt"`
 	IsOrganization     bool           `json:"isOrganization,omitempty"`
+	// StatusSince: when the member entered the current status; GraceEndsAt:
+	// for grace, the day membership lapses if still unpaid (members_status.go).
+	// OrganizationName: the full name, for organisations only (public).
+	OrganizationName string `json:"organizationName,omitempty"`
+	StatusSince      string `json:"statusSince,omitempty"`
+	GraceEndsAt      string `json:"graceEndsAt,omitempty"`
+	OdooPartnerID    int    `json:"odooPartnerId,omitempty"` // stewards only
 }
 
 type MembersSummary struct {
 	TotalMembers   int          `json:"totalMembers"`
-	ActiveMembers  int          `json:"activeMembers"`
+	ActiveMembers  int          `json:"activeMembers"` // active + grace: members in good standing
+	GraceMembers   int          `json:"graceMembers"`
+	LapsedMembers  int          `json:"lapsedMembers"`
 	MonthlyMembers int          `json:"monthlyMembers"`
 	YearlyMembers  int          `json:"yearlyMembers"`
 	MRR            MemberAmount `json:"mrr"`
@@ -69,7 +77,9 @@ type MembersOutputFile struct {
 	ProductID   string         `json:"productId"`
 	GeneratedAt string         `json:"generatedAt"`
 	Summary     MembersSummary `json:"summary"`
-	Members     []Member       `json:"members"`
+	// Mismatches between Odoo (the source of truth) and Stripe — stewards only.
+	Mismatches []MemberMismatch `json:"mismatches,omitempty"`
+	Members    []Member         `json:"members"`
 }
 
 type providerSubscription struct {
@@ -90,6 +100,11 @@ type providerSubscription struct {
 	Discord            *string        `json:"discord"`
 	IsOrganization     bool           `json:"isOrganization,omitempty"`
 	ProductID          interface{}    `json:"productId,omitempty"`
+	// Odoo subscriptions (the source of truth): raw state and invoices.
+	OdooState     string                         `json:"odooState,omitempty"`
+	EndDate       string                         `json:"endDate,omitempty"`
+	OdooPartnerID int                            `json:"odooPartnerId,omitempty"`
+	Invoices      []odoosource.MembershipInvoice `json:"invoices,omitempty"`
 }
 
 type providerSnapshot struct {
@@ -435,70 +450,24 @@ func sanitizePersonName(s string) string {
 // ── Merge ───────────────────────────────────────────────────────────────────
 
 func mergeProviderSnapshots(snapshots []providerSnapshot) []Member {
-	seen := map[string]Member{}
-
-	// Process stripe first (priority), then odoo
-	sortedSnaps := make([]providerSnapshot, len(snapshots))
-	copy(sortedSnaps, snapshots)
-	for i := range sortedSnaps {
-		for j := i + 1; j < len(sortedSnaps); j++ {
-			if sortedSnaps[i].Provider != "stripe" && sortedSnaps[j].Provider == "stripe" {
-				sortedSnaps[i], sortedSnaps[j] = sortedSnaps[j], sortedSnaps[i]
-			}
-		}
-	}
-
-	for _, snap := range sortedSnaps {
-		for _, sub := range snap.Subscriptions {
-			if _, ok := seen[sub.EmailHash]; ok {
-				continue
-			}
-			seen[sub.EmailHash] = Member{
-				ID:     sub.ID,
-				Source: sub.Source,
-				Accounts: MemberAccounts{
-					EmailHash: sub.EmailHash,
-					Discord:   sub.Discord,
-				},
-				FirstName:          sub.FirstName,
-				Plan:               sub.Plan,
-				Amount:             sub.Amount,
-				Interval:           sub.Interval,
-				Status:             sub.Status,
-				CurrentPeriodStart: sub.CurrentPeriodStart,
-				CurrentPeriodEnd:   sub.CurrentPeriodEnd,
-				LatestPayment:      sub.LatestPayment,
-				SubscriptionURL:    sub.SubscriptionURL,
-				CreatedAt:          sub.CreatedAt,
-				IsOrganization:     sub.IsOrganization,
-			}
-		}
-	}
-
-	var result []Member
-	for _, m := range seen {
-		result = append(result, m)
-	}
-
-	// Sort by createdAt, then id: map order must not leak into the file
-	// (members sharing a creation day would swap between runs and move the
-	// tier hashes in hashes.json).
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].CreatedAt != result[j].CreatedAt {
-			return result[i].CreatedAt < result[j].CreatedAt
-		}
-		return result[i].ID < result[j].ID
-	})
-
-	return result
+	now := time.Now().In(BrusselsTZ())
+	members, _ := mergeProviderSnapshotsAt(snapshots, now.Year(), int(now.Month()))
+	return members
 }
 
 func calculateMembersSummary(members []Member) MembersSummary {
 	var active, monthly, yearly int
 	var monthlyMRR, yearlyMRR float64
 
+	var grace, lapsed int
 	for _, m := range members {
-		if m.Status == "active" || m.Status == "trialing" {
+		switch m.Status {
+		case "grace":
+			grace++
+		case "lapsed":
+			lapsed++
+		}
+		if m.Status == "active" || m.Status == "grace" {
 			active++
 			if m.Plan == "monthly" {
 				monthly++
@@ -515,6 +484,8 @@ func calculateMembersSummary(members []Member) MembersSummary {
 	return MembersSummary{
 		TotalMembers:   len(members),
 		ActiveMembers:  active,
+		GraceMembers:   grace,
+		LapsedMembers:  lapsed,
 		MonthlyMembers: monthly,
 		YearlyMembers:  yearly,
 		MRR:            MemberAmount{Value: mrr, Decimals: 2, Currency: "EUR"},
