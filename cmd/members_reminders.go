@@ -345,7 +345,7 @@ sent reminders are recorded in reminders-sent.json and never sent twice.
 			}
 		}
 		e := ReminderPlanEntry{Key: "test", Reason: reason, Status: "grace", FirstName: "Alex", Organisation: HasFlag(args, "--organisation"),
-			GraceEndsAt: addDays(time.Now().In(BrusselsTZ()).Format("2006-01-02"), membershipGraceDays), PaymentReference: "+++000/0000/00097+++", OdooPartnerID: 1}
+			GraceEndsAt: addDays(time.Now().In(BrusselsTZ()).Format("2006-01-02"), membershipGraceDays), PaymentReference: "+++000/0000/00101+++", OdooPartnerID: 1} // the valid reference for partner 1 (a dummy)
 		secret := os.Getenv("RENEW_LINK_SECRET")
 		if secret == "" {
 			secret = "test-secret-not-for-production"
