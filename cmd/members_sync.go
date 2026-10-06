@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -141,10 +139,10 @@ func MembersSync(args []string) error {
 	salt := os.Getenv("EMAIL_HASH_SALT")
 
 	if salt == "" {
-		// Generate a random salt and persist it
-		salt = generateAndSaveSalt()
-		// Never print the salt: this output lands in cron logs.
-		fmt.Printf("  %sGenerated a new EMAIL_HASH_SALT (saved to config.env)%s\n", Fmt.Dim, Fmt.Reset)
+		// Never invent one: a new salt silently re-identifies every member
+		// (every email hash changes, and the website no longer recognises
+		// anyone). The salt is shared with the website and set by hand.
+		return fmt.Errorf("EMAIL_HASH_SALT is not set in config.env — set the shared salt (the website's) before pulling members; chb never generates one")
 	}
 
 	stripeOnly := HasFlag(args, "--stripe-only")
@@ -403,21 +401,6 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
 		Subscriptions: result,
 	}
-}
-
-func generateAndSaveSalt() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	salt := "prod-" + hex.EncodeToString(b)
-
-	// Persist to config.env
-	configPath := configEnvPath()
-	existing := loadConfigEnv(configPath)
-	existing["EMAIL_HASH_SALT"] = salt
-	saveConfigEnv(configPath, existing)
-	os.Setenv("EMAIL_HASH_SALT", salt)
-
-	return salt
 }
 
 func hashEmail(email, salt string) string {

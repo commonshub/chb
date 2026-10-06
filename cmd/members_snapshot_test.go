@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -41,5 +42,16 @@ func TestStripeMonthSnapshotHistory(t *testing.T) {
 	}
 	if n := count(2026, 10); n != 2 {
 		t.Errorf("October 2026: %d members, want 2 (a, b)", n)
+	}
+}
+
+func TestMembersSyncRefusesWithoutSalt(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DATA_DIR", tmp+"/data")
+	t.Setenv("APP_DATA_DIR", tmp+"/app")
+	t.Setenv("EMAIL_HASH_SALT", "")
+	err := MembersSync(nil)
+	if err == nil || !strings.Contains(err.Error(), "EMAIL_HASH_SALT") {
+		t.Fatalf("must refuse without a salt, got %v", err)
 	}
 }
