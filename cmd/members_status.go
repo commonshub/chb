@@ -124,9 +124,14 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 		}
 	}
 	toMember := func(sub providerSubscription, status, since, graceEnds string) Member {
+		// A full name only for a verified organisation: the Odoo partner
+		// is a company, or the name carries a legal form. The plan alone
+		// (an individual on the non-profit plan) does not make anyone an
+		// organisation: individuals are never named in public, and the
+		// members tier shows first names only.
 		orgName := ""
-		if sub.IsOrganization {
-			orgName = strings.TrimSpace(sub.FirstName + " " + sub.LastName)
+		if full := strings.TrimSpace(sub.FirstName + " " + sub.LastName); sub.IsCompany || nameHasLegalForm(full) {
+			orgName = full
 		}
 		return Member{
 			OrganizationName:   orgName,

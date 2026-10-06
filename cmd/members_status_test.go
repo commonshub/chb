@@ -40,6 +40,8 @@ func TestMergeOdooFirstAndMismatches(t *testing.T) {
 		{Provider: "odoo", Subscriptions: []providerSubscription{
 			{ID: "odoo-1", Source: "odoo", EmailHash: "a", FirstName: "Ann", OdooState: "6_churn", EndDate: "2026-10-02", Plan: "monthly", CreatedAt: "2025-01-01"},
 			{ID: "odoo-2", Source: "odoo", EmailHash: "c", FirstName: "XL", LastName: "Collective SRL", IsOrganization: true, OdooState: "3_progress", Plan: "yearly", CreatedAt: "2024-01-01"},
+			{ID: "odoo-4", Source: "odoo", EmailHash: "e", FirstName: "Vincent", LastName: "Doe", IsOrganization: true, OdooState: "3_progress", Plan: "yearly", CreatedAt: "2024-02-01"}, // an individual on the non-profit plan
+			{ID: "odoo-5", Source: "odoo", EmailHash: "f", FirstName: "Psyche", IsOrganization: true, IsCompany: true, OdooState: "3_progress", Plan: "yearly", CreatedAt: "2024-03-01"},
 			{ID: "odoo-3", Source: "odoo", EmailHash: "d", FirstName: "Old", OdooState: "6_churn", EndDate: "2026-08-01", CreatedAt: "2023-01-01"},
 		}},
 	}
@@ -70,7 +72,14 @@ func TestMergeOdooFirstAndMismatches(t *testing.T) {
 
 	f := MembersOutputFile{Members: members, Mismatches: mism}
 	pub := membersFileForAudience(f, AudiencePublic)
-	if len(pub.Members) != 1 || pub.Members[0].OrganizationName != "XL Collective SRL" || pub.Mismatches != nil {
+	if byID["odoo-4"].OrganizationName != "" {
+		t.Error("an individual on the non-profit plan must not get an organisation name")
+	}
+	names := map[string]bool{}
+	for _, m := range pub.Members {
+		names[m.OrganizationName] = true
+	}
+	if len(pub.Members) != 2 || !names["XL Collective SRL"] || !names["Psyche"] || pub.Mismatches != nil {
 		t.Errorf("public: organisations only, no mismatches: %+v", pub)
 	}
 	mem := membersFileForAudience(f, AudienceMembers)

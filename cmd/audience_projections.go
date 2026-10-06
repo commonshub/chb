@@ -102,7 +102,7 @@ func membersFileForAudience(f MembersOutputFile, a Audience) MembersOutputFile {
 		out.Mismatches = nil
 		out.Members = []Member{}
 		for _, m := range f.Members {
-			if !m.IsOrganization || m.Status == "lapsed" {
+			if m.OrganizationName == "" || m.Status == "lapsed" {
 				continue
 			}
 			out.Members = append(out.Members, Member{

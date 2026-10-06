@@ -104,6 +104,7 @@ type providerSubscription struct {
 	OdooState     string                         `json:"odooState,omitempty"`
 	EndDate       string                         `json:"endDate,omitempty"`
 	OdooPartnerID int                            `json:"odooPartnerId,omitempty"`
+	IsCompany     bool                           `json:"isCompany,omitempty"`
 	Invoices      []odoosource.MembershipInvoice `json:"invoices,omitempty"`
 }
 

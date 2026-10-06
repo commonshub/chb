@@ -58,6 +58,7 @@ type MembershipSubscription struct {
 	OdooState     string              `json:"odooState,omitempty"` // 3_progress, 4_paused, 6_churn, …
 	EndDate       string              `json:"endDate,omitempty"`
 	OdooPartnerID int                 `json:"odooPartnerId,omitempty"`
+	IsCompany     bool                `json:"isCompany,omitempty"` // the Odoo partner is a company (not the plan)
 	Invoices      []MembershipInvoice `json:"invoices,omitempty"`
 }
 
@@ -361,6 +362,7 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 			OdooState:          subState,
 			EndDate:            endDate,
 			OdooPartnerID:      partnerID,
+			IsCompany:          isCompany,
 			Invoices:           invoices,
 		})
 	}
