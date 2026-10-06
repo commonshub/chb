@@ -270,9 +270,10 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 
 		active := sub.Status == "active" || sub.Status == "trialing" || sub.Status == "past_due"
 		if active {
-			if sub.CurrentPeriodStart > lastDay || sub.CurrentPeriodEnd < monthStart {
-				continue
-			}
+			// Still running today and created before the month ended: it
+			// was a member that month. (Its current billing period only
+			// overlaps the current month, so checking it dropped every
+			// monthly subscriber from past months on a rebuild.)
 		} else if sub.Status == "canceled" {
 			canceledAt := sub.CanceledAt
 			if canceledAt == nil {
