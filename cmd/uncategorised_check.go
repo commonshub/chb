@@ -47,7 +47,7 @@ func uncategorisedHubTransactions(dataDir, year, month string) []uncategorisedTx
 		if _, excluded := tx.Metadata["excluded"]; excluded {
 			continue
 		}
-		if strings.TrimSpace(tx.Category) != "" {
+		if strings.TrimSpace(tx.Category) != "" && !isNoCategory(tx.Category) {
 			continue
 		}
 		out = append(out, uncategorisedTx{ID: tx.ID, Account: tx.AccountSlug, Currency: tx.Currency, Amount: tx.Amount, Timestamp: tx.Timestamp})

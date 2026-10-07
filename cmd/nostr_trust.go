@@ -38,6 +38,10 @@ var defaultNostrRelays = []string{"wss://relay.commonshub.brussels"}
 var defaultTrustedAuthors = []string{
 	"npub1wfaa749vdzd8tnu823rd6fpqj8twhlqen02clnsuv68cgpgcxjfqcyrgut", // commonshub.brussels website (727bdf54…)
 	"npub1d8z6e7rkscejnym7m3v5036fh04s94755anqsvzxg3xp3jn4l6gsvza3qc", // chb
+	// token-bot (3a8e2823…): a seed since 2026-10-07 (Xavier), so the
+	// steward keys it attests (Discord role containing "steward") may
+	// change categories.
+	"npub1828zsgu6xv0j0y0axr4agq5uf0yh8djxtd89guqgg8vuymqgc8es3ge93h",
 }
 
 // NostrSettings is settings.json `nostr`.
@@ -461,7 +465,24 @@ func nostrCategoryAuthors() map[string]bool {
 // collective, spread, exclude) of an annotation whose author is trusted
 // but not a category author: a member's note still shows, the category
 // falls back to rules and Odoo.
+//
+// It also normalises the category: "uncategorized" (and the legacy
+// "none") means no category — the rules and Odoo decide, and the hourly
+// check still flags it. "other" is a deliberate choice and stays.
 func restrictAnnotation(a *TxAnnotation, categoryAuthors map[string]bool) *TxAnnotation {
+	if a != nil && isNoCategory(a.Category) {
+		cp := *a
+		cp.Category = ""
+		var tags [][]string
+		for _, t := range a.Tags {
+			if len(t) > 0 && t[0] == "category" {
+				continue
+			}
+			tags = append(tags, t)
+		}
+		cp.Tags = tags
+		a = &cp
+	}
 	if a == nil || categoryAuthors[strings.ToLower(a.Author)] {
 		return a
 	}
@@ -479,6 +500,15 @@ func restrictAnnotation(a *TxAnnotation, categoryAuthors map[string]bool) *TxAnn
 	}
 	cp.Tags = tags
 	return &cp
+}
+
+// isNoCategory: the category values that mean "not categorised".
+func isNoCategory(c string) bool {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case "uncategorized", "uncategorised", "none":
+		return true
+	}
+	return false
 }
 
 func annotationTrusted(a *TxAnnotation, trusted map[string]bool) bool {

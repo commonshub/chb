@@ -147,10 +147,17 @@ Publish on `wss://relay.commonshub.brussels` (settings.json `nostr.relays`).
 - A trust change takes effect at the next pull. Annotations by a
   no-longer-trusted author disappear from the published data at that pull.
 
+**Uncategorized and other.** `["category","uncategorized"]` (and the
+legacy `none`) means *no category*: the rules and Odoo decide, and the
+hourly categories check still flags the record. `["category","other"]` is a
+steward's deliberate choice and counts as categorised.
+
 **Only stewards classify money.** Among trusted authors, the money fields
 of an annotation — `category`, `collective`, `spread`, `exclude` — count
-only from the seeds and this instance's key, the keys a seed follows (the
-bots, e.g. token-bot), and keys a seed attests with a steward role
+only from the seeds (the website, chb and, since v3.39.0, token-bot) and
+this instance's key, the keys a seed follows, and keys a seed attests with
+a steward role (token-bot attests a member as steward when they hold a
+Discord role whose name contains "steward")
 (`nostr.categoryRoles`, default `steward`). A member's annotation still
 adds its note, event and tags; its category is ignored and the rules or
 Odoo decide. Per record the newest annotation wins; a member annotating a

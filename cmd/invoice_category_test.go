@@ -269,3 +269,23 @@ func TestRestrictAnnotationToStewards(t *testing.T) {
 		t.Error("steward category kept")
 	}
 }
+
+func TestUncategorizedAnnotationMeansNoCategory(t *testing.T) {
+	all := map[string]bool{"s": true}
+	for _, c := range []string{"uncategorized", "none", "Uncategorized"} {
+		got := restrictAnnotation(&TxAnnotation{Author: "s", Category: c, Tags: [][]string{{"category", c}, {"t", "x"}}}, all)
+		if got.Category != "" || len(got.Tags) != 1 {
+			t.Errorf("%s: %+v", c, got)
+		}
+	}
+	if got := restrictAnnotation(&TxAnnotation{Author: "s", Category: "other"}, all); got.Category != "other" {
+		t.Errorf("other must stay: %q", got.Category)
+	}
+	if !isNoCategory("uncategorized") || isNoCategory("other") {
+		t.Error("isNoCategory")
+	}
+	seeds := nostrTrustSeeds()
+	if !seeds["3a8e28239a331f2791fd30ebd4029c4bc973b6465b4e54700841d9c26c08c1f3"] {
+		t.Error("token-bot must be a default seed")
+	}
+}
