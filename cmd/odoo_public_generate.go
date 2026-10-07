@@ -888,6 +888,9 @@ type BookingRow struct {
 	Public   bool    `json:"public"` // matches an event published on the public calendar
 	Title    string  `json:"title,omitempty"`
 	EventURL string  `json:"eventUrl,omitempty"`
+	// Payment: "tokens" | "euros" | null (unknown), from the calendar
+	// event description (cmd/booking_payment.go).
+	Payment *string `json:"payment"`
 }
 
 type RentalRow struct {
@@ -1257,6 +1260,9 @@ func generateAccountingFiles(dataDir string) (int, error) {
 				Hours: round2(b.End.Sub(b.Start).Hours()), Title: strings.TrimSpace(b.Title)}
 			if ev, ok := matchPublicEvent(eventsByMonth[ym][start.Format("2006-01-02")], b.Start, b.Title); ok {
 				row.Public, row.Title, row.EventURL = true, ev.Name, ev.URL
+			}
+			if p := bookingPayment(b.Description); p != "" {
+				row.Payment = &p
 			}
 			get(ym).bookings = append(get(ym).bookings, row)
 		}

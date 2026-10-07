@@ -14,11 +14,12 @@ import (
 )
 
 type BookingEntry struct {
-	UID   string
-	Title string
-	Start time.Time
-	End   time.Time
-	Room  string
+	UID         string
+	Title       string
+	Description string
+	Start       time.Time
+	End         time.Time
+	Room        string
 }
 
 func loadAllBookings() ([]BookingEntry, error) {
@@ -99,11 +100,12 @@ func loadAllBookings() ([]BookingEntry, error) {
 
 				for _, ev := range events {
 					bookings = append(bookings, BookingEntry{
-						UID:   ev.UID,
-						Title: ev.Summary,
-						Start: ev.Start,
-						End:   ev.End,
-						Room:  roomName,
+						UID:         ev.UID,
+						Title:       ev.Summary,
+						Description: ev.Description,
+						Start:       ev.Start,
+						End:         ev.End,
+						Room:        roomName,
 					})
 				}
 			}

@@ -211,8 +211,9 @@ group many buyers.
   ],
   "bookings": [
     { "room": "ostrom", "roomName": "Ostrom Room", "start": "2026-08-26T18:00:00+02:00", "end": "2026-08-26T22:00:00+02:00",
-      "hours": 4, "public": true, "title": "Innerpreneurs Summer gathering", "eventUrl": "https://lu.ma/…" },
-    { "room": "satoshi", "roomName": "Satoshi Room", "start": "…", "end": "…", "hours": 2, "public": false }
+      "hours": 4, "public": true, "title": "Innerpreneurs Summer gathering", "eventUrl": "https://lu.ma/…", "payment": "euros" },
+    { "room": "satoshi", "roomName": "Satoshi Room", "start": "…", "end": "…", "hours": 2, "public": false, "payment": "tokens" },
+    { "room": "mushroom", "roomName": "Mush Room", "start": "…", "end": "…", "hours": 1, "public": false, "payment": null }
   ],
   "rentals": [
     { "uri": "odoo:…:account.move:7210", "date": "2026-08-10", "room": "ostrom", "product": "Ostrom Room", "quantity": 4,
@@ -225,6 +226,14 @@ group many buyers.
 - **`bookings`** come from the room calendars: when a room was occupied.
   `public` is true when the booking hosts an event on the public calendar,
   matched by day and title. Only then does public see the title.
+  `payment` is `"tokens"`, `"euros"` or `null` (unknown), read from the
+  calendar event's description: the structured line `Paid: 2 CHT` /
+  `Paid: €80 (card)` / `Paid: invoice` wins; else /book's "Booked by … for
+  2.00 CHT" or "paid in tokens" → tokens; an Odoo invoice or order
+  reference (CHB/2026/…, S00123, a structured communication), "invoice",
+  "factuur", Stripe, card or a € amount → euros. The key is always present
+  (null when unknown), in every tier. Calendar entries are not linked to
+  invoices, so a euro booking without such a mention stays null.
 - **`rentals`** come from customer invoice lines on the room-rental income
   account (700100), dated by the invoice. `uri` is the invoice; a trusted
   annotation on it adds `event` and `note` (not in `public/` for an
