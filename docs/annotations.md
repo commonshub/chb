@@ -62,7 +62,7 @@ URI's kind, as in the third column.
 | record | URI | `k` | where to find it |
 |---|---|---|---|
 | on-chain transaction (Gnosis = 100, Celo = 42220; Monerium EURe included) | `ethereum:<chainId>:tx:<hash>` | `ethereum:tx` | `transactions.json` `id` |
-| Stripe payment, payout, fee | `stripe:txn_…` | `stripe:txn` | `transactions.json` `id` |
+| Stripe payment, payout, fee | `stripe:txn_…` (the charge's `stripe:ch_…` works too) | `stripe:txn` | `transactions.json` `id` |
 | bank transaction (KBC) | `iban:<iban>:tx:<line id>` | `iban:tx` | `transactions.json` `id` |
 | vendor bill, vendor credit note | `odoo:<host>:<db>:account.move:<id>` | `odoo:account.move` | `expenses.json` / `pending-bills.json` `uri` |
 | customer invoice, credit note | `odoo:<host>:<db>:account.move:<id>` | `odoo:account.move` | `customers.json` `invoices[]`, `bookings.json` rentals `uri` |
@@ -146,6 +146,16 @@ Publish on `wss://relay.commonshub.brussels` (settings.json `nostr.relays`).
   attested keys with their roles).
 - A trust change takes effect at the next pull. Annotations by a
   no-longer-trusted author disappear from the published data at that pull.
+
+**Only stewards classify money.** Among trusted authors, the money fields
+of an annotation — `category`, `collective`, `spread`, `exclude` — count
+only from the seeds and this instance's key, the keys a seed follows (the
+bots, e.g. token-bot), and keys a seed attests with a steward role
+(`nostr.categoryRoles`, default `steward`). A member's annotation still
+adds its note, event and tags; its category is ignored and the rules or
+Odoo decide. Per record the newest annotation wins; a member annotating a
+record after a steward replaces the steward's category with the rules'
+until a steward annotates again.
 
 Annotations by anyone else are ignored, not rejected: they stay on Nostr
 and can be shown as suggestions.

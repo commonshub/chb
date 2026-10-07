@@ -195,7 +195,8 @@ func undescribedBurns(dataDir string, months []string) []uncategorisedTx {
 			if _, excluded := tx.Metadata["excluded"]; excluded {
 				continue
 			}
-			if strings.TrimSpace(stringMetadata(tx.Metadata, "description")) != "" {
+			if strings.TrimSpace(stringMetadata(tx.Metadata, "description")) != "" ||
+				strings.TrimSpace(stringMetadata(tx.Metadata, "note")) != "" {
 				continue
 			}
 			out = append(out, uncategorisedTx{ID: tx.ID, Account: tx.AccountSlug, Currency: tx.Currency, Amount: tx.Amount, Timestamp: tx.Timestamp})

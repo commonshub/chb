@@ -55,6 +55,11 @@ type NostrSettings struct {
 	// guild. One level only, like follows.
 	TrustAttestations *bool    `json:"trustAttestations,omitempty"`
 	AttestationRoles  []string `json:"attestationRoles,omitempty"`
+	// CategoryRoles (default steward): attested keys whose annotations may
+	// set category, collective, spread and exclude. Seeds and the keys
+	// they follow (bots, e.g. token-bot) always may. Other trusted
+	// authors (members) only add notes, events and tags.
+	CategoryRoles []string `json:"categoryRoles,omitempty"`
 }
 
 // defaultAttestationRoles: roles an attestation must carry for its key to
@@ -407,6 +412,75 @@ func annotationsFromEvents(events map[string]NostrEvent, trusted map[string]bool
 
 // annotationTrusted is the generate-time check on cached annotations
 // (caches written before v3.18 may hold untrusted ones).
+// nostrCategoryAuthors: who may classify money (category, collective,
+// spread, exclude) — Xavier: only stewards. The seeds and our own key, the
+// keys they follow (the bots), and keys a seed attests with a category
+// role (default steward). Offline, like nostrTrustedPubkeys.
+func nostrCategoryAuthors() map[string]bool {
+	seeds := nostrTrustSeeds()
+	out := map[string]bool{}
+	for k := range seeds {
+		out[k] = true
+	}
+	t := loadNostrTrustFile(DataDir())
+	if nostrTrustFollows() {
+		for hex, by := range t.Follows {
+			for _, seed := range by {
+				if seeds[seed] {
+					out[hex] = true
+					break
+				}
+			}
+		}
+	}
+	roles := map[string]bool{}
+	list := loadNostrSettings().CategoryRoles
+	if len(list) == 0 {
+		list = []string{"steward"}
+	}
+	for _, r := range list {
+		roles[strings.ToLower(strings.TrimSpace(r))] = true
+	}
+	if nostrTrustAttestations() {
+		for hex, att := range t.Attested {
+			if !seeds[att.By] {
+				continue
+			}
+			for _, r := range att.Roles {
+				if roles[strings.ToLower(r)] {
+					out[hex] = true
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// restrictAnnotation drops the money classification (category,
+// collective, spread, exclude) of an annotation whose author is trusted
+// but not a category author: a member's note still shows, the category
+// falls back to rules and Odoo.
+func restrictAnnotation(a *TxAnnotation, categoryAuthors map[string]bool) *TxAnnotation {
+	if a == nil || categoryAuthors[strings.ToLower(a.Author)] {
+		return a
+	}
+	if a.Category == "" && a.Collective == "" && len(a.Spread) == 0 && a.Exclude == "" {
+		return a
+	}
+	cp := *a
+	cp.Category, cp.Collective, cp.Spread, cp.Exclude = "", "", nil, ""
+	var tags [][]string
+	for _, t := range a.Tags {
+		if len(t) > 0 && (t[0] == "category" || t[0] == "collective") {
+			continue
+		}
+		tags = append(tags, t)
+	}
+	cp.Tags = tags
+	return &cp
+}
+
 func annotationTrusted(a *TxAnnotation, trusted map[string]bool) bool {
 	return a != nil && trusted[strings.ToLower(a.Author)]
 }
@@ -467,6 +541,7 @@ func shortEventID(id string) string {
 func loadTransactionAnnotations(dataDir string) map[string]*TxAnnotation {
 	out := map[string]*TxAnnotation{}
 	trusted := nostrTrustedPubkeys()
+	classifiers := nostrCategoryAuthors()
 	for _, ym := range dataMonthRange(dataDir) {
 		data, err := os.ReadFile(nostrsource.Path(dataDir, ym[:4], ym[5:], nostrsource.AnnotationsFile))
 		if err != nil {
@@ -479,7 +554,7 @@ func loadTransactionAnnotations(dataDir string) map[string]*TxAnnotation {
 		for uri, a := range cache.Annotations {
 			if annotationTrusted(a, trusted) {
 				if cur, ok := out[uri]; !ok || a.CreatedAt > cur.CreatedAt {
-					out[uri] = a
+					out[uri] = restrictAnnotation(a, classifiers)
 				}
 			}
 		}

@@ -3017,13 +3017,14 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// the legacy stripe-annotations.json is no longer read).
 	nostrAnnotations := map[string]*TxAnnotation{}
 	trustedAuthors := nostrTrustedPubkeys()
+	classifiers := nostrCategoryAuthors() // only stewards (and seeds, bots) set categories
 	annotationsPath := nostrsource.Path(dataDir, year, month, nostrsource.AnnotationsFile)
 	if data, err := os.ReadFile(annotationsPath); err == nil {
 		var cache NostrAnnotationCache
 		if json.Unmarshal(data, &cache) == nil {
 			for k, v := range cache.Annotations {
 				if annotationTrusted(v, trustedAuthors) {
-					nostrAnnotations[k] = v
+					nostrAnnotations[k] = restrictAnnotation(v, classifiers)
 				}
 			}
 		}
@@ -3092,9 +3093,14 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				uri = tx.ID
 			}
 
-			// 1. Nostr annotations (highest priority)
-			if uri != "" {
-				if ann, ok := nostrAnnotations[uri]; ok {
+			// 1. Nostr annotations (highest priority), keyed by the URI
+			// built above or by the published id (stripe:txn_… for Stripe,
+			// what the website and Discord annotate); the newest wins.
+			if ann, ok := nostrAnnotations[uri]; ok || tx.ID != uri {
+				if alt, okAlt := nostrAnnotations[tx.ID]; okAlt && tx.ID != "" && (!ok || alt.CreatedAt > ann.CreatedAt) {
+					ann, ok = alt, true
+				}
+				if ok && ann != nil {
 					if ann.Category != "" {
 						tx.Category = ann.Category
 					}

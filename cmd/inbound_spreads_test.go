@@ -36,6 +36,7 @@ func TestRebuildInboundSpreadsAndAccrualAggregation(t *testing.T) {
 	  "annotations": {
 	    "stripe:ch_aaa": {
 	      "uri": "stripe:ch_aaa",
+	      "author": "727bdf54ac689a75cf875446dd242091d6ebfc199bd58fce1c668f8405183492",
 	      "category": "insurance",
 	      "collective": "commonshub",
 	      "spread": [

@@ -252,3 +252,20 @@ func TestUndescribedBurns(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 }
+
+func TestRestrictAnnotationToStewards(t *testing.T) {
+	stewards := map[string]bool{"steward": true}
+	member := &TxAnnotation{Author: "member", Category: "rental", Collective: "commonshub", Description: "thanks",
+		Spread: []SpreadEntry{{Month: "2026-10", Amount: "1"}}, Exclude: "test", Tags: [][]string{{"category", "rental"}, {"t", "booking"}}}
+	got := restrictAnnotation(member, stewards)
+	if got.Category != "" || got.Collective != "" || got.Spread != nil || got.Exclude != "" || got.Description != "thanks" || len(got.Tags) != 1 {
+		t.Errorf("member annotation: %+v", got)
+	}
+	if member.Category != "rental" {
+		t.Error("original must not be modified")
+	}
+	st := &TxAnnotation{Author: "STEWARD", Category: "cleaning"}
+	if restrictAnnotation(st, stewards).Category != "cleaning" {
+		t.Error("steward category kept")
+	}
+}

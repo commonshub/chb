@@ -466,5 +466,47 @@
     "label": "Refund",
     "direction": "both",
     "group": "other"
+  },
+  {
+    "slug": "governance",
+    "label": "Governance",
+    "direction": "both",
+    "group": "contributions"
+  },
+  {
+    "slug": "cleaning",
+    "label": "Cleaning",
+    "direction": "both",
+    "group": "contributions"
+  },
+  {
+    "slug": "shift",
+    "label": "Shift",
+    "direction": "both",
+    "group": "contributions"
+  },
+  {
+    "slug": "note-taking",
+    "label": "Note-taking",
+    "direction": "both",
+    "group": "contributions"
+  },
+  {
+    "slug": "admin",
+    "label": "Admin",
+    "direction": "both",
+    "group": "contributions"
+  },
+  {
+    "slug": "care",
+    "label": "Care",
+    "direction": "both",
+    "group": "contributions"
+  },
+  {
+    "slug": "none",
+    "label": "None",
+    "direction": "both",
+    "group": "contributions"
   }
 ]

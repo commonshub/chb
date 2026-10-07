@@ -1021,6 +1021,7 @@ func summariseRooms(rooms []RoomInfo, bookings []BookingRow, rentals []RentalRow
 func loadOdooAnnotations(dataDir string) map[string]*TxAnnotation {
 	out := map[string]*TxAnnotation{}
 	trusted := nostrTrustedPubkeys()
+	classifiers := nostrCategoryAuthors()
 	for _, ym := range dataMonthRange(dataDir) {
 		data, err := os.ReadFile(nostrsource.Path(dataDir, ym[:4], ym[5:], nostrsource.OdooAnnotationsFile))
 		if err != nil {
@@ -1035,7 +1036,7 @@ func loadOdooAnnotations(dataDir string) map[string]*TxAnnotation {
 				continue
 			}
 			if cur, ok := out[uri]; !ok || a.CreatedAt > cur.CreatedAt {
-				out[uri] = a
+				out[uri] = restrictAnnotation(a, classifiers)
 			}
 		}
 	}

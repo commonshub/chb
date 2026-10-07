@@ -82,6 +82,8 @@ func scanAnnotationCachesForSpreads(dataDir string) (map[string][]InboundSpread,
 		return nil, err
 	}
 	inbound := map[string][]InboundSpread{}
+	trusted := nostrTrustedPubkeys()
+	classifiers := nostrCategoryAuthors() // a spread re-allocates money: stewards only
 	for _, yearEntry := range years {
 		if !yearEntry.IsDir() || len(yearEntry.Name()) != 4 || !allDigits(yearEntry.Name()) {
 			continue
@@ -130,6 +132,10 @@ func scanAnnotationCachesForSpreads(dataDir string) (map[string][]InboundSpread,
 			}
 
 			for uri, ann := range cache.Annotations {
+				if !annotationTrusted(ann, trusted) {
+					continue
+				}
+				ann = restrictAnnotation(ann, classifiers)
 				if ann == nil || len(ann.Spread) == 0 {
 					continue
 				}
