@@ -36,7 +36,7 @@ func TestIncomeRefundsBookOnIncomeAccount(t *testing.T) {
 	}{
 		{"ticket", "700150"},
 		{"event_tickets", "700150"},
-		{"membership", "730000"},
+		{"membership", "704200"},
 		{"donation", "740040"},
 		{"sponsoring", "700110"},
 		{"coworking", "700003"},
