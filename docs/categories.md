@@ -69,7 +69,9 @@ In order; the first one that gives a category wins:
    ([annotations.md](annotations.md)) or add a rule. `chb generate` warns
    ("Categories check") about every commonshub EUR/EURe transaction of the
    current and previous month left without one (internal and excluded rows
-   aside), with its date, amount, account and id.
+   aside), with its date, amount, account and id. It also flags commonshub
+   token burns (CHT spent, e.g. rooms paid on /book) without a description:
+   the description comes from a Nostr annotation on the burn.
 
 ## Membership is strict
 

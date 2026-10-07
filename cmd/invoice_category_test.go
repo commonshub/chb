@@ -233,3 +233,22 @@ func TestInvoiceWinsOnMembershipConfusion(t *testing.T) {
 		t.Errorf("non-membership disagreement: %q", tx3.Category)
 	}
 }
+
+func TestUndescribedBurns(t *testing.T) {
+	dir := t.TempDir()
+	f := TransactionsFile{Transactions: []TransactionEntry{
+		{ID: "b1", Type: "BURN", Currency: "CHT", Amount: -1, Collective: "commonshub", Metadata: map[string]interface{}{"description": "Booking Mush Room room for 1h"}},
+		{ID: "b2", Type: "BURN", Currency: "CHT", Amount: -4, Timestamp: 2, Collective: "commonshub"},
+		{ID: "b3", Type: "BURN", Currency: "CHT", Amount: -1, Collective: "commonshub", Metadata: map[string]interface{}{"excluded": "test"}},
+		{ID: "d1", Type: "DEBIT", Currency: "CHT", Amount: -6, Collective: "commonshub"},
+		{ID: "e1", Type: "BURN", Currency: "EURe", Amount: -10, Collective: "commonshub"},
+	}}
+	p := audiencePath(dir, "2026", "10", AudienceStewards, "transactions.json")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	data, _ := json.Marshal(f)
+	_ = os.WriteFile(p, data, 0o600)
+	got := undescribedBurns(dir, []string{"2026-10"})
+	if len(got) != 1 || got[0].ID != "b2" {
+		t.Errorf("got %+v", got)
+	}
+}

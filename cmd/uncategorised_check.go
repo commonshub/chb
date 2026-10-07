@@ -63,6 +63,9 @@ func checkUncategorisedHubTransactions(dataDir string, now time.Time) string {
 		all = append(all, uncategorisedHubTransactions(dataDir, d.Format("2006"), d.Format("01"))...)
 	}
 	summary := []string{}
+	if n := checkUndescribedBurns(dataDir, now); n > 0 {
+		summary = append(summary, Pluralize(n, "token burn", "")+" without a description")
+	}
 	if n := checkMembershipAnomalies(dataDir, now); n > 0 {
 		summary = append(summary, Pluralize(n, "membership anomaly", "membership anomalies"))
 	}
@@ -167,5 +170,56 @@ func checkMembershipAnomalies(dataDir string, now time.Time) int {
 	}
 	Warnf("⚠ %s (this and last month; memberships are €10/€100/€200 without VAT): %s — fix the category or the invoice in Odoo",
 		Pluralize(len(found), "membership anomaly", "membership anomalies"), strings.Join(shown, "; "))
+	return len(found)
+}
+
+// undescribedBurns: commonshub token burns (CHT spent, e.g. a room paid on
+// /book) without a description. The description comes from a Nostr
+// annotation on the burn (token bot or a steward); without it the website
+// can't say what the tokens paid for.
+func undescribedBurns(dataDir string, months []string) []uncategorisedTx {
+	var out []uncategorisedTx
+	for _, ym := range months {
+		data, err := os.ReadFile(audiencePath(dataDir, ym[:4], ym[5:], AudienceStewards, "transactions.json"))
+		if err != nil {
+			continue
+		}
+		var f TransactionsFile
+		if json.Unmarshal(data, &f) != nil {
+			continue
+		}
+		for _, tx := range f.Transactions {
+			if tx.Type != "BURN" || tx.Collective != "commonshub" || isEURCurrency(tx.Currency) {
+				continue
+			}
+			if _, excluded := tx.Metadata["excluded"]; excluded {
+				continue
+			}
+			if strings.TrimSpace(stringMetadata(tx.Metadata, "description")) != "" {
+				continue
+			}
+			out = append(out, uncategorisedTx{ID: tx.ID, Account: tx.AccountSlug, Currency: tx.Currency, Amount: tx.Amount, Timestamp: tx.Timestamp})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp > out[j].Timestamp })
+	return out
+}
+
+func checkUndescribedBurns(dataDir string, now time.Time) int {
+	now = now.In(BrusselsTZ())
+	found := undescribedBurns(dataDir, []string{now.AddDate(0, -1, 0).Format("2006-01"), now.Format("2006-01")})
+	if len(found) == 0 {
+		return 0
+	}
+	var ex []string
+	for i, t := range found {
+		if i == 8 {
+			ex = append(ex, "…")
+			break
+		}
+		ex = append(ex, fmt.Sprintf("%s %+g %s (%s)", time.Unix(t.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02 15:04"), t.Amount, t.Currency, t.ID))
+	}
+	Warnf("⚠ %s without a description (this and last month): %s — publish a Nostr annotation on each burn (what the tokens paid for)",
+		Pluralize(len(found), "token burn", ""), strings.Join(ex, "; "))
 	return len(found)
 }
