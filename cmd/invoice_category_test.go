@@ -146,3 +146,36 @@ func TestUncategorisedHubTransactions(t *testing.T) {
 		t.Errorf("summary %q", s)
 	}
 }
+
+func TestLineIncomeTyperProductFirst(t *testing.T) {
+	data, err := os.ReadFile("defaults/categories.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cats []CategoryDef
+	if err := json.Unmarshal(data, &cats); err != nil {
+		t.Fatal(err)
+	}
+	typer := lineIncomeTyper{products: categoryProductGlobs(cats), slugs: map[string]bool{}}
+	for _, c := range cats {
+		typer.slugs[c.Slug] = true
+	}
+	for _, c := range []struct {
+		li   OdooInvoiceLineItem
+		want string
+	}{
+		{OdooInvoiceLineItem{ProductName: "Mush Room", AccountCode: "700000", DisplayType: "product"}, "room_rental"},
+		{OdooInvoiceLineItem{ProductName: "Salad and pasta buffet", AccountCode: "700000"}, "catering"},
+		{OdooInvoiceLineItem{ProductName: "Tea, coffee, water and snacks", AccountCode: "700000"}, "catering"},
+		{OdooInvoiceLineItem{ProductName: "Self-served frige", AccountCode: "700000"}, "drinks"},
+		{OdooInvoiceLineItem{ProductName: "Shifter", AccountCode: "700000", Category: "coworking"}, "coworking"},
+		{OdooInvoiceLineItem{ProductName: "Membership", AccountCode: "700000"}, "membership"},
+		{OdooInvoiceLineItem{ProductName: "Business Development Support", AccountCode: "700003", Category: "consulting"}, "sales_services"},
+		{OdooInvoiceLineItem{ProductName: "Something", AccountCode: "700000"}, "membership"},
+		{OdooInvoiceLineItem{Title: "Rental Mush Room membership", DisplayType: "line_note"}, "other"},
+	} {
+		if got := typer.of(c.li); got != c.want {
+			t.Errorf("%+v → %q, want %q", c.li, got, c.want)
+		}
+	}
+}

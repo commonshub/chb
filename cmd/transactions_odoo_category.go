@@ -86,6 +86,15 @@ func categoryProductGlobs(cats []CategoryDef) []categoryProduct {
 // else the product's (customer documents only: products are what we sell),
 // else the GL account's.
 func invoiceLineCategory(li OdooInvoiceLineItem, prefixes []categoryPrefix, products []categoryProduct, slugs map[string]bool) string {
+	if c := invoiceLineTaggedCategory(li, products, slugs); c != "" {
+		return c
+	}
+	return categoryForAccountCode(prefixes, li.AccountCode)
+}
+
+// invoiceLineTaggedCategory: the line's analytic category when known, else
+// its product's; "" when only the GL account could tell.
+func invoiceLineTaggedCategory(li OdooInvoiceLineItem, products []categoryProduct, slugs map[string]bool) string {
 	if li.Category != "" && slugs[li.Category] {
 		return li.Category
 	}
@@ -100,7 +109,7 @@ func invoiceLineCategory(li OdooInvoiceLineItem, prefixes []categoryPrefix, prod
 			}
 		}
 	}
-	return categoryForAccountCode(prefixes, li.AccountCode)
+	return ""
 }
 
 // structuredCommunication is a Belgian structured communication, with or

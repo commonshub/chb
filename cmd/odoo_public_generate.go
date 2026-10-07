@@ -221,6 +221,48 @@ func accountRef(code, name string) *AccountRef {
 	return &AccountRef{Code: code, Class: accountClassLabel(code), Name: name}
 }
 
+// incomeTypeByCategory: the incomeType of a line whose analytic tag or
+// product names its category (categories.json "products").
+var incomeTypeByCategory = map[string]string{
+	"rental":     "room_rental",
+	"rentals":    "room_rental",
+	"coworking":  "coworking",
+	"catering":   "catering",
+	"fridge":     "drinks",
+	"drinks":     "drinks",
+	"membership": "membership",
+	"ticket":     "tickets_events",
+	"sponsoring": "sponsorship",
+	"donation":   "donation",
+}
+
+// lineIncomeTyper classifies customer invoice lines: analytic tag, then
+// product, then income account. The account alone is not enough: 700000
+// (membership dues) also carries rooms, catering and coworking products.
+type lineIncomeTyper struct {
+	products []categoryProduct
+	slugs    map[string]bool
+}
+
+func newLineIncomeTyper() lineIncomeTyper {
+	cats := LoadCategories()
+	t := lineIncomeTyper{products: categoryProductGlobs(cats), slugs: map[string]bool{}}
+	for _, c := range cats {
+		t.slugs[c.Slug] = true
+	}
+	return t
+}
+
+func (t lineIncomeTyper) of(li OdooInvoiceLineItem) string {
+	if li.DisplayType != "" && li.DisplayType != "product" {
+		return incomeType(li.AccountCode) // notes and sections carry no money
+	}
+	if typ := incomeTypeByCategory[invoiceLineTaggedCategory(li, t.products, t.slugs)]; typ != "" {
+		return typ
+	}
+	return incomeType(li.AccountCode)
+}
+
 // incomeType classifies a customer invoice line by its income account.
 func incomeType(code string) string {
 	switch code {
@@ -1134,10 +1176,11 @@ func generateAccountingFiles(dataDir string) (int, error) {
 	}
 
 	// Who is a member: any customer invoice with a membership line.
+	typer := newLineIncomeTyper()
 	members := map[string]bool{}
 	for _, inv := range invoices {
 		for _, li := range inv.LineItems {
-			if incomeType(li.AccountCode) == "membership" {
+			if typer.of(li) == "membership" {
 				members[documentParty(inv).ID] = true
 			}
 		}
@@ -1160,7 +1203,7 @@ func generateAccountingFiles(dataDir string) (int, error) {
 			if li.SubtotalAmount == 0 {
 				continue
 			}
-			t := incomeType(li.AccountCode)
+			t := typer.of(li)
 			d.types[t] += li.SubtotalAmount * d.f
 			if t == "room_rental" && docStatus(inv) != "reversed" {
 				rental := RentalRow{

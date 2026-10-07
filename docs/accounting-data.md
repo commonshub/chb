@@ -168,19 +168,30 @@ row, the anonymous merged rows included (a URI names a document, not a
 person), so each invoice can be annotated. `invoiceCount` is their number
 (it was `invoices` in v3.16–3.17).
 
-`incomeType` comes from the income account of the invoice lines:
+`incomeType` is set per invoice line: first its analytic tag or its product
+(categories.json `products` globs, see [categories.md](categories.md)),
+else its income account. The account alone misleads: 700000 (membership
+dues) also carries rooms, catering and coworking products. The document's
+`incomeType` is the type with the largest share.
 
-| incomeType | accounts |
-|---|---|
-| `membership` | 700000, 704200 |
-| `room_rental` | 700100 |
-| `tickets_events` | 700150 |
-| `sponsorship` | 700110, 749001 |
-| `donation` | 740040 |
-| `reinvoiced_costs` | 700200 |
-| `sales_services` | other 70… |
-| `other_income` | other 74… |
-| `other` | anything else |
+| incomeType | analytic tag / product category | else accounts |
+|---|---|---|
+| `membership` | membership (`*membership*`) | 700000, 704200 |
+| `room_rental` | rental (`*room*`, `*ostrom*`, `*event space*`, `*satoshi*`, `down payment*`) | 700100 |
+| `coworking` | coworking (`*cowork*`, `*shifter*`) | — |
+| `catering` | catering (`*coffee*`, `*sandwich*`, `*snack*`, `*buffet*`, `*lunch*`, `*catering*`, `drinks*`) | — |
+| `drinks` | fridge (`*fridge*`, `*frige*`), drinks | — |
+| `tickets_events` | ticket (`*ticket*`) | 700150 |
+| `sponsorship` | sponsoring | 700110, 749001 |
+| `donation` | donation | 740040 |
+| `reinvoiced_costs` | — | 700200 |
+| `sales_services` | — | other 70… |
+| `other_income` | — | other 74… |
+| `other` | — | anything else |
+
+Bookings are `room_rental`, `coworking`, `catering` (and `sales_services`
+for other services). A customer counts as a member only through a
+`membership` line.
 
 Only invoiced income is here. Card payments that never got an invoice, such
 as most ticket sales through Stripe, are in `transactions.json`, not
