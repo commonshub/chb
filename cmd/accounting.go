@@ -30,6 +30,11 @@ type CategoryDef struct {
 	// this category; the longest matching prefix wins. Used to categorise
 	// bank lines from their Odoo counterpart and to publish the taxonomy.
 	Accounts []string `json:"accounts,omitempty"`
+	// Products are case-insensitive globs on an Odoo invoice line's product
+	// name (or its title when it has no product). They beat the GL account:
+	// income account 700000 carries rooms, catering and coworking as well
+	// as memberships, so the account alone mislabels invoice payments.
+	Products []string `json:"products,omitempty"`
 }
 
 // CategoryRule maps transactions to categories based on matching criteria.

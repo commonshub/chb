@@ -45,10 +45,20 @@ In order; the first one that gives a category wins:
 4. **Odoo**, the consolidated books, when the bank line is reconciled
    there:
    - reconciled with **invoices, bills or other entries**: the category of
-     their booking lines (by GL account, weighted by amount; tax,
-     receivable and payable lines left out); their URIs go to
-     `metadata.documents`. A bill booked to 444000 (an invoice accrued the
-     year before) gives `accrual`;
+     their booking lines, weighted by amount (tax, receivable and payable
+     lines left out). Per invoice/bill line: its analytic category when it
+     is a known category; else, on customer invoices only, its product
+     (categories.json `products`, case-insensitive globs on the product
+     name, first match wins: `*room*` → rental, `*coffee*` → catering…);
+     else its GL account. Products beat the account because income
+     account 700000 carries rooms, catering and coworking as well as
+     memberships. Their URIs go to `metadata.documents`. A bill booked to
+     444000 (an invoice accrued the year before) gives `accrual`;
+   - **not reconciled yet**, but an incoming payment whose memo or
+     communication is the Belgian structured communication of one of our
+     posted customer invoices (`+++000/0044/21681+++` or `000004421681`:
+     the move id and its mod-97 check): that invoice's category, the same
+     way, and the invoice goes to `metadata.documents`;
    - booked straight to an account (580000 internal transfer, 451200 VAT,
      455000 salaries, 613105 fees…): the category of that account;
    - suspense (499) gives none.
@@ -56,7 +66,10 @@ In order; the first one that gives a category wins:
    These carry `metadata.categorySource: "odoo"`. They are never pushed back
    to Odoo.
 5. Anything left is uncategorised: tag it on Nostr
-   ([annotations.md](annotations.md)) or add a rule.
+   ([annotations.md](annotations.md)) or add a rule. `chb generate` warns
+   ("Categories check") about every commonshub EUR/EURe transaction of the
+   current and previous month left without one (internal and excluded rows
+   aside), with its date, amount, account and id.
 
 The bank lines' bookings and matches come from the hourly Odoo pull
 (`latest/providers/odoo/<db>/journals/`, `statement-matches.json`). When a

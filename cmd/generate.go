@@ -817,6 +817,11 @@ func Generate(args []string) error {
 		return Pluralize(generatePraise(dataDir), "message", "") + " in the last 60 days"
 	})
 
+	// Hub money without a category (cmd/uncategorised_check.go).
+	genStep("Categories check", func() string {
+		return checkUncategorisedHubTransactions(dataDir, time.Now())
+	})
+
 	// Contribution tokens issued (cmd/tokens_issued_generate.go). After
 	// contributors (wallet → Discord map).
 	genStep("Tokens issued", func() string {

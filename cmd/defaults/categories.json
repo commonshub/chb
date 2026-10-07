@@ -8,6 +8,9 @@
       "700000",
       "7042",
       "730"
+    ],
+    "products": [
+      "*membership*"
     ]
   },
   {
@@ -54,6 +57,13 @@
     "accounts": [
       "700100",
       "700003"
+    ],
+    "products": [
+      "*room*",
+      "*ostrom*",
+      "*event space*",
+      "*satoshi*",
+      "down payment*"
     ]
   },
   {
@@ -66,7 +76,11 @@
     "slug": "coworking",
     "label": "Coworking",
     "direction": "income",
-    "group": "space"
+    "group": "space",
+    "products": [
+      "*cowork*",
+      "*shifter*"
+    ]
   },
   {
     "slug": "ticket",
@@ -75,6 +89,9 @@
     "group": "events",
     "accounts": [
       "700150"
+    ],
+    "products": [
+      "*ticket*"
     ]
   },
   {
@@ -85,6 +102,15 @@
     "accounts": [
       "700002",
       "604200"
+    ],
+    "products": [
+      "*coffee*",
+      "*sandwich*",
+      "*snack*",
+      "*buffet*",
+      "*lunch*",
+      "*catering*",
+      "drinks*"
     ]
   },
   {

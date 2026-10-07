@@ -5,8 +5,12 @@ package cmd
 // its bank statement line is booked in Odoo:
 //
 //   - reconciled with an invoice or a bill (counterpart on a receivable or
-//     payable): the category of that document's lines, by GL account; the
-//     documents' URIs go to metadata.documents;
+//     payable): the category of that document's lines — the line's analytic
+//     category, else its product (categories.json "products"), else its GL
+//     account; the documents' URIs go to metadata.documents;
+//   - not (yet) reconciled, but paid with the Belgian structured
+//     communication of one of our invoices (+++000/0044/21681+++, the move
+//     id and its mod-97 check): that invoice's category, the same way;
 //   - booked straight to an account (580000 internal transfer, 451200 VAT,
 //     455000 salaries, 61xx…): the category whose PCMN prefix matches the
 //     account (categories.json "accounts", longest prefix wins).
@@ -58,6 +62,71 @@ type odooTxCategorizer struct {
 	docs         map[int]OdooOutgoingInvoice
 	accounts     map[string]*AccountConfig
 	prefixes     []categoryPrefix
+	products     []categoryProduct
+	slugs        map[string]bool
+}
+
+type categoryProduct struct{ glob, slug string }
+
+// categoryProductGlobs: every category's product globs, lower-cased, in
+// categories.json order (first match wins).
+func categoryProductGlobs(cats []CategoryDef) []categoryProduct {
+	var out []categoryProduct
+	for _, c := range cats {
+		for _, g := range c.Products {
+			if g = strings.ToLower(strings.TrimSpace(g)); g != "" {
+				out = append(out, categoryProduct{g, c.Slug})
+			}
+		}
+	}
+	return out
+}
+
+// invoiceLineCategory: the analytic category when it is a known category,
+// else the product's (customer documents only: products are what we sell),
+// else the GL account's.
+func invoiceLineCategory(li OdooInvoiceLineItem, prefixes []categoryPrefix, products []categoryProduct, slugs map[string]bool) string {
+	if li.Category != "" && slugs[li.Category] {
+		return li.Category
+	}
+	name := strings.ToLower(strings.TrimSpace(li.ProductName))
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(li.Title))
+	}
+	if name != "" {
+		for _, p := range products {
+			if globMatch(p.glob, name) {
+				return p.slug
+			}
+		}
+	}
+	return categoryForAccountCode(prefixes, li.AccountCode)
+}
+
+// structuredCommunication is a Belgian structured communication, with or
+// without the +++/***  and slashes: 3 + 4 + 5 digits.
+var structuredCommunication = regexp.MustCompile(`(?:\+\+\+|\*\*\*)?\s*\b(\d{3})\s*/?\s*(\d{4})\s*/?\s*(\d{5})\b\s*(?:\+\+\+|\*\*\*)?`)
+
+// invoiceIDFromCommunication returns the account.move id Odoo encodes in
+// an invoice's structured communication (first ten digits, last two their
+// mod-97 check, 97 for 0), or 0.
+func invoiceIDFromCommunication(text string) int {
+	for _, m := range structuredCommunication.FindAllStringSubmatch(text, -1) {
+		digits := m[1] + m[2] + m[3]
+		var base int64
+		for _, c := range digits[:10] {
+			base = base*10 + int64(c-'0')
+		}
+		check := int64((digits[10]-'0')*10 + (digits[11] - '0'))
+		want := base % 97
+		if want == 0 {
+			want = 97
+		}
+		if base > 0 && check == want {
+			return int(base)
+		}
+	}
+	return 0
 }
 
 type categoryPrefix struct{ prefix, slug string }
@@ -94,7 +163,13 @@ func newOdooTxCategorizer(dataDir string) *odooTxCategorizer {
 		codeByID:     map[int]string{},
 		docs:         map[int]OdooOutgoingInvoice{},
 		accounts:     map[string]*AccountConfig{},
-		prefixes:     categoryPrefixes(LoadCategories()),
+		slugs:        map[string]bool{},
+	}
+	cats := LoadCategories()
+	o.prefixes = categoryPrefixes(cats)
+	o.products = categoryProductGlobs(cats)
+	for _, c := range cats {
+		o.slugs[c.Slug] = true
 	}
 	lines := cachedJournalLines(dataDir)
 	if len(lines) == 0 {
@@ -164,24 +239,36 @@ func (o *odooTxCategorizer) lineFor(tx TransactionEntry) (OdooCacheLine, bool) {
 }
 
 // documentCategory: the category carrying the largest share of the
-// documents' line amounts.
+// documents' line amounts. A cached invoice/bill is read line by line
+// (analytic, product, GL account); a matched move that is not one (a
+// misc entry) by its GL accounts.
 func (o *odooTxCategorizer) documentCategory(moveIDs []int) string {
 	weight := map[string]float64{}
 	for _, id := range moveIDs {
-		if accts, ok := o.moveAccounts[id]; ok {
-			for code, amt := range accts {
-				if c := categoryForAccountCode(o.prefixes, code); c != "" {
-					weight[c] += amt
-				}
-			}
-			continue
+		counted := false
+		doc := o.docs[id]
+		products := o.products
+		if !strings.HasPrefix(doc.MoveType, "out_") {
+			products = nil
 		}
-		for _, li := range o.docs[id].LineItems {
+		for _, li := range doc.LineItems {
+			if li.DisplayType != "" && li.DisplayType != "product" {
+				continue
+			}
 			amt := li.SubtotalAmount
 			if amt < 0 {
 				amt = -amt
 			}
-			if c := categoryForAccountCode(o.prefixes, li.AccountCode); c != "" {
+			if c := invoiceLineCategory(li, o.prefixes, products, o.slugs); c != "" {
+				weight[c] += amt
+				counted = true
+			}
+		}
+		if counted {
+			continue
+		}
+		for code, amt := range o.moveAccounts[id] {
+			if c := categoryForAccountCode(o.prefixes, code); c != "" {
 				weight[c] += amt
 			}
 		}
@@ -203,29 +290,31 @@ func (o *odooTxCategorizer) apply(tx *TransactionEntry) {
 		setMetadata(tx, "categorySource", "odoo")
 		return
 	}
-	line, ok := o.lineFor(*tx)
-	if !ok {
-		return
-	}
-	code := o.codeByID[line.AccountID]
-	moves := o.matches[line.ID]
-	if len(moves) > 0 {
-		var uris []interface{}
-		for _, m := range moves {
-			uris = append(uris, odooDocURI("account.move", m, o.docs[m].InvoiceURL))
-		}
-		if len(uris) > 0 {
+	cat := ""
+	if line, ok := o.lineFor(*tx); ok {
+		code := o.codeByID[line.AccountID]
+		moves := o.matches[line.ID]
+		if len(moves) > 0 {
+			var uris []interface{}
+			for _, m := range moves {
+				uris = append(uris, odooDocURI("account.move", m, o.docs[m].InvoiceURL))
+			}
 			setMetadata(tx, "documents", uris)
+		}
+		if tx.Category != "" {
+			return
+		}
+		if isDocumentCounterpart(line.CounterpartType) || strings.HasPrefix(code, "40") || strings.HasPrefix(code, "44") {
+			cat = o.documentCategory(moves)
+		} else if code != "" && !strings.HasPrefix(code, "499") {
+			cat = categoryForAccountCode(o.prefixes, code)
 		}
 	}
 	if tx.Category != "" {
 		return
 	}
-	cat := ""
-	if isDocumentCounterpart(line.CounterpartType) || strings.HasPrefix(code, "40") || strings.HasPrefix(code, "44") {
-		cat = o.documentCategory(moves)
-	} else if code != "" && !strings.HasPrefix(code, "499") {
-		cat = categoryForAccountCode(o.prefixes, code)
+	if cat == "" && tx.IsIncoming() {
+		cat = o.invoiceCategoryFromCommunication(tx)
 	}
 	if cat == "" {
 		return
@@ -235,6 +324,31 @@ func (o *odooTxCategorizer) apply(tx *TransactionEntry) {
 	if cat == "internal_transfer" {
 		tx.Type = "INTERNAL"
 	}
+	stampVAT(tx)
+}
+
+// invoiceCategoryFromCommunication: a payment carrying the structured
+// communication of one of our posted customer invoices takes that
+// invoice's category, and the invoice goes to metadata.documents.
+func (o *odooTxCategorizer) invoiceCategoryFromCommunication(tx *TransactionEntry) string {
+	var text []string
+	for _, k := range []string{"description", "memo", "fullDescription"} {
+		if s, _ := tx.Metadata[k].(string); s != "" {
+			text = append(text, s)
+		}
+	}
+	id := invoiceIDFromCommunication(strings.Join(text, " "))
+	doc, ok := o.docs[id]
+	if id == 0 || !ok || doc.MoveType != "out_invoice" || (doc.State != "" && doc.State != "posted") {
+		return ""
+	}
+	cat := o.documentCategory([]int{id})
+	if cat != "" {
+		if _, has := tx.Metadata["documents"]; !has {
+			setMetadata(tx, "documents", []interface{}{odooDocURI("account.move", id, doc.InvoiceURL)})
+		}
+	}
+	return cat
 }
 
 func setMetadata(tx *TransactionEntry, key string, v interface{}) {

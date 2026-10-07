@@ -1217,6 +1217,30 @@
     }
   },
   {
+    "match": {
+      "description": "*coffee*",
+      "direction": "in",
+      "amount_max": 50,
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "drinks",
+      "collective": "commonshub"
+    }
+  },
+  {
+    "match": {
+      "description": "*drink*",
+      "direction": "in",
+      "amount_max": 50,
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "drinks",
+      "collective": "commonshub"
+    }
+  },
+  {
     "target": "invoice",
     "match": {
       "description": "*ticket*"
