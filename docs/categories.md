@@ -85,6 +85,9 @@ Memberships carry no VAT; rentals 21%. They are €10/month (Odoo product
 - the description rules (`*member*`, `*monthly financial contribution*`,
   `*MEM/20*`) only apply to €10/€100/€200 (`amount_in`); Stripe
   subscriptions keep their own rules;
+- when the invoice a payment settles is membership and a rule said
+  otherwise, or the reverse, the invoice wins (`metadata.ruleCategory`
+  keeps the rule's category);
 - the "Categories check" flags, for the current and previous month, every
   payment categorised membership of another amount, and every
   membership-looking invoice line (membership product or name, account

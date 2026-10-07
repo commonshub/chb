@@ -203,3 +203,32 @@ func TestMembershipAnomalies(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestInvoiceWinsOnMembershipConfusion(t *testing.T) {
+	o := &odooTxCategorizer{
+		slugs: map[string]bool{"membership": true, "rental": true}, lineByID: map[int]OdooCacheLine{}, lineByImport: map[string]OdooCacheLine{},
+		products: []categoryProduct{{"*room*", "rental"}, {"*membership*", "membership"}},
+		docs: map[int]OdooOutgoingInvoice{
+			8437:  {ID: 8437, MoveType: "out_invoice", State: "posted", LineItems: []OdooInvoiceLineItem{{ProductID: 104, ProductName: "Yearly membership for non-profits", SubtotalAmount: 200, TotalAmount: 200, AccountCode: "700000"}}},
+			44216: {ID: 44216, MoveType: "out_invoice", State: "posted", LineItems: []OdooInvoiceLineItem{{ProductName: "Satoshi room", SubtotalAmount: 87.5, TotalAmount: 105.88, AccountCode: "700000", Taxes: []OdooInvoiceTax{{Amount: 21}}}}},
+		},
+	}
+	// A customer rule said rental; the invoice is a membership.
+	tx := TransactionEntry{Type: "MINT", Currency: "EURe", Amount: 200, GrossAmount: 200, Category: "rental", Metadata: map[string]interface{}{"description": "000000843795"}}
+	o.apply(&tx)
+	if tx.Category != "membership" || tx.Metadata["ruleCategory"] != "rental" {
+		t.Errorf("membership invoice: %q %v", tx.Category, tx.Metadata)
+	}
+	// A rule said membership; the invoice is a room rental.
+	tx2 := TransactionEntry{Type: "MINT", Currency: "EURe", Amount: 105.88, GrossAmount: 105.88, Category: "membership", Metadata: map[string]interface{}{"description": "000004421681"}}
+	o.apply(&tx2)
+	if tx2.Category != "rental" {
+		t.Errorf("rental invoice: %q", tx2.Category)
+	}
+	// Other disagreements keep the rule's category.
+	tx3 := TransactionEntry{Type: "MINT", Currency: "EURe", Amount: 105.88, GrossAmount: 105.88, Category: "catering", Metadata: map[string]interface{}{"description": "000004421681"}}
+	o.apply(&tx3)
+	if tx3.Category != "catering" {
+		t.Errorf("non-membership disagreement: %q", tx3.Category)
+	}
+}

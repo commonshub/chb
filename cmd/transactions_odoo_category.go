@@ -342,7 +342,7 @@ func (o *odooTxCategorizer) apply(tx *TransactionEntry) {
 		setMetadata(tx, "categorySource", "odoo")
 		return
 	}
-	cat := ""
+	cat, docCat := "", ""
 	if line, ok := o.lineFor(*tx); ok {
 		code := o.codeByID[line.AccountID]
 		moves := o.matches[line.ID]
@@ -353,20 +353,28 @@ func (o *odooTxCategorizer) apply(tx *TransactionEntry) {
 			}
 			setMetadata(tx, "documents", uris)
 		}
-		if tx.Category != "" {
-			return
-		}
 		if isDocumentCounterpart(line.CounterpartType) || strings.HasPrefix(code, "40") || strings.HasPrefix(code, "44") {
-			cat = o.documentCategory(moves)
+			docCat = o.documentCategory(moves)
+			cat = docCat
 		} else if code != "" && !strings.HasPrefix(code, "499") {
 			cat = categoryForAccountCode(o.prefixes, code)
 		}
 	}
-	if tx.Category != "" {
-		return
+	if docCat == "" && tx.IsIncoming() {
+		docCat = o.invoiceCategoryFromCommunication(tx)
+		if cat == "" {
+			cat = docCat
+		}
 	}
-	if cat == "" && tx.IsIncoming() {
-		cat = o.invoiceCategoryFromCommunication(tx)
+	if tx.Category != "" {
+		// Membership and anything else are never confused (no VAT vs
+		// 21%): when the invoice the payment settles says membership and
+		// a rule said otherwise, or the reverse, the invoice wins.
+		if docCat == "" || docCat == tx.Category || (docCat != "membership" && tx.Category != "membership") {
+			return
+		}
+		setMetadata(tx, "ruleCategory", tx.Category)
+		cat = docCat
 	}
 	if cat == "" {
 		return
