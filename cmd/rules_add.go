@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -93,7 +94,7 @@ func RulesAdd(args []string) {
 // merge rather than duplicate when targeting the same counterparty.
 func findRuleByMatch(rules []Rule, m RuleMatch) int {
 	for i := range rules {
-		if rules[i].Match == m {
+		if reflect.DeepEqual(rules[i].Match, m) {
 			return i
 		}
 	}

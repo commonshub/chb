@@ -257,16 +257,23 @@ func (t lineIncomeTyper) of(li OdooInvoiceLineItem) string {
 	if li.DisplayType != "" && li.DisplayType != "product" {
 		return incomeType(li.AccountCode) // notes and sections carry no money
 	}
-	if typ := incomeTypeByCategory[invoiceLineTaggedCategory(li, t.products, t.slugs)]; typ != "" {
-		return typ
+	if membershipProductIDs[li.ProductID] && !invoiceLineHasVAT(li) {
+		return "membership"
 	}
-	return incomeType(li.AccountCode)
+	typ := incomeTypeByCategory[invoiceLineTaggedCategory(li, t.products, t.slugs)]
+	if typ == "" {
+		typ = incomeType(li.AccountCode)
+	}
+	if typ == "membership" && invoiceLineHasVAT(li) {
+		return "sales_services" // memberships carry no VAT
+	}
+	return typ
 }
 
 // incomeType classifies a customer invoice line by its income account.
 func incomeType(code string) string {
 	switch code {
-	case "700000", "704200":
+	case "704200":
 		return "membership"
 	case "700100":
 		return "room_rental"

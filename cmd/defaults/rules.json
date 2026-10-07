@@ -297,7 +297,8 @@
   },
   {
     "match": {
-      "description": "*monthly financial contribution*"
+      "description": "*monthly financial contribution*",
+      "amount_in": [10, 100, 200]
     },
     "assign": {
       "category": "membership",
@@ -306,7 +307,8 @@
   },
   {
     "match": {
-      "description": "*member*"
+      "description": "*member*",
+      "amount_in": [10, 100, 200]
     },
     "assign": {
       "category": "membership",
@@ -663,7 +665,8 @@
   },
   {
     "match": {
-      "description": "*MEM/20*"
+      "description": "*MEM/20*",
+      "amount_in": [10, 100, 200]
     },
     "assign": {
       "category": "membership",

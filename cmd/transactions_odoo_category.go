@@ -25,6 +25,7 @@ package cmd
 
 import (
 	"crypto/sha256"
+	"math"
 	"encoding/hex"
 	"fmt"
 	"hash"
@@ -85,11 +86,53 @@ func categoryProductGlobs(cats []CategoryDef) []categoryProduct {
 // invoiceLineCategory: the analytic category when it is a known category,
 // else the product's (customer documents only: products are what we sell),
 // else the GL account's.
+//
+// Membership is strict (Xavier, 2026-10-07): memberships carry no VAT,
+// rentals 21%, so a line is membership only when it is a membership
+// product (membershipProductIDs, or a membership-named product) without
+// VAT. A membership-looking line with VAT is not membership: it falls back
+// to "other-income". The hourly categories check flags the odd ones.
 func invoiceLineCategory(li OdooInvoiceLineItem, prefixes []categoryPrefix, products []categoryProduct, slugs map[string]bool) string {
-	if c := invoiceLineTaggedCategory(li, products, slugs); c != "" {
-		return c
+	if membershipProductIDs[li.ProductID] && !invoiceLineHasVAT(li) {
+		return "membership"
 	}
-	return categoryForAccountCode(prefixes, li.AccountCode)
+	c := invoiceLineTaggedCategory(li, products, slugs)
+	if c == "" {
+		c = categoryForAccountCode(prefixes, li.AccountCode)
+	}
+	if c == "membership" && invoiceLineHasVAT(li) {
+		return "other-income"
+	}
+	return c
+}
+
+// membershipProductIDs: the Odoo membership products — €10/month (94),
+// €100/year (111), €200/year for an organisation (104). No VAT, account
+// 704200, MEM journal.
+var membershipProductIDs = map[int]bool{94: true, 111: true, 104: true}
+
+// membershipAmounts: the only membership prices (EUR, VAT-free).
+var membershipAmounts = []float64{10, 100, 200}
+
+func isMembershipAmount(v float64) bool {
+	if v < 0 {
+		v = -v
+	}
+	for _, a := range membershipAmounts {
+		if math.Abs(v-a) < 0.005 {
+			return true
+		}
+	}
+	return false
+}
+
+func invoiceLineHasVAT(li OdooInvoiceLineItem) bool {
+	for _, t := range li.Taxes {
+		if t.Amount > 0 {
+			return true
+		}
+	}
+	return li.TotalAmount-li.SubtotalAmount > 0.005
 }
 
 // invoiceLineTaggedCategory: the line's analytic category when known, else

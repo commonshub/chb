@@ -171,11 +171,35 @@ func TestLineIncomeTyperProductFirst(t *testing.T) {
 		{OdooInvoiceLineItem{ProductName: "Shifter", AccountCode: "700000", Category: "coworking"}, "coworking"},
 		{OdooInvoiceLineItem{ProductName: "Membership", AccountCode: "700000"}, "membership"},
 		{OdooInvoiceLineItem{ProductName: "Business Development Support", AccountCode: "700003", Category: "consulting"}, "sales_services"},
-		{OdooInvoiceLineItem{ProductName: "Something", AccountCode: "700000"}, "membership"},
+		{OdooInvoiceLineItem{ProductName: "Something", AccountCode: "700000"}, "sales_services"},
+		{OdooInvoiceLineItem{ProductID: 94, ProductName: "Monthly individual membership", AccountCode: "704200", UnitPrice: 10}, "membership"},
+		{OdooInvoiceLineItem{ProductID: 30, ProductName: "Membership", AccountCode: "700000", SubtotalAmount: 100, TotalAmount: 121, Taxes: []OdooInvoiceTax{{Amount: 21}}}, "sales_services"},
+		{OdooInvoiceLineItem{ProductID: 95, ProductName: "Shifter", AccountCode: "704200", Taxes: []OdooInvoiceTax{{Amount: 21}}}, "coworking"},
+		{OdooInvoiceLineItem{ProductID: 97, ProductName: "Corporate membership", AccountCode: "704200", SubtotalAmount: 1000, TotalAmount: 1000}, "membership"},
+		{OdooInvoiceLineItem{ProductName: "Unknown", AccountCode: "704200", SubtotalAmount: 100, TotalAmount: 121}, "sales_services"},
 		{OdooInvoiceLineItem{Title: "Rental Mush Room membership", DisplayType: "line_note"}, "other"},
 	} {
 		if got := typer.of(c.li); got != c.want {
 			t.Errorf("%+v → %q, want %q", c.li, got, c.want)
 		}
+	}
+}
+
+func TestMembershipAnomalies(t *testing.T) {
+	dir := t.TempDir()
+	f := TransactionsFile{Transactions: []TransactionEntry{
+		{ID: "ok10", Currency: "EUR", Amount: 10, GrossAmount: 10, Category: "membership", Collective: "commonshub"},
+		{ID: "ok200", Currency: "EURe", Amount: 200, Category: "membership", Collective: "commonshub"},
+		{ID: "refund", Currency: "EUR", Amount: -10, GrossAmount: -10, Category: "membership"},
+		{ID: "vat484", Currency: "EURe", Amount: 484, Category: "membership", Collective: "commonshub"},
+		{ID: "rental", Currency: "EURe", Amount: 484, Category: "rental"},
+	}}
+	p := audiencePath(dir, "2026", "10", AudienceStewards, "transactions.json")
+	_ = os.MkdirAll(filepath.Dir(p), 0o700)
+	data, _ := json.Marshal(f)
+	_ = os.WriteFile(p, data, 0o600)
+	got := membershipAnomalies(dir, []string{"2026-09", "2026-10"})
+	if len(got) != 1 || !strings.Contains(got[0], "(vat484)") {
+		t.Errorf("got %v", got)
 	}
 }

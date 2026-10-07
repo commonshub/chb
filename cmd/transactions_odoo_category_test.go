@@ -31,7 +31,7 @@ func TestCategoryTaxonomyPrefixes(t *testing.T) {
 	for code, want := range map[string]string{
 		"580000": "internal_transfer", "451200": "vat", "455000": "HR", "620200": "HR",
 		"613105": "consulting", "613200": "accounting", "610100": "rent", "604200": "catering",
-		"700100": "rental", "740041": "subsidy", "740040": "donation", "700000": "membership",
+		"700100": "rental", "740041": "subsidy", "740040": "donation", "700000": "other-income", "704200": "membership",
 		"616040": "webservice", "657020": "stripe_fee", "611010": "supplies", "611000": "maintenance",
 		"644000": "other-expense", "749000": "other-income", "499000": "", "440000": "", "489302": "",
 	} {

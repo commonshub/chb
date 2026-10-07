@@ -28,12 +28,15 @@ type RuleMatch struct {
 	// direction:"out" alongside when you want to scope a range to
 	// one direction. Exact-match `Amount` (above) stays
 	// signed-gross for back-compat.
-	MinAmount   *float64 `json:"amount_min,omitempty"`
-	MaxAmount   *float64 `json:"amount_max,omitempty"`
-	Direction   string   `json:"direction,omitempty"`   // "in" or "out"
-	Application string   `json:"application,omitempty"` // stripe connect app: luma, opencollective, etc.
-	PaymentLink string   `json:"paymentLink,omitempty"` // Stripe Checkout payment link ID
-	Product     string   `json:"product,omitempty"`     // glob on the Stripe product name (from the checkout line items)
+	MinAmount *float64 `json:"amount_min,omitempty"`
+	// AmountIn matches when the ABSOLUTE gross amount is one of these
+	// (e.g. the membership prices [10, 100, 200]).
+	AmountIn    []float64 `json:"amount_in,omitempty"`
+	MaxAmount   *float64  `json:"amount_max,omitempty"`
+	Direction   string    `json:"direction,omitempty"`   // "in" or "out"
+	Application string    `json:"application,omitempty"` // stripe connect app: luma, opencollective, etc.
+	PaymentLink string    `json:"paymentLink,omitempty"` // Stripe Checkout payment link ID
+	Product     string    `json:"product,omitempty"`     // glob on the Stripe product name (from the checkout line items)
 	// Kind matches the provider-native classifier stashed in
 	// metadata.kind by each provider's generate step. For Stripe this is
 	// the reporting_category (charge / fee / payout / refund / …). Useful
@@ -479,6 +482,20 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		// catch a €10 Stripe charge regardless of the ~€0.30 fee that
 		// makes the net €9.70.
 		if roundCents(txAmount(tx)) != roundCents(*m.Amount) {
+			return false
+		}
+	}
+
+	if len(m.AmountIn) > 0 {
+		abs := roundCents(math.Abs(txAmount(tx)))
+		hit := false
+		for _, a := range m.AmountIn {
+			if abs == roundCents(math.Abs(a)) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
 			return false
 		}
 	}

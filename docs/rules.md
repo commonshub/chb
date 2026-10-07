@@ -12,7 +12,7 @@ Pattern matching against transaction descriptions, IBANs, amounts, and counterpa
 
 The `description` field has per-target evaluation: on transactions it matches `metadata.description` / `metadata.memo`; on invoices / bills it matches the concatenated line items. The intent is "match the text that describes this row" regardless of underlying schema.
 
-**Amount matching.** `amount` is the exact signed-gross match (back-compat: `"amount": -100` matches a €100 expense). `amount_min` / `amount_max` are inclusive bounds on the ABSOLUTE gross — sign-independent. Combine with `direction: "in"` / `"out"` to scope to one direction. Example: `"amount_min": 500, "direction": "in"` catches any incoming tx ≥ €500 regardless of currency representation.
+**Amount matching.** `amount` is the exact signed-gross match (back-compat: `"amount": -100` matches a €100 expense). `amount_min` / `amount_max` are inclusive bounds on the ABSOLUTE gross — sign-independent. Combine with `direction: "in"` / `"out"` to scope to one direction. Example: `"amount_min": 500, "direction": "in"` catches any incoming tx ≥ €500 regardless of currency representation. `amount_in` is a list of ABSOLUTE gross amounts, any of which matches: the membership rules use `"amount_in": [10, 100, 200]`, the only membership prices.
 
 Lives at `$APP_DATA_DIR/settings/rules.json`. Schema (simplified):
 

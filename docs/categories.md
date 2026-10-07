@@ -71,6 +71,25 @@ In order; the first one that gives a category wins:
    current and previous month left without one (internal and excluded rows
    aside), with its date, amount, account and id.
 
+## Membership is strict
+
+Memberships carry no VAT; rentals 21%. They are €10/month (Odoo product
+94), €100/year (111) and €200/year for an organisation (104), on account
+704200 (MEM journal). So:
+
+- an invoice line is `membership` only when it is one of those products,
+  or a membership-named product, **without VAT**; a membership-looking line
+  with VAT is not membership (other income). Account 700000 no longer
+  means membership: lines there follow their product (rental, coworking,
+  catering…);
+- the description rules (`*member*`, `*monthly financial contribution*`,
+  `*MEM/20*`) only apply to €10/€100/€200 (`amount_in`); Stripe
+  subscriptions keep their own rules;
+- the "Categories check" flags, for the current and previous month, every
+  payment categorised membership of another amount, and every
+  membership-looking invoice line (membership product or name, account
+  704200) with VAT or another price.
+
 The bank lines' bookings and matches come from the hourly Odoo pull
 (`latest/providers/odoo/<db>/journals/`, `statement-matches.json`). When a
 line is reconciled later, the next `chb generate` rebuilds that month.

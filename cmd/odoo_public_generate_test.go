@@ -98,7 +98,7 @@ func TestAccountingFilesPerTier(t *testing.T) {
 			ID: 303, Number: "MEM/2026/00030", MoveType: "out_invoice", State: "posted", PaymentState: "paid",
 			InvoiceDate: "2026-08-01", TotalAmount: 100, UntaxedAmount: 100, Currency: "EUR",
 			Partner:   OdooInvoicePartner{ID: 42, Name: "Carol Poe"},
-			LineItems: []OdooInvoiceLineItem{{ID: 8, Title: "Yearly membership", ProductName: "Membership", DisplayType: "product", SubtotalAmount: 100, TotalAmount: 100, AccountCode: "700000"}},
+			LineItems: []OdooInvoiceLineItem{{ID: 8, Title: "Yearly membership", ProductName: "Membership", DisplayType: "product", SubtotalAmount: 100, TotalAmount: 100, ProductID: 111, AccountCode: "704200"}},
 		},
 	}
 	seedInvoices(t, dataDir, "2026", "08", invoices)
