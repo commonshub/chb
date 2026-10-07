@@ -100,10 +100,26 @@ func invoiceLineCategory(li OdooInvoiceLineItem, prefixes []categoryPrefix, prod
 	if c == "" {
 		c = categoryForAccountCode(prefixes, li.AccountCode)
 	}
-	if c == "membership" && invoiceLineHasVAT(li) {
+	if c == "membership" && !strictMembershipLine(li) {
 		return "other-income"
 	}
 	return c
+}
+
+// strictMembershipLine: no VAT and a membership price (€10/€100/€200).
+// A "Corporate membership" at €1000 or a membership with 21% is not one.
+func strictMembershipLine(li OdooInvoiceLineItem) bool {
+	if invoiceLineHasVAT(li) {
+		return false
+	}
+	price := li.UnitPrice
+	if price == 0 && li.Quantity != 0 {
+		price = li.SubtotalAmount / li.Quantity
+	}
+	if price == 0 {
+		price = li.SubtotalAmount
+	}
+	return isMembershipAmount(price)
 }
 
 // membershipProductIDs: the Odoo membership products — €10/month (94),

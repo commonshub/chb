@@ -264,8 +264,11 @@ func (t lineIncomeTyper) of(li OdooInvoiceLineItem) string {
 	if typ == "" {
 		typ = incomeType(li.AccountCode)
 	}
-	if typ == "membership" && invoiceLineHasVAT(li) {
-		return "sales_services" // memberships carry no VAT
+	if typ == "membership" && !strictMembershipLine(li) {
+		if invoiceLineHasVAT(li) {
+			return "sales_services" // memberships carry no VAT
+		}
+		return "other_income" // e.g. a €1000 corporate membership
 	}
 	return typ
 }
