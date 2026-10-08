@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CommonsHub/chb/ical"
 	discordsource "github.com/CommonsHub/chb/providers/discord"
 	icssource "github.com/CommonsHub/chb/providers/ics"
 )
@@ -556,8 +557,10 @@ func Stats(args []string) {
 				if err != nil {
 					continue
 				}
-				// Count VEVENT blocks
-				bs.bookings += strings.Count(string(icsData), "BEGIN:VEVENT")
+				// Count occurrences (recurring series expanded in this month)
+				if evs, err := ical.ParseMonthICS(string(icsData), m.year, m.month); err == nil {
+					bs.bookings += len(evs)
+				}
 			}
 		}
 

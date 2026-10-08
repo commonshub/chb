@@ -245,9 +245,25 @@ func CalendarsSync(args []string) (int, int, error) {
 	}
 
 	// --- Bookings: write private bookings per source per month ---
+	// A month's archive is the feed's view of that month. From the previous
+	// month on, bookings are still added, moved and cancelled, so the file
+	// is rewritten whenever the feed differs (it used to be written once,
+	// the first time the month had a booking, and never again: bookings
+	// made later were missing). Older months are frozen unless --force.
+	liveFrom := time.Now().In(BrusselsTZ()).AddDate(0, -1, 0).Format("2006-01")
 	for _, rf := range fetched {
 		bookingEvents := filterBookingEvents(rf.events, rf.visibility, rf.allRoomBooking)
-		byMonth := ical.GroupByMonth(bookingEvents)
+		// A recurring series is filed in every month it recurs in; readers
+		// expand each month file (ical.ParseMonthICS).
+		byMonth := ical.GroupByMonthExpanded(bookingEvents, sinceMonth, untilMonth)
+		// Live months whose bookings were all cancelled: rewrite them empty.
+		for ym := liveFrom; ym <= untilMonth && ym >= sinceMonth; ym = nextYearMonth(ym) {
+			if _, ok := byMonth[ym]; !ok {
+				if _, err := os.Stat(icssource.Path(dataDir, ym[:4], ym[5:], icssource.FileName(rf.slug))); err == nil {
+					byMonth[ym] = nil
+				}
+			}
+		}
 		for ym, monthEvents := range byMonth {
 			if ym < sinceMonth || ym > untilMonth {
 				continue
@@ -257,16 +273,16 @@ func CalendarsSync(args []string) (int, int, error) {
 
 			relPath := icssource.RelPath(icssource.FileName(rf.slug))
 			filePath := icssource.Path(dataDir, year, month, icssource.FileName(rf.slug))
+			content := ical.WrapICS(monthEvents, fmt.Sprintf("-//Commons Hub Brussels//%s//EN", rf.name))
 
-			if !force {
-				if _, err := os.Stat(filePath); err == nil {
-					// File exists — count bookings but don't rewrite
+			if existing, err := os.ReadFile(filePath); err == nil {
+				if !force && (ym < liveFrom || string(existing) == content) {
+					// Frozen past month, or unchanged — count but don't rewrite.
 					totalBookings += len(monthEvents)
 					continue
 				}
 			}
 
-			content := ical.WrapICS(monthEvents, fmt.Sprintf("-//Commons Hub Brussels//%s//EN", rf.name))
 			writeMonthFile(dataDir, year, month, relPath, []byte(content))
 			newBookingCount += len(monthEvents)
 			totalBookings += len(monthEvents)
@@ -679,4 +695,13 @@ func eventSyncRangeLabel(sinceMonth, untilMonth string) string {
 		return "in " + sinceMonth
 	}
 	return "in " + sinceMonth + " → " + untilMonth
+}
+
+// nextYearMonth: "2026-12" → "2027-01".
+func nextYearMonth(ym string) string {
+	t, err := time.Parse("2006-01", ym)
+	if err != nil {
+		return "9999-99" // ends any loop
+	}
+	return t.AddDate(0, 1, 0).Format("2006-01")
 }

@@ -21,6 +21,16 @@ type Event struct {
 	End         time.Time
 	AllDay      bool     // DTSTART had VALUE=DATE (no time component)
 	RawLines    []string // Original ICS lines for this event block
+
+	// Recurrence (recurrence.go): RRule is the raw RRULE value of a series
+	// master; ExDates its excluded starts; RecurrenceID marks an override
+	// of one instance of the series with the same UID. Status is
+	// CONFIRMED, TENTATIVE or CANCELLED (a cancelled override removes the
+	// instance).
+	RRule        string
+	ExDates      []time.Time
+	RecurrenceID time.Time
+	Status       string
 }
 
 // YearMonth returns "YYYY-MM" for this event's start date
@@ -38,6 +48,7 @@ func ParseICS(data string) ([]Event, error) {
 	var lines []string
 	var props map[string]string
 	var propParams map[string]map[string]string
+	var exdates []string // EXDATE repeats; each "params|value"
 	// The property the last physical line belonged to, so a folded
 	// continuation line can be appended to it (RFC 5545 §3.1: lines longer
 	// than 75 octets are split, each continuation starting with a space or
@@ -52,6 +63,7 @@ func ParseICS(data string) ([]Event, error) {
 			lines = []string{line}
 			props = make(map[string]string)
 			propParams = make(map[string]map[string]string)
+			exdates = nil
 			lastKey = ""
 			continue
 		}
@@ -73,6 +85,14 @@ func ParseICS(data string) ([]Event, error) {
 			}
 			if dtend, ok := props["DTEND"]; ok {
 				ev.End, _ = parseICalDate(dtend, propParams["DTEND"])
+			}
+			ev.RRule = strings.TrimSpace(props["RRULE"])
+			ev.Status = strings.ToUpper(strings.TrimSpace(props["STATUS"]))
+			if rid, ok := props["RECURRENCE-ID"]; ok {
+				ev.RecurrenceID, _ = parseICalDate(rid, propParams["RECURRENCE-ID"])
+			}
+			for _, x := range exdates {
+				ev.ExDates = append(ev.ExDates, parseExDates(x)...)
 			}
 
 			if !ev.Start.IsZero() {
@@ -104,6 +124,9 @@ func ParseICS(data string) ([]Event, error) {
 				props[key] = value
 				if len(params) > 0 {
 					propParams[key] = params
+				}
+				if key == "EXDATE" {
+					exdates = append(exdates, params["TZID"]+"|"+params["VALUE"]+"|"+value)
 				}
 			}
 		}

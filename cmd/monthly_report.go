@@ -864,7 +864,7 @@ func countICSBookingsByCalendar(dataDir, year, month string) (int, map[string]in
 		if err != nil {
 			continue
 		}
-		events, err := ical.ParseICS(string(data))
+		events, err := ical.ParseMonthICS(string(data), year, month)
 		if err != nil {
 			continue
 		}

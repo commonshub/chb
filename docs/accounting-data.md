@@ -224,6 +224,8 @@ group many buyers.
 ```
 
 - **`bookings`** come from the room calendars: when a room was occupied.
+  Recurring bookings (weekly series, moved or cancelled instances) are
+  expanded: one row per occurrence.
   `public` is true when the booking hosts an event on the public calendar,
   matched by day and title. Only then does public see the title.
   `payment` is `"tokens"`, `"euros"` or `null` (unknown), read from the

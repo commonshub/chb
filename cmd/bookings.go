@@ -93,7 +93,7 @@ func loadAllBookings() ([]BookingEntry, error) {
 					continue
 				}
 
-				events, err := ical.ParseICS(string(data))
+				events, err := ical.ParseMonthICS(string(data), yd.Name(), md.Name())
 				if err != nil {
 					continue
 				}
