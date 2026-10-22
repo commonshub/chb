@@ -120,6 +120,9 @@ func accountIdentityKey(acc AccountConfig) string {
 		}
 		return legacyAddressIdentityKey(acc)
 	}
+	if acc.AccountID != "" && strings.EqualFold(acc.Provider, "coinos") {
+		return "coinos:user:" + strings.ToLower(strings.TrimSpace(acc.AccountID))
+	}
 	if acc.AccountID != "" {
 		return "stripe:" + strings.TrimSpace(acc.AccountID)
 	}
