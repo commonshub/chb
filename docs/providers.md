@@ -34,6 +34,18 @@ Current providers:
 - `providers/etherscan`: Etherscan V2 ERC20 transfer archives. Chain-specific
   data lives under `providers/etherscan/<chain>/`.
 - `providers/monerium`: Monerium SEPA order archives.
+- `providers/bitcoin`: confirmed on-chain transactions of a Bitcoin address,
+  raw Esplora JSON from mempool.space (`MEMPOOL_API_URL` overrides). Archived
+  per Brussels month as `providers/bitcoin/<slug>.json`; generated as
+  `bitcoin:tx:<txid>` entries in BTC (signed balance change, fee included on
+  spends).
+- `providers/coinos`: coinos.io wallet payments (Lightning, on-chain,
+  internal), raw API JSON fetched with `COINOS_TOKEN` (or
+  `COINOS_TOKEN_<SLUG>`). Archived as `providers/coinos/<slug>.json`;
+  generated as `coinos:payment:<id>` entries in BTC with the memo as
+  description and the fiat value at payment time (`metadata.fiatAmount`).
+  An on-chain coinos payment to a tracked Bitcoin address is marked
+  `INTERNAL` on both sides.
 - `providers/nostr`: Nostr annotations and chain tx/address metadata.
 - `providers/discord`: Discord messages for monitored channels and downloaded
   Discord image attachments referenced by `stewards/images.json`.

@@ -2431,7 +2431,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// loader return nothing for accounts/months with no matching rows.
 	kbcAccounts := kbcAccountsByIBAN()
 	kbcEnabled := len(kbcAccounts) > 0
-	if len(stripePaths) == 0 && !etherscanExists && !moneriumExists && !kbcEnabled {
+	// Bitcoin on-chain and coinos wallet archives (BTC-denominated).
+	satsTxs := append(bitcoinTransactionsForMonth(dataDir, year, month), coinosTransactionsForMonth(dataDir, year, month)...)
+	if len(stripePaths) == 0 && !etherscanExists && !moneriumExists && !kbcEnabled && len(satsTxs) == 0 {
 		return 0
 	}
 
@@ -3005,6 +3007,11 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				transactions = append(transactions, entry)
 			}
 		}
+	}
+
+	if len(satsTxs) > 0 {
+		markBitcoinInternalTransfers(satsTxs)
+		transactions = append(transactions, satsTxs...)
 	}
 
 	if len(transactions) == 0 {
@@ -3655,6 +3662,14 @@ func buildAccountURIIndex(settings *Settings) map[string]FinanceAccount {
 			if acc.Address != "" {
 				uri = BuildBlockchainAddressURI(acc.ChainID, acc.Chain, acc.Address)
 			}
+		case "bitcoin":
+			if acc.Address != "" {
+				uri = BuildBitcoinAddressURI(acc.Address)
+			}
+		case "coinos":
+			if acc.AccountID != "" {
+				uri = BuildCoinosUserURI(acc.AccountID)
+			}
 		}
 		if uri != "" {
 			out[uri] = acc
@@ -3850,6 +3865,12 @@ func counterpartyIdentity(tx TransactionEntry, settings *Settings) (id, address,
 		// — billing names, description fallbacks — is treated as PII.
 		name := stringMetadata(tx.Metadata, "name")
 		return BuildStripeCustomerURI(tx.StripeCustomerID), "", name, 0
+
+	case "bitcoin", "coinos":
+		if tx.CounterpartyID == "" {
+			return "", "", "", 0
+		}
+		return tx.CounterpartyID, "", display, 0
 
 	default:
 		if display == "" {

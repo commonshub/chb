@@ -346,5 +346,20 @@
         "decimals": 18
       }
     ]
+  },
+  {
+    "name": "₿ Bitcoin",
+    "slug": "bitcoin",
+    "provider": "bitcoin",
+    "chain": "bitcoin",
+    "address": "bc1qj4cv5uaquecahrhk7v98af8twcj5s05z0pw9kv",
+    "currency": "BTC"
+  },
+  {
+    "name": "⚡ coinos",
+    "slug": "coinos",
+    "provider": "coinos",
+    "accountId": "commonshub",
+    "currency": "BTC"
   }
 ]
