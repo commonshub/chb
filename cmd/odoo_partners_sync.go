@@ -20,6 +20,8 @@ type OdooPartnersFile struct {
 	Count         int                   `json:"count"`
 	Partners      []OdooPartner         `json:"partners"`
 	Categories    []OdooPartnerCategory `json:"categories,omitempty"`
+	// DiscordField: res.partner has x_discord_id (cmd/discord_partners.go).
+	DiscordField bool `json:"discordField,omitempty"`
 }
 
 type OdooPartner struct {
@@ -35,6 +37,9 @@ type OdooPartner struct {
 	Mobile              string `json:"mobile,omitempty"`
 	WriteDate           string `json:"writeDate,omitempty"`
 	CategoryIDs         []int  `json:"categoryIds,omitempty"`
+	// DiscordID: res.partner x_discord_id, when the field exists
+	// (cmd/discord_partners.go).
+	DiscordID string `json:"discordId,omitempty"`
 }
 
 type OdooPartnerCategory struct {
@@ -78,10 +83,15 @@ func odooPartnersSync(args []string, printSummary bool) (int, error) {
 	}
 
 	odooLog("\n%s👥 Syncing Odoo partners%s\n", Fmt.Bold, Fmt.Reset)
-	rows, err := odooSearchReadAllMapsLabeled(creds, uid, "res.partner", []interface{}{}, []string{
+	fields := []string{
 		"id", "name", "email", "commercial_partner_id", "parent_id", "is_company",
 		"active", "vat", "phone", "mobile", "write_date", "category_id",
-	}, "id asc", "Odoo partners")
+	}
+	hasDiscord, _ := odooHasPartnerDiscordField(odooSession{creds, uid})
+	if hasDiscord {
+		fields = append(fields, discordPartnerField)
+	}
+	rows, err := odooSearchReadAllMapsLabeled(creds, uid, "res.partner", []interface{}{}, fields, "id asc", "Odoo partners")
 	if err != nil {
 		if printSummary {
 			odooSyncLine("partners", odooItemSyncStatus(0, "partner", fmt.Sprintf("issue: %v", err)))
@@ -113,6 +123,7 @@ func odooPartnersSync(args []string, printSummary bool) (int, error) {
 			Mobile:              odooString(row["mobile"]),
 			WriteDate:           odooString(row["write_date"]),
 			CategoryIDs:         odooIDList(row["category_id"]),
+			DiscordID:           strings.TrimSpace(odooString(row[discordPartnerField])),
 		})
 	}
 	sort.Slice(partners, func(i, j int) bool { return partners[i].ID < partners[j].ID })
@@ -133,6 +144,7 @@ func odooPartnersSync(args []string, printSummary bool) (int, error) {
 		Count:         len(partners),
 		Partners:      partners,
 		Categories:    categories,
+		DiscordField:  hasDiscord,
 	}
 	if err := odoosource.WriteJSON(DataDir(), "latest", "", file, odoosource.PartnersFile); err != nil {
 		return 0, err

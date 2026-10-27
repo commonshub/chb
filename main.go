@@ -247,6 +247,14 @@ func main() {
 				exitWithError(err)
 			}
 		}
+	case "discord":
+		if len(args) > 1 && args[1] == "partners" {
+			if err := cmd.DiscordPartners(args[2:]); err != nil {
+				exitWithError(err)
+			}
+		} else {
+			_ = cmd.DiscordPartners([]string{"--help"})
+		}
 	case "messages":
 		if len(args) > 1 && args[1] == "sync" {
 			if _, err := cmd.MessagesSync(args[2:]); err != nil {

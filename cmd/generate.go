@@ -817,6 +817,12 @@ func Generate(args []string) error {
 		return Pluralize(generatePraise(dataDir), "message", "") + " in the last 60 days"
 	})
 
+	// Discord members ↔ Odoo partners (cmd/discord_partners.go): the
+	// pending partner changes and needsEmail for the website.
+	genStep("Discord partners", func() string {
+		return generateDiscordPartners(dataDir)
+	})
+
 	// Hub money without a category (cmd/uncategorised_check.go).
 	genStep("Categories check", func() string {
 		return checkUncategorisedHubTransactions(dataDir, time.Now())
@@ -4075,6 +4081,7 @@ func generateMembersGo(dataDir string, scopes []generateScope) {
 		y, _ := strconv.Atoi(year)
 		mo, _ := strconv.Atoi(month)
 		members, mismatches := mergeProviderSnapshotsAt(snapshots, y, mo)
+		attachMemberDiscordIDs(dataDir, members) // discord_partners.go
 		summary := calculateMembersSummary(members)
 
 		out := MembersOutputFile{

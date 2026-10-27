@@ -272,10 +272,7 @@ func fetchRecapSubscribers(secret string) (recapSubscribers, error) {
 // linked to two different Discord ids is dropped (ambiguous).
 func fetchRecapDiscordLinks(secret string) (map[string]string, int, error) {
 	var resp struct {
-		Links []struct {
-			DiscordID string `json:"discordId"`
-			EmailHash string `json:"emailHash"`
-		} `json:"links"`
+		Links []websiteDiscordLink `json:"links"`
 	}
 	if err := recapGet(secret, "/api/members/discord-links", &resp); err != nil {
 		return nil, 0, err
@@ -283,10 +280,7 @@ func fetchRecapDiscordLinks(secret string) (map[string]string, int, error) {
 	return hashDiscordLinks(resp.Links), len(resp.Links), nil
 }
 
-func hashDiscordLinks(links []struct {
-	DiscordID string `json:"discordId"`
-	EmailHash string `json:"emailHash"`
-}) map[string]string {
+func hashDiscordLinks(links []websiteDiscordLink) map[string]string {
 	out := map[string]string{}
 	ambiguous := map[string]bool{}
 	for _, l := range links {

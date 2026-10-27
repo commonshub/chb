@@ -85,10 +85,7 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 }
 
 func TestRecapHashLinks(t *testing.T) {
-	type link = struct {
-		DiscordID string `json:"discordId"`
-		EmailHash string `json:"emailHash"`
-	}
+	type link = websiteDiscordLink
 	hl := hashDiscordLinks([]link{
 		{"111111111111111111", "h1"}, {"111111111111111111", "h1"}, // login + application: same id
 		{"222222222222222222", "h2"}, {"333333333333333333", "h2"}, // ambiguous
