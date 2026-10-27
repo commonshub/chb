@@ -41,7 +41,7 @@ func TestBuildDiscordPartnersPlan(t *testing.T) {
 		Emails: map[string]PartnerEmailSubmission{
 			"100000000000000005": {DiscordID: "100000000000000005", Email: "eve@x.org"},   // set on a Discord-tagged partner
 			"100000000000000006": {DiscordID: "100000000000000006", Email: "fay@x.org"},   // new partner with email
-			"100000000000000007": {DiscordID: "100000000000000007", Email: "taken@x.org"}, // duplicate
+			"100000000000000007": {DiscordID: "100000000000000007", Email: "taken@x.org"}, // links to partner 6
 		},
 	})
 	if plan.Members != 8 || plan.Linked != 2 {
@@ -54,6 +54,7 @@ func TestBuildDiscordPartnersPlan(t *testing.T) {
 	want := map[string]string{
 		"100000000000000002": "link", "100000000000000003": "link",
 		"100000000000000005": "set_email", "100000000000000006": "create", "100000000000000008": "create",
+		"100000000000000007": "link",
 	}
 	if len(got) != len(want) {
 		t.Errorf("actions %v", got)
@@ -67,7 +68,7 @@ func TestBuildDiscordPartnersPlan(t *testing.T) {
 	for _, r := range plan.Review {
 		reviewed[r.DiscordID] = true
 	}
-	if !reviewed["100000000000000004"] || !reviewed["100000000000000007"] || len(plan.Review) != 2 {
+	if !reviewed["100000000000000004"] || len(plan.Review) != 1 {
 		t.Errorf("review %+v", plan.Review)
 	}
 	// Cleo (linked by hand, no email) and hal (created, no email) need one.

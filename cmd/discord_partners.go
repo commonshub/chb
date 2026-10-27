@@ -22,7 +22,8 @@ package cmd
 // Linking order for a Discord member: a partner already carrying that
 // x_discord_id; the stewards' map settings/members-discord.json
 // ("odoo:<partner id>" → Discord id); the website's email-hash link (exactly
-// one active partner whose email hashes to it). A partner whose name matches
+// one active partner whose email hashes to it); the verified email they gave
+// on the website, when exactly one partner has it. A partner whose name matches
 // the member's Discord name is never linked automatically: it is listed for
 // review and no partner is created. Otherwise a partner is created (no
 // company, tagged "Discord", the Discord display name, no email).
@@ -430,6 +431,23 @@ func buildDiscordPartnersPlan(in discordPartnerInputs) DiscordPartnersPlan {
 			}
 		}
 
+		// A verified email the member gave on the website that belongs to
+		// exactly one partner links them (stronger than any name match).
+		if partner == nil && hasSub {
+			if owners := partnersByEmail[strings.ToLower(sub.Email)]; len(owners) == 1 {
+				p := byID[owners[0]]
+				if p.DiscordID != "" && p.DiscordID != m.ID {
+					review(m, "the email they gave belongs to a partner with another Discord id", owners)
+					continue
+				}
+				plan.Actions = append(plan.Actions, DiscordPartnerAction{Op: "link", DiscordID: m.ID, DisplayName: m.DisplayName, PartnerID: p.ID, Via: "email"})
+				continue
+			} else if len(owners) > 1 {
+				review(m, "the email they gave belongs to several partners", owners)
+				continue
+			}
+		}
+
 		if partner == nil {
 			if same := byName[normName(m.DisplayName)]; len(same) > 0 {
 				review(m, "a partner has the same name: link by hand in members-discord.json if it is them", ids(same))
@@ -437,11 +455,7 @@ func buildDiscordPartnersPlan(in discordPartnerInputs) DiscordPartnersPlan {
 			}
 			act := DiscordPartnerAction{Op: "create", DiscordID: m.ID, DisplayName: m.DisplayName}
 			if hasSub {
-				if others := partnersByEmail[strings.ToLower(sub.Email)]; len(others) > 0 {
-					review(m, "the email they gave belongs to another partner (probable duplicate)", others)
-					continue
-				}
-				act.Email = sub.Email
+				act.Email = sub.Email // matches no partner (checked above)
 			} else {
 				plan.NeedsEmail = append(plan.NeedsEmail, m.ID)
 			}
