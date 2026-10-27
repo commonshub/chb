@@ -11,10 +11,13 @@ package cmd
 //     ({default:{monthly,quarterly,yearly}, members:{<discordId>:{…}}});
 //     all three false = opted out, never email.
 //   - chb picks the recipients: active and grace members (latest members.json,
-//     stewards tier) with a Discord id and an address. The Discord id comes
-//     from the member's accounts.discord (when it is a Discord id) or from
-//     the stewards' map settings/members-discord.json ("odoo:<partner id>"
-//     or "stripe:<customer id>" → Discord id). Never guessed from names.
+//     stewards tier) with a Discord id and an address. The Discord id comes,
+//     in order, from the stewards' map settings/members-discord.json
+//     ("odoo:<partner id>" or "stripe:<customer id>" → Discord id), the
+//     member's accounts.discord (when it is a Discord id), or the website's
+//     GET <site>/api/members/discord-links (Discord login or application →
+//     emailHash, matched on accounts.emailHash; a hash linked to two
+//     different Discord ids is ambiguous and skipped). Never guessed from names.
 //   - Due periods: the previous month in the first days of a month, the
 //     previous quarter in the first days of Jan/Apr/Jul/Oct, the previous
 //     year in the first days of January (recapDueDays tolerates a missed run).
@@ -147,21 +150,24 @@ func loadRecapDiscordLinks() map[string]string {
 
 // recapRecipients: active and grace members with a Discord id. The others
 // are counted in missing (no Discord id), never guessed.
-func recapRecipients(members []Member, links map[string]string) (out []recapRecipient, missing int) {
+func recapRecipients(members []Member, links map[string]string, hashLinks map[string]string) (out []recapRecipient, missing int) {
 	seen := map[string]bool{}
 	for _, m := range members {
 		if m.Status != "active" && m.Status != "grace" {
 			continue
 		}
 		r := recapRecipient{FirstName: m.FirstName, OdooPartnerID: m.OdooPartnerID, StripeCustomerID: m.StripeCustomerID}
-		if m.Accounts.Discord != nil && discordIDPattern.MatchString(*m.Accounts.Discord) {
-			r.DiscordID = *m.Accounts.Discord
-		}
-		if r.DiscordID == "" && m.OdooPartnerID > 0 {
+		if m.OdooPartnerID > 0 {
 			r.DiscordID = links[fmt.Sprintf("odoo:%d", m.OdooPartnerID)]
 		}
 		if r.DiscordID == "" && m.StripeCustomerID != "" {
 			r.DiscordID = links["stripe:"+m.StripeCustomerID]
+		}
+		if r.DiscordID == "" && m.Accounts.Discord != nil && discordIDPattern.MatchString(*m.Accounts.Discord) {
+			r.DiscordID = *m.Accounts.Discord
+		}
+		if r.DiscordID == "" && m.Accounts.EmailHash != "" {
+			r.DiscordID = hashLinks[m.Accounts.EmailHash]
 		}
 		if !discordIDPattern.MatchString(r.DiscordID) {
 			missing++
@@ -262,6 +268,41 @@ func fetchRecapSubscribers(secret string) (recapSubscribers, error) {
 	return s, err
 }
 
+// fetchRecapDiscordLinks: the website's emailHash → Discord id links. A hash
+// linked to two different Discord ids is dropped (ambiguous).
+func fetchRecapDiscordLinks(secret string) (map[string]string, int, error) {
+	var resp struct {
+		Links []struct {
+			DiscordID string `json:"discordId"`
+			EmailHash string `json:"emailHash"`
+		} `json:"links"`
+	}
+	if err := recapGet(secret, "/api/members/discord-links", &resp); err != nil {
+		return nil, 0, err
+	}
+	return hashDiscordLinks(resp.Links), len(resp.Links), nil
+}
+
+func hashDiscordLinks(links []struct {
+	DiscordID string `json:"discordId"`
+	EmailHash string `json:"emailHash"`
+}) map[string]string {
+	out := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, l := range links {
+		if l.EmailHash == "" || !discordIDPattern.MatchString(l.DiscordID) || ambiguous[l.EmailHash] {
+			continue
+		}
+		if prev, ok := out[l.EmailHash]; ok && prev != l.DiscordID {
+			delete(out, l.EmailHash)
+			ambiguous[l.EmailHash] = true
+			continue
+		}
+		out[l.EmailHash] = l.DiscordID
+	}
+	return out
+}
+
 type recapMessage struct {
 	Member struct {
 		DiscordID string `json:"discordId"`
@@ -354,9 +395,10 @@ USAGE
                                        Send ONE member's recap to <email>
                                        (no ledger; default period: last month)
 
-Recipients: active and grace members with a Discord id (accounts.discord,
-or settings/members-discord.json: {"odoo:<partner id>": "<discord id>",
-"stripe:<customer id>": "<discord id>"}). Preferences come from the
+Recipients: active and grace members with a Discord id, from (in order)
+settings/members-discord.json ({"odoo:<partner id>": "<discord id>",
+"stripe:<customer id>": "<discord id>"}), accounts.discord, or the
+website's Discord links matched on the member's email hash. Preferences come from the
 website; members who opted out are never emailed. Sent recaps are
 recorded in latest/providers/members/recaps-sent.json and never sent twice.
 Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
@@ -412,12 +454,18 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 	if err != nil {
 		return err
 	}
-	recipients, missing := recapRecipients(members, loadRecapDiscordLinks())
+	hashLinks, nLinks, err := fetchRecapDiscordLinks(secret)
+	if err != nil {
+		return fmt.Errorf("discord links: %v", err)
+	}
+	handLinks := loadRecapDiscordLinks()
+	recipients, missing := recapRecipients(members, handLinks, hashLinks)
+	fmt.Printf("\n  Discord links: %d by hand (members-discord.json), %d from the website\n", len(handLinks), nLinks)
 	var ids []string
 	for _, p := range periods {
 		ids = append(ids, p.ID+" ("+p.Kind+")")
 	}
-	fmt.Printf("\n  Member recaps — due: %s\n", map[bool]string{true: "none today (periods are due on days 1–" + strconv.Itoa(recapDueDays) + "; use --period)", false: strings.Join(ids, ", ")}[len(periods) == 0])
+	fmt.Printf("  Member recaps — due: %s\n", map[bool]string{true: "none today (periods are due on days 1–" + strconv.Itoa(recapDueDays) + "; use --period)", false: strings.Join(ids, ", ")}[len(periods) == 0])
 	fmt.Printf("  %d active/grace member(s) with a Discord id, %d skipped without one\n", len(recipients), missing)
 	if len(periods) == 0 || len(recipients) == 0 {
 		fmt.Println()

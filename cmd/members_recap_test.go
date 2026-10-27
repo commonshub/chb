@@ -58,7 +58,7 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 		{FirstName: "F", Status: "active", Accounts: MemberAccounts{Discord: str("666666666666666666")}},
 	}
 	links := map[string]string{"odoo:7": "222222222222222222", "stripe:cus_c": "333333333333333333"}
-	rs, missing := recapRecipients(members, links)
+	rs, missing := recapRecipients(members, links, nil)
 	if len(rs) != 4 || missing != 1 {
 		t.Fatalf("recipients %d missing %d", len(rs), missing)
 	}
@@ -81,5 +81,29 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 	want := []string{"222222222222222222:2026-09", "222222222222222222:2026-Q3", "666666666666666666:2026-Q3"}
 	if !reflect.DeepEqual(keys, want) || optedOut != 1 || already != 1 {
 		t.Errorf("todo %v optedOut %d already %d", keys, optedOut, already)
+	}
+}
+
+func TestRecapHashLinks(t *testing.T) {
+	type link = struct {
+		DiscordID string `json:"discordId"`
+		EmailHash string `json:"emailHash"`
+	}
+	hl := hashDiscordLinks([]link{
+		{"111111111111111111", "h1"}, {"111111111111111111", "h1"}, // login + application: same id
+		{"222222222222222222", "h2"}, {"333333333333333333", "h2"}, // ambiguous
+		{"444444444444444444", "h4"},
+	})
+	if !reflect.DeepEqual(hl, map[string]string{"h1": "111111111111111111", "h4": "444444444444444444"}) {
+		t.Fatalf("hash links %v", hl)
+	}
+	members := []Member{
+		{FirstName: "A", Status: "active", Accounts: MemberAccounts{EmailHash: "h1"}},
+		{FirstName: "B", Status: "active", Accounts: MemberAccounts{EmailHash: "h2"}},                   // ambiguous: skipped
+		{FirstName: "C", Status: "active", OdooPartnerID: 9, Accounts: MemberAccounts{EmailHash: "h4"}}, // hand map wins
+	}
+	rs, missing := recapRecipients(members, map[string]string{"odoo:9": "999999999999999999"}, hl)
+	if missing != 1 || len(rs) != 2 || rs[0].DiscordID != "111111111111111111" || rs[1].DiscordID != "999999999999999999" {
+		t.Errorf("recipients %+v missing %d", rs, missing)
 	}
 }
