@@ -20,6 +20,8 @@ import (
 	"time"
 	"unicode"
 
+	bitcoinsource "github.com/CommonsHub/chb/providers/bitcoin"
+	coinossource "github.com/CommonsHub/chb/providers/coinos"
 	etherscansource "github.com/CommonsHub/chb/providers/etherscan"
 	kbcbrusselssource "github.com/CommonsHub/chb/providers/kbcbrussels"
 	stripesource "github.com/CommonsHub/chb/providers/stripe"
@@ -323,6 +325,14 @@ func accountBalanceKey(acc *AccountConfig) string {
 		if acc.IBAN != "" {
 			return strings.ToLower(acc.IBAN)
 		}
+	case "bitcoin":
+		if acc.Address != "" {
+			return "bitcoin:" + strings.ToLower(acc.Address)
+		}
+	case "coinos":
+		if acc.AccountID != "" {
+			return "coinos:" + strings.ToLower(acc.AccountID)
+		}
 	}
 	return ""
 }
@@ -415,7 +425,38 @@ func refreshAccountBalance(acc *AccountConfig) (float64, string, error) {
 		}
 		return v, strings.ToLower(acc.IBAN), nil
 	}
+	if acc.Provider == "bitcoin" || acc.Provider == "coinos" {
+		v, err := fetchBTCBalance(acc)
+		if err != nil {
+			return 0, "", err
+		}
+		return v, accountBalanceKey(acc), nil
+	}
 	return 0, "", nil
+}
+
+// fetchBTCBalance returns the live balance in BTC of a bitcoin address
+// (Esplora) or a coinos wallet (needs COINOS_TOKEN).
+func fetchBTCBalance(acc *AccountConfig) (float64, error) {
+	var sats int64
+	var err error
+	switch acc.Provider {
+	case "bitcoin":
+		if acc.Address == "" {
+			return 0, fmt.Errorf("no address configured")
+		}
+		sats, err = bitcoinsource.FetchBalance(acc.Address)
+	case "coinos":
+		token := coinosToken(acc.Slug)
+		if token == "" {
+			return 0, fmt.Errorf("COINOS_TOKEN not set")
+		}
+		sats, err = coinossource.FetchBalance(token)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return satsToBTC(sats), nil
 }
 
 // kbcLatestBalance returns the running balance + timestamp of the most
@@ -467,6 +508,10 @@ func fetchLiveBalances(configs []AccountConfig) map[string]float64 {
 				balances[strings.ToLower(acc.IBAN)] = roundCents(bal)
 			} else if v, _, ok := kbcLatestBalance(acc.IBAN); ok {
 				balances[strings.ToLower(acc.IBAN)] = v
+			}
+		} else if acc.Provider == "bitcoin" || acc.Provider == "coinos" {
+			if v, err := fetchBTCBalance(&acc); err == nil {
+				balances[accountBalanceKey(&acc)] = v
 			}
 		}
 	}
@@ -1159,6 +1204,10 @@ func liveBalanceSourceShort(acc *AccountConfig) string {
 			return "Odoo journal"
 		}
 		return "KBC CSV"
+	case "bitcoin":
+		return "on-chain"
+	case "coinos":
+		return "coinos"
 	default:
 		return "live"
 	}
@@ -1256,6 +1305,15 @@ func printAccountOnlineLink(acc *AccountConfig, indent string) {
 		if _, url := accountOnlineLink(acc); url != "" {
 			printAccountField(indent, "URL", url)
 		}
+	case "bitcoin", "coinos":
+		label, url := accountOnlineLink(acc)
+		if label == "" {
+			return
+		}
+		printAccountField(indent, "Address", label)
+		if url != "" {
+			printAccountField(indent, "URL", url)
+		}
 	}
 }
 
@@ -1295,6 +1353,16 @@ func accountOnlineLink(acc *AccountConfig) (string, string) {
 		// KBC Brussels doesn't have a per-account public URL; the IBAN is
 		// the only canonical handle we can expose here.
 		return "iban " + acc.IBAN, ""
+	case "bitcoin":
+		if acc.Address == "" {
+			return "", ""
+		}
+		return "bitcoin " + acc.Address, bitcoinsource.AddressURL(acc.Address)
+	case "coinos":
+		if acc.AccountID == "" {
+			return "", ""
+		}
+		return "coinos " + acc.AccountID, coinossource.ProfileURL(acc.AccountID)
 	}
 	return "", ""
 }
@@ -2409,6 +2477,10 @@ func accountProviderDisplayName(acc *AccountConfig) string {
 		return "Monerium"
 	case "kbcbrussels":
 		return "CSV"
+	case "bitcoin":
+		return "Bitcoin"
+	case "coinos":
+		return "coinos"
 	}
 	return strings.Title(acc.Provider)
 }
@@ -2945,6 +3017,10 @@ func accountTransactionSource(acc AccountConfig) string {
 		return "stripe"
 	case "monerium":
 		return "monerium"
+	case "bitcoin":
+		return "bitcoin"
+	case "coinos":
+		return "coinos"
 	case "etherscan":
 		if acc.Chain != "" {
 			return strings.ToLower(acc.Chain)
