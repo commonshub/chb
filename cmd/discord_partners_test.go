@@ -89,6 +89,19 @@ func TestDiscordPartnersEmailOnlyOnTaggedPartners(t *testing.T) {
 	}
 }
 
+func TestDiscordPartnersNameLinkIsReviewed(t *testing.T) {
+	salt := "s"
+	plan := buildDiscordPartnersPlan(discordPartnerInputs{
+		Members:   []GuildMember{gm("100000000000000001", "miriam", true)},
+		Partners:  []OdooPartner{{ID: 1, Name: "Dean Miriam", Email: "dm@x.org", Active: true}},
+		Salt:      salt,
+		NameLinks: map[string]string{hashEmail("dm@x.org", salt): "100000000000000001"},
+	})
+	if len(plan.Actions) != 0 || len(plan.Review) != 1 || plan.Review[0].PartnerIDs[0] != 1 {
+		t.Errorf("a name link must be reviewed, not written: %+v", plan)
+	}
+}
+
 func TestDecryptPartnerEmail(t *testing.T) {
 	siteSK := nostr.GeneratePrivateKey()
 	sitePK, _ := nostr.GetPublicKey(siteSK)

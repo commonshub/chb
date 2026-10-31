@@ -87,9 +87,9 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 func TestRecapHashLinks(t *testing.T) {
 	type link = websiteDiscordLink
 	hl := hashDiscordLinks([]link{
-		{"111111111111111111", "h1"}, {"111111111111111111", "h1"}, // login + application: same id
-		{"222222222222222222", "h2"}, {"333333333333333333", "h2"}, // ambiguous
-		{"444444444444444444", "h4"},
+		{"111111111111111111", "h1", "login"}, {"111111111111111111", "h1", "email"}, // login + application: same id
+		{"222222222222222222", "h2", ""}, {"333333333333333333", "h2", "name"}, // ambiguous
+		{"444444444444444444", "h4", "name"},
 	})
 	if !reflect.DeepEqual(hl, map[string]string{"h1": "111111111111111111", "h4": "444444444444444444"}) {
 		t.Fatalf("hash links %v", hl)
