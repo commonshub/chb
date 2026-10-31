@@ -35,7 +35,7 @@ There is **no `private/` anymore**. `generated/private/enrichment.json`
 |---|---|---|
 | `transactions.json` | amounts, categories, collectives, canonical ids, plain `description`; **no counterparty name, no memo/narration, no bank reference, no donor display names** | + counterparty names, `memo`, `fullDescription`, `reference` (what the member-only enrichment used to add — now inline, no second file) |
 | `counterparties.json` | our own accounts only (entries with a `slug`) | every counterparty by name |
-| `members.json` | `summary` only, `members: []` | members with `firstName`, `plan`, `status`, `amount`, `accounts.discord`; no `emailHash`, no Stripe urls |
+| `members.json` | `summary` only, `members: []` | members with `firstName`, `plan`, `status`, `amount`, `accounts.discord`, `accounts.nameTokens` (salted name-token fingerprints); no `emailHash`, no Stripe urls |
 | `contributors.json` (month / year / latest) | Discord identity (id, username, displayName, avatar), token counts, message counts; **no wallet `address`** | same (wallet stays with stewards) |
 | `profiles/<username>.json` | **absent** | full |
 | `images.json` | photo, author identity, reactions; **`message` is empty** | + message text |

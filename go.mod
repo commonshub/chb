@@ -16,6 +16,7 @@ require (
 	github.com/rmhubbert/bubbletea-overlay v0.6.6
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.52.0
+	golang.org/x/text v0.36.0
 )
 
 require (
@@ -64,5 +65,4 @@ require (
 	golang.org/x/arch v0.15.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
 )

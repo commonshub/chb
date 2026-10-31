@@ -162,7 +162,7 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 			OrganizationName:   orgName,
 			ID:                 sub.ID,
 			Source:             sub.Source,
-			Accounts:           MemberAccounts{EmailHash: sub.EmailHash, Discord: sub.Discord},
+			Accounts:           MemberAccounts{EmailHash: sub.EmailHash, Discord: sub.Discord, NameTokens: sub.NameTokens},
 			FirstName:          sub.FirstName,
 			Plan:               sub.Plan,
 			Amount:             sub.Amount,

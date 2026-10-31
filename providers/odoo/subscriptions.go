@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/CommonsHub/chb/providers"
 )
 
 type MembershipProduct struct {
@@ -41,6 +43,7 @@ type MembershipSubscription struct {
 	EmailHash          string             `json:"emailHash"`
 	FirstName          string             `json:"firstName"`
 	LastName           string             `json:"lastName"`
+	NameTokens         []string           `json:"nameTokens,omitempty"`
 	Plan               string             `json:"plan"`
 	Amount             MembershipAmount   `json:"amount"`
 	Interval           string             `json:"interval"`
@@ -276,6 +279,7 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 
 		partnerName, _ := partner["name"].(string)
 		firstName, lastName := splitSourceName(partnerName)
+		nameTokens := providers.NameTokens(strings.Join(sourceEmailPattern.Split(partnerName, -1), " "), salt)
 		isCompany, _ := partner["is_company"].(bool)
 
 		tmplID := orderToTemplate[orderID]
@@ -352,6 +356,7 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 			EmailHash:          emailHash,
 			FirstName:          firstName,
 			LastName:           lastName,
+			NameTokens:         nameTokens,
 			Plan:               interval + "ly",
 			Amount:             MembershipAmount{Value: math.Round(totalAmount*100) / 100, Decimals: 2, Currency: "EUR"},
 			Interval:           interval,

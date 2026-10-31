@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CommonsHub/chb/providers"
 	odoosource "github.com/CommonsHub/chb/providers/odoo"
 	stripesource "github.com/CommonsHub/chb/providers/stripe"
 )
@@ -33,6 +34,9 @@ type MemberPayment struct {
 type MemberAccounts struct {
 	EmailHash string  `json:"emailHash"`
 	Discord   *string `json:"discord"`
+	// Salted name-token fingerprints (providers.NameTokens): lets the
+	// website match a Discord name to a membership without seeing names.
+	NameTokens []string `json:"nameTokens,omitempty"`
 }
 
 type Member struct {
@@ -93,6 +97,7 @@ type providerSubscription struct {
 	EmailHash          string         `json:"emailHash"`
 	FirstName          string         `json:"firstName"`
 	LastName           string         `json:"lastName"`
+	NameTokens         []string       `json:"nameTokens,omitempty"`
 	Plan               string         `json:"plan"`
 	Amount             MemberAmount   `json:"amount"`
 	Interval           string         `json:"interval"`
@@ -338,6 +343,10 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 
 		emailHash := hashEmail(cust.Email, salt)
 		firstName, _ := splitName(cust.Name)
+		var nameTokens []string
+		if cust.Name != nil {
+			nameTokens = providers.NameTokens(sanitizePersonName(*cust.Name), salt)
+		}
 
 		plan := "monthly"
 		if interval == "year" {
@@ -379,6 +388,7 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 			Source:             "stripe",
 			EmailHash:          emailHash,
 			FirstName:          firstName,
+			NameTokens:         nameTokens,
 			Plan:               plan,
 			Amount:             MemberAmount{Value: unitAmount, Decimals: 2, Currency: currency},
 			Interval:           interval,
