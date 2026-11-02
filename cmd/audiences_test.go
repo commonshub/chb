@@ -45,6 +45,10 @@ func TestIBANChecksum(t *testing.T) {
 	if got := findIBANs([]byte(`{"hash":"AB12CDEF0123456789012345","sku":"FR76ABCDEFGHIJKLMNOPQ"}`)); len(got) != 0 {
 		t.Errorf("false positives: %v", got)
 	}
+	// A Discord avatar hash that passes mod-97 is not a UAE IBAN (23 chars).
+	if got := findIBANs([]byte(`{"avatar_url":"https://cdn.discordapp.com/avatars/1/ae37f5b6d286744605fb51b2762e6a50.png"}`)); len(got) != 0 {
+		t.Errorf("avatar hash taken for an IBAN: %v", got)
+	}
 }
 
 func TestEnforceAudiencePolicy(t *testing.T) {
