@@ -150,7 +150,7 @@ func loadRecapDiscordLinks() map[string]string {
 
 // recapRecipients: active and grace members with a Discord id. The others
 // are counted in missing (no Discord id), never guessed.
-func recapRecipients(members []Member, links map[string]string, hashLinks map[string]string) (out []recapRecipient, missing int) {
+func recapRecipients(members []Member, links map[string]string, web recapWebsiteLinks) (out []recapRecipient, missing int) {
 	seen := map[string]bool{}
 	for _, m := range members {
 		if m.Status != "active" && m.Status != "grace" {
@@ -166,8 +166,11 @@ func recapRecipients(members []Member, links map[string]string, hashLinks map[st
 		if r.DiscordID == "" && m.Accounts.Discord != nil && discordIDPattern.MatchString(*m.Accounts.Discord) {
 			r.DiscordID = *m.Accounts.Discord
 		}
+		if r.DiscordID == "" {
+			r.DiscordID = web.forSubscription(m.ID)
+		}
 		if r.DiscordID == "" && m.Accounts.EmailHash != "" {
-			r.DiscordID = hashLinks[m.Accounts.EmailHash]
+			r.DiscordID = web.Hash[m.Accounts.EmailHash]
 		}
 		if !discordIDPattern.MatchString(r.DiscordID) {
 			missing++
@@ -268,16 +271,68 @@ func fetchRecapSubscribers(secret string) (recapSubscribers, error) {
 	return s, err
 }
 
-// fetchRecapDiscordLinks: the website's emailHash → Discord id links. A hash
+// recapWebsiteLinks: the website's links to Discord ids. A checkout link
+// stands for the subscription paid (Sub, by full Stripe subscription id),
+// never for the email typed at Stripe — someone typing another member's
+// address must not take over that member's recap. Every other link, and a
+// checkout without a subscription, maps by emailHash (Hash).
+type recapWebsiteLinks struct {
+	Hash map[string]string
+	Sub  map[string]string
+}
+
+func splitRecapWebsiteLinks(links []websiteDiscordLink) recapWebsiteLinks {
+	var byHash []websiteDiscordLink
+	sub := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, l := range links {
+		s := l.checkoutSubscription()
+		if s == "" {
+			byHash = append(byHash, l)
+			continue
+		}
+		if !discordIDPattern.MatchString(l.DiscordID) || ambiguous[s] {
+			continue
+		}
+		if prev, ok := sub[s]; ok && prev != l.DiscordID {
+			delete(sub, s)
+			ambiguous[s] = true
+			continue
+		}
+		sub[s] = l.DiscordID
+	}
+	return recapWebsiteLinks{Hash: hashDiscordLinks(byHash), Sub: sub}
+}
+
+// forSubscription: the Discord id of a checkout link for this member's
+// subscription. members.json ids are a truncated prefix ("sub_1RVSiqFAha...").
+func (w recapWebsiteLinks) forSubscription(memberID string) string {
+	prefix := strings.TrimSuffix(memberID, "...")
+	if !strings.HasPrefix(prefix, "sub_") || len(prefix) < 8 {
+		return ""
+	}
+	found := ""
+	for s, d := range w.Sub {
+		if strings.HasPrefix(s, prefix) {
+			if found != "" && found != d {
+				return "" // two subscriptions share the prefix: never guess
+			}
+			found = d
+		}
+	}
+	return found
+}
+
+// fetchRecapDiscordLinks: the website's links (see recapWebsiteLinks). A key
 // linked to two different Discord ids is dropped (ambiguous).
-func fetchRecapDiscordLinks(secret string) (map[string]string, int, error) {
+func fetchRecapDiscordLinks(secret string) (recapWebsiteLinks, int, error) {
 	var resp struct {
 		Links []websiteDiscordLink `json:"links"`
 	}
 	if err := recapGet(secret, "/api/members/discord-links", &resp); err != nil {
-		return nil, 0, err
+		return recapWebsiteLinks{}, 0, err
 	}
-	return hashDiscordLinks(resp.Links), len(resp.Links), nil
+	return splitRecapWebsiteLinks(resp.Links), len(resp.Links), nil
 }
 
 func hashDiscordLinks(links []websiteDiscordLink) map[string]string {
@@ -448,12 +503,12 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 	if err != nil {
 		return err
 	}
-	hashLinks, nLinks, err := fetchRecapDiscordLinks(secret)
+	webLinks, nLinks, err := fetchRecapDiscordLinks(secret)
 	if err != nil {
 		return fmt.Errorf("discord links: %v", err)
 	}
 	handLinks := loadRecapDiscordLinks()
-	recipients, missing := recapRecipients(members, handLinks, hashLinks)
+	recipients, missing := recapRecipients(members, handLinks, webLinks)
 	fmt.Printf("\n  Discord links: %d by hand (members-discord.json), %d from the website\n", len(handLinks), nLinks)
 	var ids []string
 	for _, p := range periods {

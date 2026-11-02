@@ -58,7 +58,7 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 		{FirstName: "F", Status: "active", Accounts: MemberAccounts{Discord: str("666666666666666666")}},
 	}
 	links := map[string]string{"odoo:7": "222222222222222222", "stripe:cus_c": "333333333333333333"}
-	rs, missing := recapRecipients(members, links, nil)
+	rs, missing := recapRecipients(members, links, recapWebsiteLinks{})
 	if len(rs) != 4 || missing != 1 {
 		t.Fatalf("recipients %d missing %d", len(rs), missing)
 	}
@@ -87,9 +87,9 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 func TestRecapHashLinks(t *testing.T) {
 	type link = websiteDiscordLink
 	hl := hashDiscordLinks([]link{
-		{"111111111111111111", "h1", "login"}, {"111111111111111111", "h1", "email"}, // login + application: same id
-		{"222222222222222222", "h2", ""}, {"333333333333333333", "h2", "name"}, // ambiguous
-		{"444444444444444444", "h4", "name"},
+		{"111111111111111111", "h1", "login", nil}, {"111111111111111111", "h1", "email", nil}, // login + application: same id
+		{"222222222222222222", "h2", "", nil}, {"333333333333333333", "h2", "name", nil}, // ambiguous
+		{"444444444444444444", "h4", "name", nil},
 	})
 	if !reflect.DeepEqual(hl, map[string]string{"h1": "111111111111111111", "h4": "444444444444444444"}) {
 		t.Fatalf("hash links %v", hl)
@@ -99,8 +99,32 @@ func TestRecapHashLinks(t *testing.T) {
 		{FirstName: "B", Status: "active", Accounts: MemberAccounts{EmailHash: "h2"}},                   // ambiguous: skipped
 		{FirstName: "C", Status: "active", OdooPartnerID: 9, Accounts: MemberAccounts{EmailHash: "h4"}}, // hand map wins
 	}
-	rs, missing := recapRecipients(members, map[string]string{"odoo:9": "999999999999999999"}, hl)
+	rs, missing := recapRecipients(members, map[string]string{"odoo:9": "999999999999999999"}, recapWebsiteLinks{Hash: hl})
 	if missing != 1 || len(rs) != 2 || rs[0].DiscordID != "111111111111111111" || rs[1].DiscordID != "999999999999999999" {
 		t.Errorf("recipients %+v missing %d", rs, missing)
+	}
+}
+
+func TestRecapCheckoutLinksMapBySubscription(t *testing.T) {
+	paid := func(sub string) *websiteDiscordLinkPaid { return &websiteDiscordLinkPaid{Subscription: sub} }
+	web := splitRecapWebsiteLinks([]websiteDiscordLink{
+		// Paid from the dashboard, but typed another member's email at Stripe.
+		{DiscordID: "111111111111111111", EmailHash: "hB", Source: "checkout", Paid: paid("sub_1RVSiqFAhaWeDyowXYZ")},
+		// A checkout without a subscription falls back to the email hash.
+		{DiscordID: "333333333333333333", EmailHash: "hC", Source: "checkout"},
+	})
+	members := []Member{
+		{ID: "sub_1RVSiqFAha...", FirstName: "A", Status: "active", Accounts: MemberAccounts{EmailHash: "hA"}},
+		{ID: "sub_1QoXXXFAha...", FirstName: "B", Status: "active", Accounts: MemberAccounts{EmailHash: "hB"}},
+		{ID: "sub_1QoYYYFAha...", FirstName: "C", Status: "active", Accounts: MemberAccounts{EmailHash: "hC"}},
+	}
+	rs, missing := recapRecipients(members, nil, web)
+	got := map[string]string{}
+	for _, r := range rs {
+		got[r.FirstName] = r.DiscordID
+	}
+	want := map[string]string{"A": "111111111111111111", "C": "333333333333333333"}
+	if !reflect.DeepEqual(got, want) || missing != 1 {
+		t.Fatalf("recipients %v missing %d (B, whose email was typed by someone else, must get no recap)", got, missing)
 	}
 }

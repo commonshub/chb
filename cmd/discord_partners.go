@@ -92,6 +92,21 @@ type websiteDiscordLink struct {
 	// email typed at Stripe is unverified). name and checkout are weaker:
 	// never written to Odoo unreviewed.
 	Source string `json:"source,omitempty"`
+	// Paid: on a checkout link, the subscription the member paid for.
+	Paid *websiteDiscordLinkPaid `json:"paid,omitempty"`
+}
+
+type websiteDiscordLinkPaid struct {
+	Subscription string `json:"subscription,omitempty"`
+}
+
+// checkoutSubscription: the Stripe subscription a checkout link stands
+// for, "" for any other link.
+func (l websiteDiscordLink) checkoutSubscription() string {
+	if l.Source != "checkout" || l.Paid == nil {
+		return ""
+	}
+	return strings.TrimSpace(l.Paid.Subscription)
 }
 
 type websiteDiscordLinksFile struct {
