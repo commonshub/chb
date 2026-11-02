@@ -84,7 +84,7 @@ func TestMergeOdooFirstAndMismatches(t *testing.T) {
 	}
 	mem := membersFileForAudience(f, AudienceMembers)
 	for _, m := range mem.Members {
-		if m.Status == "lapsed" || m.Accounts.EmailHash != "" || m.OdooPartnerID != 0 {
+		if m.Status == "lapsed" || m.OdooPartnerID != 0 {
 			t.Errorf("members tier leaks: %+v", m)
 		}
 	}

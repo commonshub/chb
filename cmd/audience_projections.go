@@ -68,8 +68,9 @@ func topContributorsFileForAudience(f TopContributorsFile, a Audience) TopContri
 // ---- members ------------------------------------------------------------
 
 // membersFileForAudience: public sees the summary only (counts, MRR);
-// members see who is a member and on which plan, without the email hash,
-// Stripe dashboard links or payment urls; stewards everything.
+// members see who is a member and on which plan, with the salted email
+// hash (the website matches a member's dashboard by it) but without Stripe
+// dashboard links or payment urls; stewards everything.
 func membersFileForAudience(f MembersOutputFile, a Audience) MembersOutputFile {
 	switch a {
 	case AudienceStewards:
@@ -84,7 +85,6 @@ func membersFileForAudience(f MembersOutputFile, a Audience) MembersOutputFile {
 			if m.Status == "lapsed" {
 				continue
 			}
-			m.Accounts.EmailHash = ""
 			m.SubscriptionURL = ""
 			m.OdooPartnerID = 0
 			m.StatusReason, m.PaymentReference, m.StripeCustomerID = "", "", ""

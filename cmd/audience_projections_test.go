@@ -29,8 +29,11 @@ func TestMembersFileForAudience(t *testing.T) {
 	if m.FirstName != "Jane" || m.Plan != "monthly" || m.Accounts.Discord == nil {
 		t.Errorf("members keeps who and which plan: %+v", m)
 	}
-	if m.Accounts.EmailHash != "" || m.SubscriptionURL != "" || m.LatestPayment.URL != "" {
-		t.Errorf("members must not carry email hash or Stripe urls: %+v", m)
+	if m.SubscriptionURL != "" || m.LatestPayment.URL != "" {
+		t.Errorf("members must not carry Stripe urls: %+v", m)
+	}
+	if m.Accounts.EmailHash != "abc" {
+		t.Errorf("members tier must keep the salted emailHash (the website matches dashboards by it): %+v", m.Accounts)
 	}
 	if full.Members[0].LatestPayment.URL == "" || full.Members[0].Accounts.EmailHash == "" {
 		t.Error("projection mutated the full value")
