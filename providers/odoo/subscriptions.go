@@ -44,6 +44,7 @@ type MembershipSubscription struct {
 	FirstName          string             `json:"firstName"`
 	LastName           string             `json:"lastName"`
 	NameTokens         []string           `json:"nameTokens,omitempty"`
+	EmailHint          string             `json:"emailHint,omitempty"`
 	Plan               string             `json:"plan"`
 	Amount             MembershipAmount   `json:"amount"`
 	Interval           string             `json:"interval"`
@@ -357,6 +358,7 @@ func buildMembershipSnapshot(products []MembershipProduct, odooURL, salt string,
 			FirstName:          firstName,
 			LastName:           lastName,
 			NameTokens:         nameTokens,
+			EmailHint:          providers.EmailHint(email),
 			Plan:               interval + "ly",
 			Amount:             MembershipAmount{Value: math.Round(totalAmount*100) / 100, Decimals: 2, Currency: "EUR"},
 			Interval:           interval,

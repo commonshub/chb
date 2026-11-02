@@ -37,6 +37,9 @@ type MemberAccounts struct {
 	// Salted name-token fingerprints (providers.NameTokens): lets the
 	// website match a Discord name to a membership without seeing names.
 	NameTokens []string `json:"nameTokens,omitempty"`
+	// Masked email (providers.EmailHint, "x…@gmail.com"): lets a member
+	// recognise their membership. Members and stewards tiers only.
+	EmailHint string `json:"emailHint,omitempty"`
 }
 
 type Member struct {
@@ -98,6 +101,7 @@ type providerSubscription struct {
 	FirstName          string         `json:"firstName"`
 	LastName           string         `json:"lastName"`
 	NameTokens         []string       `json:"nameTokens,omitempty"`
+	EmailHint          string         `json:"emailHint,omitempty"`
 	Plan               string         `json:"plan"`
 	Amount             MemberAmount   `json:"amount"`
 	Interval           string         `json:"interval"`
@@ -389,6 +393,7 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 			EmailHash:          emailHash,
 			FirstName:          firstName,
 			NameTokens:         nameTokens,
+			EmailHint:          providers.EmailHint(cust.Email),
 			Plan:               plan,
 			Amount:             MemberAmount{Value: unitAmount, Decimals: 2, Currency: currency},
 			Interval:           interval,

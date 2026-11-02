@@ -15,7 +15,7 @@ func TestMembersFileForAudience(t *testing.T) {
 		Summary: MembersSummary{TotalMembers: 2, ActiveMembers: 2},
 		Members: []Member{{
 			ID: "sub_1", FirstName: "Jane", Plan: "monthly", Status: "active",
-			Accounts:        MemberAccounts{EmailHash: "abc", Discord: sp("42")},
+			Accounts:        MemberAccounts{EmailHash: "abc", Discord: sp("42"), EmailHint: "j…@example.org"},
 			SubscriptionURL: "https://dashboard.stripe.com/subscriptions/sub_1",
 			LatestPayment:   &MemberPayment{Date: "2026-09-01", Status: "paid", URL: "https://dashboard.stripe.com/payments/pi_1"},
 		}},
@@ -37,6 +37,15 @@ func TestMembersFileForAudience(t *testing.T) {
 	}
 	if membersFileForAudience(full, AudienceStewards).Members[0].SubscriptionURL == "" {
 		t.Error("stewards keeps everything")
+	}
+	// The masked email survives the members tier and its PII masking, and
+	// is never public.
+	js, _ := json.Marshal(mem)
+	if !strings.Contains(string(maskEmails(js)), `"emailHint":"j…@example.org"`) {
+		t.Errorf("members tier lost emailHint: %s", js)
+	}
+	if pub, _ := json.Marshal(pub); strings.Contains(string(pub), "emailHint") {
+		t.Errorf("public tier carries emailHint: %s", pub)
 	}
 }
 
