@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	odoosource "github.com/CommonsHub/chb/providers/odoo"
+	stripesource "github.com/CommonsHub/chb/providers/stripe"
 )
 
 func TestOdooMemberStatus(t *testing.T) {
@@ -100,5 +103,47 @@ func TestStripeCancelledButPaidThrough(t *testing.T) {
 	members, _ := mergeProviderSnapshotsAt(snaps, 2026, 10)
 	if len(members) != 1 || members[0].Status != "active" || members[0].StatusReason != "" {
 		t.Fatalf("a cancelled subscription still paid through is active: %+v", members)
+	}
+}
+
+func TestStripeCancelsOn(t *testing.T) {
+	end, at := int64(4102444800), int64(4100000000) // 2100-01-01, 2099-12-03
+	cases := []struct {
+		sub  stripesource.Subscription
+		want string
+	}{
+		{stripesource.Subscription{Status: "active", CurrentPeriodEnd: end}, ""},
+		{stripesource.Subscription{Status: "active", CancelAtPeriodEnd: true, CurrentPeriodEnd: end}, "2100-01-01"},
+		{stripesource.Subscription{Status: "active", CancelAtPeriodEnd: true, CurrentPeriodEnd: end, CancelAt: &at}, "2099-12-03"},
+		{stripesource.Subscription{Status: "canceled", CancelAtPeriodEnd: true, CurrentPeriodEnd: end}, ""},
+	}
+	for i, c := range cases {
+		if got := stripeCancelsOn(c.sub); got != c.want {
+			t.Errorf("case %d: got %q, want %q", i, got, c.want)
+		}
+	}
+
+	// Carried onto the member, also when Odoo is the source; null otherwise.
+	snaps := []providerSnapshot{
+		{Provider: "odoo", Subscriptions: []providerSubscription{
+			{ID: "odoo-1", Source: "odoo", EmailHash: "a", FirstName: "Ann", OdooState: "3_progress", Plan: "monthly", CreatedAt: "2025-01-01"},
+		}},
+		{Provider: "stripe", Subscriptions: []providerSubscription{
+			{ID: "sub_a", Source: "stripe", EmailHash: "a", FirstName: "Ann", Status: "active", CurrentPeriodEnd: "2099-12-04", CancelsOn: "2099-12-04", CreatedAt: "2025-01-01"},
+			{ID: "sub_b", Source: "stripe", EmailHash: "b", FirstName: "Bob", Status: "active", CurrentPeriodEnd: "2099-12-10", CancelsOn: "2099-12-10", CreatedAt: "2025-01-02"},
+			{ID: "sub_c", Source: "stripe", EmailHash: "c", FirstName: "Cy", Status: "active", CurrentPeriodEnd: "2099-12-10", CreatedAt: "2025-01-03"},
+		}},
+	}
+	members, _ := mergeProviderSnapshotsAt(snaps, 2026, 10)
+	got := map[string]*string{}
+	for _, m := range members {
+		got[m.Accounts.EmailHash] = m.CancelsOn
+	}
+	if got["a"] == nil || *got["a"] != "2099-12-04" || got["b"] == nil || *got["b"] != "2099-12-10" || got["c"] != nil {
+		t.Errorf("cancelsOn: %v", got)
+	}
+	js, _ := json.Marshal(members)
+	if !strings.Contains(string(js), `"cancelsOn":null`) {
+		t.Error("cancelsOn must be null when not cancelling")
 	}
 }

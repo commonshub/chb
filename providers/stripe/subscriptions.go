@@ -15,6 +15,8 @@ type Subscription struct {
 	CurrentPeriodEnd   int64  `json:"current_period_end"`
 	Created            int64  `json:"created"`
 	CanceledAt         *int64 `json:"canceled_at"`
+	CancelAt           *int64 `json:"cancel_at"`
+	CancelAtPeriodEnd  bool   `json:"cancel_at_period_end"`
 	EndedAt            *int64 `json:"ended_at"`
 	Items              struct {
 		Data []SubscriptionItem `json:"data"`

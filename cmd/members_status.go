@@ -217,6 +217,13 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 				seen[key] = m
 			}
 		}
+		if m, ok := seen[key]; ok && sub.CancelsOn != "" && m.CancelsOn == nil {
+			// Cancelled from the website: the Stripe subscription stops
+			// at period end, whichever source the member came from.
+			c := sub.CancelsOn
+			m.CancelsOn = &c
+			seen[key] = m
+		}
 		if os, ok := odooStatus[key]; ok {
 			if os != status {
 				mismatches = append(mismatches, MemberMismatch{Kind: "status_differs", Name: name, EmailHash: key,
@@ -233,6 +240,10 @@ func mergeProviderSnapshotsAt(snapshots []providerSnapshot, year, month int) ([]
 		}
 		m := toMember(sub, status, "", "")
 		m.StripeCustomerID = sub.StripeCustomerID
+		if sub.CancelsOn != "" {
+			c := sub.CancelsOn
+			m.CancelsOn = &c
+		}
 		switch sub.Status {
 		case "paused":
 			m.StatusReason = "paused"

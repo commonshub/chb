@@ -63,7 +63,10 @@ type Member struct {
 	OrganizationName string `json:"organizationName,omitempty"`
 	StatusSince      string `json:"statusSince,omitempty"`
 	GraceEndsAt      string `json:"graceEndsAt,omitempty"`
-	OdooPartnerID    int    `json:"odooPartnerId,omitempty"` // stewards only
+	// CancelsOn: the Stripe subscription is set to cancel at period end
+	// (cancel_at, else current_period_end), YYYY-MM-DD; null otherwise.
+	CancelsOn     *string `json:"cancelsOn"`
+	OdooPartnerID int     `json:"odooPartnerId,omitempty"` // stewards only
 	// StatusReason: why grace or lapsed — payment_failed, paused, ended
 	// (the reminder sent); stewards only.
 	StatusReason string `json:"statusReason,omitempty"`
@@ -121,6 +124,7 @@ type providerSubscription struct {
 	IsCompany     bool   `json:"isCompany,omitempty"`
 	// StripeCustomerID: the member's Stripe customer (Stripe snapshots).
 	StripeCustomerID string                         `json:"stripeCustomerId,omitempty"`
+	CancelsOn        string                         `json:"cancelsOn,omitempty"`
 	Invoices         []odoosource.MembershipInvoice `json:"invoices,omitempty"`
 }
 
@@ -400,6 +404,7 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 			Status:             sub.Status,
 			CurrentPeriodStart: time.Unix(sub.CurrentPeriodStart, 0).UTC().Format("2006-01-02"),
 			CurrentPeriodEnd:   time.Unix(sub.CurrentPeriodEnd, 0).UTC().Format("2006-01-02"),
+			CancelsOn:          stripeCancelsOn(sub),
 			LatestPayment:      payment,
 			SubscriptionURL:    fmt.Sprintf("https://dashboard.stripe.com/subscriptions/%s", sub.ID),
 			CreatedAt:          time.Unix(sub.Created, 0).UTC().Format("2006-01-02"),
@@ -416,6 +421,22 @@ func buildStripeMonthSnapshot(subs []stripesource.Subscription, year, month int,
 		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
 		Subscriptions: result,
 	}
+}
+
+// stripeCancelsOn: the day a subscription set to cancel at period end
+// stops (cancel_at, else current_period_end), or "".
+func stripeCancelsOn(sub stripesource.Subscription) string {
+	if !sub.CancelAtPeriodEnd || sub.Status == "canceled" {
+		return ""
+	}
+	at := sub.CurrentPeriodEnd
+	if sub.CancelAt != nil && *sub.CancelAt > 0 {
+		at = *sub.CancelAt
+	}
+	if at <= 0 {
+		return ""
+	}
+	return time.Unix(at, 0).UTC().Format("2006-01-02")
 }
 
 func hashEmail(email, salt string) string {
