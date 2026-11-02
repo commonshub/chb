@@ -5247,7 +5247,7 @@ func OdooFullSync(args []string) error {
 		for _, acc := range targets {
 			jids = append(jids, acc.OdooJournalID)
 		}
-		printNamedOpenDocumentsReport(jids)
+		printNamedDocumentsReport(jids)
 	}
 
 	if len(pushAttentionHints) > 0 {
@@ -5667,7 +5667,7 @@ func odooJournalsSyncAll(args []string) error {
 	}
 
 	if !HasFlag(args, "--dry-run") {
-		printNamedOpenDocumentsReport(journalIDs)
+		printNamedDocumentsReport(journalIDs)
 	}
 
 	// Closing summary — attention items only, in compact mode. Things

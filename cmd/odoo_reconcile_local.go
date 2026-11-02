@@ -1146,6 +1146,10 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 		c := hits[0]
 		ok, fx := candidateAmountFits(c, amt)
 		switch {
+		case !c.IsOpen():
+			// Settled by another payment: attaching would mean breaking
+			// that match (a double payment, or the other one is wrong).
+			return hits, fmt.Sprintf("the memo names %s, already paid by another payment", c.label())
 		case !ok:
 			// The reference names the document but the amount does not
 			// settle it exactly: never automatic.

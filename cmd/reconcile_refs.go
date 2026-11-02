@@ -170,21 +170,24 @@ func lineMemo(ln OdooCacheLine) string {
 	return strings.Join(parts, " ")
 }
 
-// namedOpenDocument: an open invoice/bill a bank line names (memo
-// reference or structured communication) while the line is still not
-// matched to it.
-type namedOpenDocument struct {
+// namedDocument: a document a bank line's memo names while the two are not
+// matched together.
+type namedDocument struct {
 	Doc       reconcileCandidate
 	JournalID int
 	Line      OdooCacheLine
+	// Why: "open" — the line is unmatched and the document still open;
+	// "paid" — the line is unmatched but the document was settled by
+	// another payment (a double payment, or that other match is wrong);
+	// "elsewhere" — the line is matched, yet the document its memo names
+	// is still open (the line probably pays the wrong document).
+	Why string
 }
 
-// findNamedOpenDocuments pairs open documents with the unmatched bank lines
-// whose memo names them — what reconcile could not settle on its own
-// (amounts differ, several documents named, a paid document named, …).
-func findNamedOpenDocuments(open []reconcileCandidate, linesByJournal map[int][]OdooCacheLine) []namedOpenDocument {
-	refIdx := buildRefMatchIndex(open)
-	var out []namedOpenDocument
+// findNamedDocuments lists what reconcile could not settle on its own.
+func findNamedDocuments(all []reconcileCandidate, linesByJournal map[int][]OdooCacheLine) []namedDocument {
+	refIdx := buildRefMatchIndex(all)
+	var out []namedDocument
 	jids := make([]int, 0, len(linesByJournal))
 	for jid := range linesByJournal {
 		jids = append(jids, jid)
@@ -192,12 +195,22 @@ func findNamedOpenDocuments(open []reconcileCandidate, linesByJournal map[int][]
 	sort.Ints(jids)
 	for _, jid := range jids {
 		for _, ln := range linesByJournal[jid] {
-			if reconcileMatcherSkipsLine(ln) {
+			if isOdooSyntheticLine(ln) || ln.Amount == 0 {
 				continue
 			}
+			matched := bankLineMatchedToDocument(ln)
 			for _, c := range refHits(lineMemo(ln), ln.Amount, refIdx) {
-				if c.IsOpen() {
-					out = append(out, namedOpenDocument{Doc: c, JournalID: jid, Line: ln})
+				why := ""
+				switch {
+				case matched && c.IsOpen():
+					why = "elsewhere"
+				case !matched && c.IsOpen():
+					why = "open"
+				case !matched:
+					why = "paid"
+				}
+				if why != "" {
+					out = append(out, namedDocument{Doc: c, JournalID: jid, Line: ln, Why: why})
 				}
 			}
 		}
@@ -206,12 +219,13 @@ func findNamedOpenDocuments(open []reconcileCandidate, linesByJournal map[int][]
 	return out
 }
 
-// printNamedOpenDocumentsReport closes a sync: open invoices/bills that a
-// bank line names but that are still open, for the operator to settle
-// (`chb odoo journals <id> reconcile -i`).
-func printNamedOpenDocumentsReport(journalIDs []int) {
-	open, _, err := loadLocalCandidatePartitions()
-	if err != nil || len(open) == 0 {
+// printNamedDocumentsReport closes a sync: bank lines whose memo names an
+// invoice/bill they are not matched with, for the operator to settle
+// (`chb odoo journals <id> reconcile -i`). Batch reconcile never breaks an
+// existing match, so these stay until someone decides.
+func printNamedDocumentsReport(journalIDs []int) {
+	_, all, err := loadLocalCandidatePartitions()
+	if err != nil || len(all) == 0 {
 		return
 	}
 	lines := map[int][]OdooCacheLine{}
@@ -220,20 +234,24 @@ func printNamedOpenDocumentsReport(journalIDs []int) {
 			lines[jid] = ls
 		}
 	}
-	found := findNamedOpenDocuments(open, lines)
+	found := findNamedDocuments(all, lines)
 	if len(found) == 0 {
 		return
 	}
-	fmt.Printf("\n  %s⚠ %s named on a bank line but still open:%s\n", Fmt.Yellow, Pluralize(len(found), "invoice/bill", "invoices/bills"), Fmt.Reset)
+	label := map[string]string{
+		"open":      "still open",
+		"paid":      "paid by another payment",
+		"elsewhere": "still open, line already matched (to another document, or partly)",
+	}
+	fmt.Printf("\n  %s⚠ %s whose memo names an invoice/bill they are not matched with:%s\n", Fmt.Yellow, Pluralize(len(found), "bank line", ""), Fmt.Reset)
 	const maxRows = 25
 	for i, f := range found {
 		if i == maxRows {
 			fmt.Printf("    %s… and %d more%s\n", Fmt.Dim, len(found)-maxRows, Fmt.Reset)
 			break
 		}
-		fmt.Printf("    %s %-18s %10s open  ← #%d line #%d %s %10s%s\n", Fmt.Dim, f.Doc.label(),
-			formatBalancePlain(f.Doc.ResidualEUR, "EUR"), f.JournalID, f.Line.ID, f.Line.Date,
-			formatBalancePlain(f.Line.Amount, "EUR"), Fmt.Reset)
+		fmt.Printf("    %s#%d line #%d %s %10s → %-18s %s%s\n", Fmt.Dim, f.JournalID, f.Line.ID, f.Line.Date,
+			formatBalancePlain(f.Line.Amount, "EUR"), f.Doc.label(), label[f.Why], Fmt.Reset)
 	}
 	fmt.Printf("    %sSettle them with %schb odoo journals <id> reconcile -i%s\n", Fmt.Dim, Fmt.Cyan, Fmt.Reset)
 }

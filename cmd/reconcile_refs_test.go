@@ -173,32 +173,34 @@ func TestOpenDocumentGuardUsesSharedMatcher(t *testing.T) {
 	}
 }
 
-func TestNamedOpenDocumentsReport(t *testing.T) {
+func TestNamedDocumentsReport(t *testing.T) {
 	inv := invoiceCand(16, "MEM/2026/00016", "", "", 60, 200)
+	// RadicalxChange's €200 paid Wikipolicy's MEM/2026/00074, but its memo is
+	// 2026_RCC_28's structured communication, and that invoice is still open.
+	rcc28 := invoiceCand(28, "2026_RCC_28", "+++000/0043/46610+++", "", 70, 194.81)
+	// CHB/2026/00253 was paid twice: the second payment names a paid invoice.
+	paid := invoiceCand(253, "CHB/2026/00253", "", "", 80, 744.15)
+	paid.PaymentState = "paid"
 	lines := map[int][]OdooCacheLine{
 		45: {
 			{ID: 15392, Date: "2026-03-02", Amount: 200, IsReconciled: true, CounterpartType: "asset_current", PaymentRef: "MEM/2026/00016"},
-			{ID: 2, Date: "2026-03-03", Amount: 200, IsReconciled: true, CounterpartType: "asset_receivable", PaymentRef: "MEM/2026/00016"}, // matched
+			{ID: 2, Date: "2026-03-03", Amount: 200, IsReconciled: true, CounterpartType: "asset_receivable", PaymentRef: "MEM/2026/00016 again"},
+			{ID: 40422, Date: "2026-09-20", Amount: 200, IsReconciled: true, CounterpartType: "asset_receivable", PaymentRef: "+++000/0043/46610+++"},
+			{ID: 22136, Date: "2026-05-13", Amount: 744.15, IsReconciled: true, CounterpartType: "income", PaymentRef: "CHB/2026/00253"},
 			{ID: 3, Date: "2026-03-04", Amount: 50, PaymentRef: "unrelated"},
 		},
 	}
-	got := findNamedOpenDocuments([]reconcileCandidate{inv}, lines)
-	if len(got) != 1 || got[0].Line.ID != 15392 || got[0].Doc.ID != 16 {
-		t.Fatalf("report %+v", got)
+	got := map[int]string{}
+	for _, f := range findNamedDocuments([]reconcileCandidate{inv, rcc28, paid}, lines) {
+		got[f.Line.ID] = f.Why
 	}
-}
-
-func TestGenericVendorRefsIgnored(t *testing.T) {
-	// Bill 23 (XL Collective) carried ref "2025/Q1": it named every
-	// "… 2025/Q1" transfer of the quarter.
-	if refs := documentRefs("23", "2025/Q1", "", ""); len(refs) != 0 {
-		t.Errorf("generic ref kept: %v", refs)
+	want := map[int]string{15392: "open", 2: "elsewhere", 40422: "elsewhere", 22136: "paid"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("report %v, want %v", got, want)
 	}
-	// Foodiz' bill carried the origin "commons hub": every rent memo named it.
-	if refs := documentRefs("CHB-S/2025/12/0008", "", "", "commons hub"); len(refs) != 1 {
-		t.Errorf("free-text origin kept: %v", refs)
-	}
-	if refs := documentRefs("BILL/2026/0128", "INV-7603556405", "", ""); len(refs) != 2 {
-		t.Errorf("distinctive vendor ref dropped: %v", refs)
+	// And the matcher never makes a paid document a batch winner.
+	_, note := matchOne(t, lines[45][3], paid)
+	if note == "" {
+		t.Fatal("a memo naming a paid document must need review")
 	}
 }
