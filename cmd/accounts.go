@@ -2333,32 +2333,11 @@ func printUnreconciledNewItems(creds *OdooCredentials, uid, journalID, newItems 
 	}
 }
 
-// reconcileAutoThreshold caps the auto-reconcile-after-push behaviour. At
-// or below this many newly-created lines, the post-push reconcile runs
-// automatically; above it the operator runs `chb odoo journals N
-// reconcile` explicitly. Calibrated for the typical hourly cron rhythm
-// (0–5 new lines) where auto-reconcile is essentially free, while
-// keeping large back-fills (initial migration, journal reset+re-push)
-// under explicit operator control to avoid accidental partner/account
-// mass-edits.
-const reconcileAutoThreshold = 20
-
-// shouldReconcileAfterPush encodes the policy: --skip-reconcile opts
-// out; otherwise the new-line count decides. When skipped because of
-// the threshold, prints a hint pointing at the dedicated reconcile
-// verb and queues a closing attention item for the compact `chb push`
-// driver to surface at the end.
+// shouldReconcileAfterPush: every push reconciles, whatever its size —
+// --skip-reconcile opts out. (A 20-line cap used to leave back-fills on
+// suspense; a batch only ever applies unambiguous matches anyway.)
 func shouldReconcileAfterPush(args []string, newLines int, label string) bool {
-	if HasFlag(args, "--skip-reconcile", "--skip-reconciliation") {
-		return false
-	}
-	if newLines <= reconcileAutoThreshold {
-		return true
-	}
-	fmt.Printf("  %s↳ %d new lines exceeds the auto-reconcile threshold of %d; run `chb odoo journals <id> reconcile` to reconcile them%s\n",
-		Fmt.Dim, newLines, reconcileAutoThreshold, Fmt.Reset)
-	queuePushAttentionHint(label, fmt.Sprintf("%d new lines — auto-reconcile skipped (threshold %d)", newLines, reconcileAutoThreshold))
-	return false
+	return !HasFlag(args, "--skip-reconcile", "--skip-reconciliation")
 }
 
 // queuePushAttentionHint adds a "needs attention" entry for the
@@ -3157,19 +3136,11 @@ func AccountOdooPush(slug string, args []string) error {
 		// status-line stream.
 		printOdooWriteBannerOnce(creds.URL, creds.DB)
 	}
-	// Reconciliation policy:
-	//
-	//   --skip-reconcile           never reconcile after this push
-	//   (default)                  reconcile when ≤ reconcileAutoThreshold new lines
-	//
-	// The threshold makes hourly cron pushes (typically 0–5 new lines)
-	// safely auto-reconcile, while large back-fills (hundreds of lines)
-	// skip the post-push reconcile — the operator runs the dedicated
-	// `chb odoo journals N reconcile` verb to handle them. The inner
-	// per-line "skip reconciliation" flag controls whether the provider's
-	// inline reconcile step runs for each new line as it's created; we
-	// always skip that and let the post-push journal-wide reconcile do it
-	// in batch (decided by shouldReconcileAfterPush).
+	// Reconciliation policy: every push is followed by a journal-wide
+	// reconcile (shouldReconcileAfterPush) unless --skip-reconcile. The
+	// inner per-line "skip reconciliation" flag controls whether the
+	// provider's inline reconcile step runs for each new line as it's
+	// created; we always skip that and reconcile in batch afterwards.
 	// --skip-reconciliation is kept as a deprecated alias for
 	// --skip-reconcile.
 	skipReconciliation := true
@@ -3370,8 +3341,7 @@ func AccountOdooPush(slug string, args []string) error {
 		if stages.Transactions {
 			syncedCount = parseStripeUploadCount(summary)
 		}
-		stripeCursorMatched := strings.Contains(summary, "(cursor)")
-		if syncErr == nil && shouldReconcileAfterPush(args, syncedCount, "stripe") && !dryRun && !stripeCursorMatched {
+		if syncErr == nil && shouldReconcileAfterPush(args, syncedCount, "stripe") && !dryRun {
 			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, true, dryRun, false); err != nil {
 				syncErr = err
 			} else {
@@ -3432,13 +3402,11 @@ func AccountOdooPush(slug string, args []string) error {
 		if stages.Explicit && (stages.Partners || stages.Accounts) {
 			return fmt.Errorf("for this account, only --transactions and --metadata are supported; run reconcile separately with `chb odoo journals %d reconcile`", acc.OdooJournalID)
 		}
-		cursorMatched := false
 		if !stages.Explicit || stages.Transactions {
 			var result blockchainOdooSyncResult
 			result, syncErr = syncBlockchainToOdoo(acc, creds, uid, monthsLimit, dryRun, skipReconciliation, sinceDate, untilDate, useHistory, previewLimit, HasFlag(args, "--reapply-partners"))
 			summary = result.Summary
 			syncedCount = result.Synced
-			cursorMatched = result.CursorMatched
 		}
 		if syncErr == nil && stages.Explicit && stages.Metadata {
 			reviewed, updated, err := syncBlockchainOdooMetadataStage(creds, uid, acc, effectiveSinceDate, untilDate, dryRun, assumeYes)
@@ -3451,7 +3419,7 @@ func AccountOdooPush(slug string, args []string) error {
 				summary += fmt.Sprintf("metadata %d/%d", updated, reviewed)
 			}
 		}
-		if syncErr == nil && shouldReconcileAfterPush(args, syncedCount, acc.Slug) && !dryRun && (!stages.Explicit || stages.Transactions) && !cursorMatched {
+		if syncErr == nil && shouldReconcileAfterPush(args, syncedCount, acc.Slug) && !dryRun && (!stages.Explicit || stages.Transactions) {
 			if err := odooJournalReconcile(creds, uid, acc.OdooJournalID, true, dryRun, false); err != nil {
 				syncErr = err
 			} else {

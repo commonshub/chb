@@ -26,8 +26,8 @@ func TestCandidateFitsDirection(t *testing.T) {
 
 func TestAmountOnlyMatchIsFlagged(t *testing.T) {
 	fee := OdooCacheLine{ID: 40669, Amount: -0.41, PaymentRef: "Stripe fee"}
-	kbcNote := reconcileCandidate{ID: 1, Kind: "bill", MoveType: "in_refund", Residual: 0.41, PartnerID: 9, PartnerName: "KBC Bank NV", State: "posted"}
-	bill := reconcileCandidate{ID: 2, Kind: "bill", MoveType: "in_invoice", Residual: 0.41, PartnerID: 9, PartnerName: "KBC Bank NV", State: "posted"}
+	kbcNote := reconcileCandidate{ID: 1, Kind: "bill", MoveType: "in_refund", ResidualEUR: 0.41, PartnerID: 9, PartnerName: "KBC Bank NV", State: "posted"}
+	bill := reconcileCandidate{ID: 2, Kind: "bill", MoveType: "in_invoice", ResidualEUR: 0.41, PartnerID: 9, PartnerName: "KBC Bank NV", State: "posted"}
 	byAmount := map[int64][]reconcileCandidate{41: {kbcNote}}
 	if hits, _ := matchLineToCandidates(fee, nil, nil, nil, byAmount); len(hits) != 0 {
 		t.Fatalf("a credit note must not match an outgoing fee: %v", hits)
@@ -44,8 +44,8 @@ func TestAmountOnlyMatchIsFlagged(t *testing.T) {
 }
 
 func TestReferenceMatchNeedsExactAmount(t *testing.T) {
-	bill := reconcileCandidate{ID: 7, Kind: "bill", MoveType: "in_invoice", Number: "CHB-S/2026/06/0015", Residual: 253.99, State: "posted"}
-	idx := []refMatchEntry{{Kind: "bill", NumberLower: "chb-s/2026/06/0015", Cand: bill}}
+	bill := reconcileCandidate{ID: 7, Kind: "bill", MoveType: "in_invoice", Number: "CHB-S/2026/06/0015", ResidualEUR: 253.99, Refs: []string{"CHB-S/2026/06/0015"}, State: "posted"}
+	idx := buildRefMatchIndex([]reconcileCandidate{bill})
 	short := OdooCacheLine{ID: 39438, Amount: -244.90, PaymentRef: "CHB-S/2026/06/0015 - 2026-17905"}
 	hits, note := matchLineToCandidates(short, nil, idx, nil, nil)
 	if len(hits) != 1 || note == "" {
@@ -56,8 +56,8 @@ func TestReferenceMatchNeedsExactAmount(t *testing.T) {
 		t.Fatalf("an exact reference match applies: %v %q", hits, note)
 	}
 	paid := bill
-	paid.Residual = 0
-	idx[0].Cand = paid
+	paid.ResidualEUR = 0
+	idx = buildRefMatchIndex([]reconcileCandidate{paid})
 	if _, note := matchLineToCandidates(exact, nil, idx, nil, nil); note == "" {
 		t.Fatal("a reference to an already-paid document must need review")
 	}

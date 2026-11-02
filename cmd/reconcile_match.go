@@ -122,11 +122,16 @@ func (idx moneriumOrderIndex) enrich(ln OdooCacheLine) (iban, name, memo string)
 
 // invoiceRefTokens splits a move number like "CHB/2025/00204" into the full
 // "2025/00204" tail (disambiguates across years) and the bare "00204" counter.
-// Returns empty strings when the title isn't a clean number (e.g. a narration).
+// A number without slashes ("2025Q2CHI0099", "2026_RCC_72", "S00172") is its
+// own full reference, with no bare counter. Returns empty strings when the
+// title isn't a clean number (e.g. a narration).
 func invoiceRefTokens(title string) (fullRef, counter string) {
 	title = strings.TrimSpace(title)
 	segs := strings.Split(title, "/")
 	if len(segs) < 2 {
+		if isRefMatchable(title) && !strings.ContainsAny(title, " +*") {
+			return title, ""
+		}
 		return "", ""
 	}
 	last := segs[len(segs)-1]
@@ -163,7 +168,7 @@ func scoredBankLine(ln OdooCacheLine, jid int, journalName string, idx moneriumO
 	var reasons []string
 	memoConfirmed := false
 	switch {
-	case fullRef != "" && strings.Contains(memoHay, strings.ToLower(fullRef)):
+	case fullRef != "" && (strings.Contains(memoHay, strings.ToLower(fullRef)) || refMentioned(memoHay, fullRef)):
 		score += scoreMemoFullRef
 		memoConfirmed = true
 		reasons = append(reasons, "memo names "+fullRef)

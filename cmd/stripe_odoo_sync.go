@@ -738,7 +738,7 @@ func syncStripeChronological(
 			if progressVisible {
 				progressStatus.Update("Stripe: applying fee account rules %d/%d (%s)...", ci, codes, code)
 			}
-			if err := applyOdooMappingAccount(creds, uid, ids, code, progressStatus); err != nil {
+			if err := applyOdooMappingAccountUnlessLocalDocument(creds, uid, ids, code, progressStatus); err != nil {
 				Warnf("  %s⚠ Failed to set fee account %s on %s: %v%s", Fmt.Yellow, code, Pluralize(len(ids), "line", ""), err, Fmt.Reset)
 			} else {
 				existingUpdates += len(ids)
@@ -1840,6 +1840,19 @@ func syncStripeOdooAccountsStage(creds *OdooCredentials, uid int, acc *AccountCo
 			counterpartIDs := uniquePositiveInts(counterpartsByAccount[accountCode])
 			moveIDs := uniquePositiveInts(movesByAccount[accountCode])
 			accountID := accountIDs[accountCode]
+			// Never book a line an open invoice/bill claims (shared matcher).
+			if keep, held := holdLinesWithOpenDocuments(creds, uid, lineIDs, false); len(held) > 0 {
+				for id, doc := range held {
+					Warnf("  %s⚠ line #%d not booked to %s: open document %s matches it — left for invoice/bill matching%s", Fmt.Yellow, id, accountCode, doc, Fmt.Reset)
+				}
+				if len(keep) > 0 {
+					if err := applyOdooMappingAccount(creds, uid, keep, accountCode, status); err != nil {
+						return reviewed, applied, err
+					}
+				}
+				applied += len(keep)
+				continue
+			}
 			if len(counterpartIDs) == len(lineIDs) && len(moveIDs) > 0 && accountID > 0 {
 				if err := applyOdooMappingAccountBatch(creds, uid, moveIDs, counterpartIDs, accountID, accountCode, status); err != nil {
 					return reviewed, applied, err
@@ -2428,7 +2441,7 @@ func applyStripeBatchAccountCodes(creds *OdooCredentials, uid int, createdIDs []
 		if showProgress {
 			status.Update("Stripe: applying account rules %d/%d (%s)...", ci+1, len(order), code)
 		}
-		if err := applyOdooMappingAccount(creds, uid, linesByCode[code], code, status); err != nil {
+		if err := applyOdooMappingAccountUnlessLocalDocument(creds, uid, linesByCode[code], code, status); err != nil {
 			Warnf("    %s⚠ rule account %s: %v%s", Fmt.Yellow, code, err, Fmt.Reset)
 		}
 	}

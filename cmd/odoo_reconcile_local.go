@@ -52,6 +52,10 @@ type reconcileLineMatch struct {
 	// interactive resolver asks, showing ReviewNote.
 	NeedsReview bool
 	ReviewNote  string
+	// ByReference: the memo names the document (number, reference, sale
+	// order or structured communication). The apply step then books the
+	// line to the document's partner, whoever paid.
+	ByReference bool
 }
 
 // reconcileDup is one group of bank lines that all matched the same
@@ -98,6 +102,58 @@ type reconcileCandidate struct {
 	LastPaymentPayer   string // partner name from account.payment (who actually paid)
 	LastPaymentAccount string // IBAN / acc_number the payment was made from
 	FirstLineItem      string // first non-section line item title — preview in -i list
+	// Refs: every reference a bank memo may use for this document (number,
+	// vendor ref, free-text payment reference, sale orders of its origin).
+	Refs []string
+	// StructComm: its payment_reference as 12 digits when that is a Belgian
+	// structured communication.
+	StructComm string
+	// ResidualEUR: the open amount in company currency (EUR), unsigned —
+	// what a EUR bank line actually pays. Foreign: the document is in
+	// another currency (amounts only agree within an FX tolerance).
+	ResidualEUR float64
+	Foreign     bool
+}
+
+// candidateFromDocument builds the matcher's view of a cached invoice or
+// bill (kind "invoice" or "bill").
+func candidateFromDocument(inv OdooOutgoingInvoicePrivate, kind, firstLine string) reconcileCandidate {
+	date, journal, payer, account := candidateLastActivity(inv.Payments, inv.WriteDate, inv.PaymentState)
+	residual := candidateResidual(inv.ResidualAmount, inv.TotalSignedAmount)
+	cur := strings.ToUpper(strings.TrimSpace(inv.Currency))
+	foreign := cur != "" && cur != "EUR"
+	residualEUR := math.Abs(inv.ResidualSignedAmount)
+	if residualEUR < 0.005 {
+		residualEUR = math.Abs(residual)
+		if foreign {
+			// No company-currency amount cached (a cache written before
+			// the field existed): the document-currency residual says
+			// nothing about the EUR the bank paid.
+			residualEUR = 0
+		}
+	}
+	return reconcileCandidate{
+		ID:                 inv.ID,
+		Kind:               kind,
+		MoveType:           inv.MoveType,
+		Number:             firstNonEmpty(inv.Number, inv.Reference),
+		Residual:           residual,
+		SignedTotal:        inv.TotalSignedAmount,
+		PartnerID:          inv.Partner.ID,
+		PartnerName:        firstNonEmpty(inv.Partner.DisplayName, inv.Partner.Name),
+		Date:               firstNonEmpty(inv.InvoiceDate, inv.Date),
+		State:              inv.State,
+		PaymentState:       inv.PaymentState,
+		LastPayment:        date,
+		LastPaymentBy:      journal,
+		LastPaymentPayer:   payer,
+		LastPaymentAccount: account,
+		FirstLineItem:      firstLine,
+		Refs:               documentRefs(inv.Number, inv.Ref, inv.Reference, inv.InvoiceOrigin),
+		StructComm:         structuredComm(inv.Reference),
+		ResidualEUR:        residualEUR,
+		Foreign:            foreign,
+	}
 }
 
 // IsOpen reports whether the candidate still has an unsettled balance,
@@ -167,7 +223,7 @@ func reconcileMatcherSkipsLine(ln OdooCacheLine) bool {
 	if isOdooSyntheticLine(ln) || ln.Amount == 0 {
 		return true
 	}
-	return ln.IsReconciled && !reconcileCounterpartIsCategorized(ln.CounterpartType)
+	return bankLineMatchedToDocument(ln)
 }
 
 // reconcileCounterpartIsCategorized reports whether a reconciled bank line's
@@ -192,8 +248,24 @@ func reconcileCounterpartIsCategorized(accountType string) bool {
 // attaching it must NOT warn. A reconciled line whose counterpart type is
 // unknown (cache written before the field existed) is treated conservatively as
 // a match until the next `chb odoo pull` populates the type.
+//
+// A counterpart on Outstanding Receipts/Payments (asset_current, e.g.
+// 552002) only parks the money: the line is matched once that counterpart
+// is itself reconciled (with a payment on the invoice), not before.
 func bankLineMatchedToDocument(ln OdooCacheLine) bool {
-	return ln.IsReconciled && !reconcileCounterpartIsCategorized(ln.CounterpartType)
+	if !ln.IsReconciled || reconcileCounterpartIsCategorized(ln.CounterpartType) {
+		return false
+	}
+	return !bankLineParked(ln)
+}
+
+// bankLineParked: the line's counterpart sits, unreconciled, on a current
+// account — Outstanding Receipts/Payments (552002), or an internal-transfer
+// leg (580000) waiting for its other side. Such a line is matched only when
+// its memo names a document; never on partner or amount alone.
+func bankLineParked(ln OdooCacheLine) bool {
+	return ln.IsReconciled && !ln.CounterpartReconciled &&
+		(ln.CounterpartType == "asset_current" || ln.CounterpartType == "liability_current")
 }
 
 func computeReconcileMatches(journalID int, interactive bool, since time.Time) (*reconcileMatchSet, *odooPartnerIndex, error) {
@@ -244,7 +316,7 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 	byAmount := map[int64][]reconcileCandidate{}
 	for _, c := range candidates {
 		byPartner[c.PartnerID] = append(byPartner[c.PartnerID], c)
-		byAmount[centsKey(c.Residual)] = append(byAmount[centsKey(c.Residual)], c)
+		byAmount[centsKey(c.ResidualEUR)] = append(byAmount[centsKey(c.ResidualEUR)], c)
 	}
 	// Precompute the ref-matchable subset (numbers with at least one
 	// non-digit, length ≥5) with lowercased Number once. The matcher's
@@ -263,13 +335,17 @@ func computeReconcileMatches(journalID int, interactive bool, since time.Time) (
 			continue
 		}
 		hits, reviewNote := matchLineToCandidates(ln, candidates, refMatchable, byPartner, byAmount)
+		byRef := len(refHits(lineMemo(ln), ln.Amount, refMatchable)) > 0
+		if bankLineParked(ln) && !byRef {
+			continue
+		}
 		if len(hits) > 1 {
 			lineDate := ln.Date
 			sort.SliceStable(hits, func(i, j int) bool {
 				return dateDeltaDaysAbs(hits[i].Date, lineDate) < dateDeltaDaysAbs(hits[j].Date, lineDate)
 			})
 		}
-		results = append(results, reconcileLineMatch{Line: ln, Hits: hits, NeedsReview: reviewNote != "", ReviewNote: reviewNote})
+		results = append(results, reconcileLineMatch{Line: ln, Hits: hits, NeedsReview: reviewNote != "", ReviewNote: reviewNote, ByReference: byRef})
 	}
 
 	// Interactive resolution of ambiguous matches. The user steps through
@@ -410,6 +486,17 @@ func printReconcileMatches(set *reconcileMatchSet, verbose bool) {
 					truncate(reconcileLineDescription(ln), 60), Fmt.Reset)
 				fmt.Printf("      %sno matching invoice/bill%s\n", Fmt.Dim, Fmt.Reset)
 			}
+		case len(hits) == 1 && r.NeedsReview:
+			if !verbose {
+				continue
+			}
+			c := hits[0]
+			fmt.Printf("  %s? %s  %10s  %s%s\n",
+				Fmt.Yellow, ln.Date, formatBalancePlain(ln.Amount, "EUR"),
+				truncate(reconcileLineDescription(ln), 60), Fmt.Reset)
+			fmt.Printf("      %s→ %-7s %-18s  %10s  %s — %s%s\n",
+				Fmt.Dim, c.Kind, c.Number, formatBalancePlain(c.ResidualEUR, "EUR"),
+				truncate(c.PartnerName, 30), r.ReviewNote, Fmt.Reset)
 		case len(hits) == 1:
 			c := hits[0]
 			fmt.Printf("  %s✓%s %s  %10s  %s\n",
@@ -1000,38 +1087,30 @@ func dateDeltaDaysAbs(a, b string) int {
 // buildRefMatchIndex so the hot loop doesn't re-filter or re-lowercase
 // the same allPosted list ~once per bank line.
 type refMatchEntry struct {
-	Kind        string
-	NumberLower string
-	Cand        reconcileCandidate
+	Kind      string
+	RefTokens [][]string // refTokens of each of Cand.Refs
+	Cand      reconcileCandidate
 }
 
 func buildRefMatchIndex(allPosted []reconcileCandidate) []refMatchEntry {
 	out := make([]refMatchEntry, 0, len(allPosted))
 	for _, c := range allPosted {
-		if !isRefMatchable(c.Number) {
+		e := refMatchEntry{Kind: c.Kind, Cand: c}
+		for _, r := range c.Refs {
+			e.RefTokens = append(e.RefTokens, refTokens(r))
+		}
+		if len(e.RefTokens) == 0 && c.StructComm == "" {
 			continue
 		}
-		out = append(out, refMatchEntry{
-			Kind:        c.Kind,
-			NumberLower: strings.ToLower(c.Number),
-			Cand:        c,
-		})
+		out = append(out, e)
 	}
 	return out
 }
 
 func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate, refIndex []refMatchEntry, byPartner map[int][]reconcileCandidate, byAmount map[int64][]reconcileCandidate) ([]reconcileCandidate, string) {
 	amt := math.Abs(ln.Amount)
-	ref := strings.ToLower(ln.PaymentRef)
-
-	// Direction-gate: incoming bank lines (positive amount) match
-	// customer invoices; outgoing lines match vendor bills. Crossing
-	// directions never reconciles in real bookkeeping and just creates
-	// noise in the preview.
-	wantKind := "invoice"
-	if ln.Amount < 0 {
-		wantKind = "bill"
-	}
+	memo := lineMemo(ln)
+	ref := strings.ToLower(memo)
 	filter := func(in []reconcileCandidate) []reconcileCandidate {
 		out := in[:0:0]
 		for _, c := range in {
@@ -1041,61 +1120,74 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 		}
 		return out
 	}
-	_ = wantKind
 
-	// 1. payment_ref contains the candidate number. Skip number tokens
-	// that are short or purely digits — Odoo bill IDs sometimes leak
-	// through as a 2-digit "number" (e.g. "40") which then matches every
-	// payment_ref containing those digits ("140.00", "240 EUR donation",
-	// etc.) and produces false positives.
-	//
-	// Searches *all* posted candidates (open + paid + in_payment): if
-	// the bank line's payment_ref names a specific invoice, we want to
-	// flag it as a match even when the invoice was already (perhaps
-	// wrongly) reconciled by something else. The apply phase falls
-	// back to unreconcile+reattach for paid candidates, so the
-	// operator's surgical override stays trustworthy.
-	if ref != "" {
-		var refHits []reconcileCandidate
-		seen := map[int]bool{}
-		for _, e := range refIndex {
-			if !candidateFitsDirection(e.Cand, ln.Amount) {
-				continue
+	// 1. The memo names the document: its number, vendor reference, sale
+	// order, free-text payment reference (all compared ignoring case and
+	// separators), or its structured communication. Searches every posted
+	// document (open or paid): a memo naming an already-settled document
+	// is surfaced, and the batch apply never breaks the existing match.
+	// A reference beats the bank line's partner: the payer is often not
+	// the invoiced party (a company paying for its employee).
+	if hits := refHits(memo, ln.Amount, refIndex); len(hits) > 0 {
+		if len(hits) > 1 {
+			// Several documents named: keep the ones the amount settles.
+			var fit []reconcileCandidate
+			for _, c := range hits {
+				if ok, _ := candidateAmountFits(c, amt); ok {
+					fit = append(fit, c)
+				}
 			}
-			if seen[e.Cand.ID] {
-				continue
-			}
-			if strings.Contains(ref, e.NumberLower) {
-				refHits = append(refHits, e.Cand)
-				seen[e.Cand.ID] = true
+			if len(fit) == 1 {
+				hits = fit
+			} else {
+				return hits, ""
 			}
 		}
-		if len(refHits) == 1 && math.Abs(refHits[0].Residual-amt) > 0.01 {
+		c := hits[0]
+		ok, fx := candidateAmountFits(c, amt)
+		switch {
+		case !ok:
 			// The reference names the document but the amount does not
 			// settle it exactly: never automatic.
-			return refHits, fmt.Sprintf("reference match, amounts differ: payment %s, open %s (difference %s)",
-				formatBalancePlain(amt, "EUR"), formatBalancePlain(refHits[0].Residual, "EUR"),
-				formatBalancePlain(amt-refHits[0].Residual, "EUR"))
+			return hits, fmt.Sprintf("reference match, amounts differ: payment %s, open %s (difference %s)",
+				formatBalancePlain(amt, "EUR"), formatBalancePlain(c.ResidualEUR, "EUR"),
+				formatBalancePlain(amt-c.ResidualEUR, "EUR"))
+		case fx:
+			return hits, fmt.Sprintf("reference match on a foreign-currency document: payment %s, open %s (within the FX tolerance)",
+				formatBalancePlain(amt, "EUR"), formatBalancePlain(c.ResidualEUR, "EUR"))
 		}
-		if len(refHits) > 0 {
-			return refHits, ""
-		}
+		return hits, ""
 	}
-	// Amount-based strategies (2/3/4) below stay open-only via
-	// byPartner / byAmount — those are pre-indexed from openCandidates
-	// by the caller, so paid invoices don't pollute amount fallbacks.
 	_ = openCandidates
 
-	// 2. partner_id + amount.
+	// 2. Same partner, same amount (open documents only). Applied only when
+	// exactly one document fits; several are left for review — never the
+	// oldest by default.
 	if ln.PartnerID > 0 {
+		var exact, fx []reconcileCandidate
 		for _, c := range filter(byPartner[ln.PartnerID]) {
-			if math.Abs(c.Residual-amt) < 0.005 {
-				return []reconcileCandidate{c}, ""
+			if ok, viaFX := candidateAmountFits(c, amt); ok {
+				if viaFX {
+					fx = append(fx, c)
+				} else {
+					exact = append(exact, c)
+				}
 			}
+		}
+		switch {
+		case len(exact) == 1:
+			return exact, ""
+		case len(exact) > 1:
+			return exact, fmt.Sprintf("%d open documents of this partner for this amount, none named in the memo", len(exact))
+		case len(fx) > 0:
+			return fx, "same partner, foreign-currency document within the FX tolerance"
 		}
 	}
 
-	// 3. amount + partner-name substring in line ref.
+	// 3. Same amount + the document's partner named in the memo. A bank
+	// line already attributed to ANOTHER partner is only suggested: the
+	// same amount on someone else's invoice is not proof without a
+	// reference.
 	amountHits := filter(byAmount[centsKey(amt)])
 	if ref != "" && len(amountHits) > 0 {
 		var nameHits []reconcileCandidate
@@ -1110,6 +1202,9 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 				}
 			}
 		}
+		if len(nameHits) == 1 && ln.PartnerID > 0 && nameHits[0].PartnerID != ln.PartnerID {
+			return nameHits, "name in the memo, but the bank line's partner is another one"
+		}
 		if len(nameHits) > 0 {
 			return nameHits, ""
 		}
@@ -1122,6 +1217,62 @@ func matchLineToCandidates(ln OdooCacheLine, openCandidates []reconcileCandidate
 		return amountHits, "amount-only match (no reference, partner or name in common)"
 	}
 	return amountHits, ""
+}
+
+// refHits: the documents (direction-fit, posted) a bank memo names.
+func refHits(memo string, lineAmount float64, refIndex []refMatchEntry) []reconcileCandidate {
+	if strings.TrimSpace(memo) == "" {
+		return nil
+	}
+	memoTokens := refTokens(memo)
+	comms := structuredComms(memo)
+	var hits []reconcileCandidate
+	seen := map[int]bool{}
+	for _, e := range refIndex {
+		c := e.Cand
+		if seen[c.ID] || !candidateFitsDirection(c, lineAmount) {
+			continue
+		}
+		named := false
+		if c.StructComm != "" {
+			for _, sc := range comms {
+				if sc == c.StructComm {
+					named = true
+				}
+			}
+		}
+		for _, r := range e.RefTokens {
+			if !named && tokensContainSeq(memoTokens, r) {
+				named = true
+			}
+		}
+		if named {
+			seen[c.ID] = true
+			hits = append(hits, c)
+		}
+	}
+	return hits
+}
+
+// reconcileFXTolerance: how far a EUR payment may differ from a
+// foreign-currency document's EUR residual (rates move between invoice and
+// card settlement).
+const reconcileFXTolerance = 0.03
+
+// candidateAmountFits reports whether a payment of amt (EUR) settles the
+// candidate's open amount: to the cent, or — for a foreign-currency
+// document — within reconcileFXTolerance (fx true).
+func candidateAmountFits(c reconcileCandidate, amt float64) (ok, fx bool) {
+	if c.ResidualEUR <= 0 {
+		return false, false
+	}
+	if math.Abs(c.ResidualEUR-amt) < 0.01 {
+		return true, false
+	}
+	if c.Foreign && math.Abs(c.ResidualEUR-amt) <= reconcileFXTolerance*c.ResidualEUR {
+		return true, true
+	}
+	return false, false
 }
 
 // candidateFitsDirection: an outgoing bank line pays a vendor bill or
@@ -1170,25 +1321,7 @@ func loadLocalCandidatePartitions() ([]reconcileCandidate, []reconcileCandidate,
 				if inv.State != "posted" {
 					continue
 				}
-				date, journal, payer, account := candidateLastActivity(inv.Payments, inv.WriteDate, inv.PaymentState)
-				c := reconcileCandidate{
-					ID:                 inv.ID,
-					Kind:               "invoice",
-					MoveType:           inv.MoveType,
-					Number:             firstNonEmpty(inv.Number, inv.Reference),
-					Residual:           candidateResidual(inv.ResidualAmount, inv.TotalSignedAmount),
-					SignedTotal:        inv.TotalSignedAmount,
-					PartnerID:          inv.Partner.ID,
-					PartnerName:        firstNonEmpty(inv.Partner.DisplayName, inv.Partner.Name),
-					Date:               firstNonEmpty(inv.InvoiceDate, inv.Date),
-					State:              inv.State,
-					PaymentState:       inv.PaymentState,
-					LastPayment:        date,
-					LastPaymentBy:      journal,
-					LastPaymentPayer:   payer,
-					LastPaymentAccount: account,
-					FirstLineItem:      firstLineByID[inv.ID],
-				}
+				c := candidateFromDocument(inv, "invoice", firstLineByID[inv.ID])
 				all = append(all, c)
 				if invoiceIsOpen(inv) {
 					open = append(open, c)
@@ -1204,25 +1337,7 @@ func loadLocalCandidatePartitions() ([]reconcileCandidate, []reconcileCandidate,
 			if b.State != "posted" {
 				continue
 			}
-			date, journal, payer, account := candidateLastActivity(b.Payments, b.WriteDate, b.PaymentState)
-			c := reconcileCandidate{
-				ID:                 b.ID,
-				Kind:               "bill",
-				MoveType:           b.MoveType,
-				Number:             firstNonEmpty(b.Number, b.Reference),
-				Residual:           candidateResidual(b.ResidualAmount, b.TotalSignedAmount),
-				SignedTotal:        b.TotalSignedAmount,
-				PartnerID:          b.Partner.ID,
-				PartnerName:        firstNonEmpty(b.Partner.DisplayName, b.Partner.Name),
-				Date:               firstNonEmpty(b.InvoiceDate, b.Date),
-				State:              b.State,
-				PaymentState:       b.PaymentState,
-				LastPayment:        date,
-				LastPaymentBy:      journal,
-				LastPaymentPayer:   payer,
-				LastPaymentAccount: account,
-				FirstLineItem:      firstLineByID[b.ID],
-			}
+			c := candidateFromDocument(b, "bill", firstLineByID[b.ID])
 			all = append(all, c)
 			if invoiceIsOpen(b) {
 				open = append(open, c)
@@ -1278,25 +1393,7 @@ func loadLocalCandidates(onlyOpen bool) ([]reconcileCandidate, error) {
 				if inv.State != "posted" {
 					continue // drop drafts / cancellations
 				}
-				date, journal, payer, account := candidateLastActivity(inv.Payments, inv.WriteDate, inv.PaymentState)
-				c := reconcileCandidate{
-					ID:                 inv.ID,
-					Kind:               "invoice",
-					MoveType:           inv.MoveType,
-					Number:             firstNonEmpty(inv.Number, inv.Reference),
-					Residual:           candidateResidual(inv.ResidualAmount, inv.TotalSignedAmount),
-					SignedTotal:        inv.TotalSignedAmount,
-					PartnerID:          inv.Partner.ID,
-					PartnerName:        firstNonEmpty(inv.Partner.DisplayName, inv.Partner.Name),
-					Date:               firstNonEmpty(inv.InvoiceDate, inv.Date),
-					State:              inv.State,
-					PaymentState:       inv.PaymentState,
-					LastPayment:        date,
-					LastPaymentBy:      journal,
-					LastPaymentPayer:   payer,
-					LastPaymentAccount: account,
-					FirstLineItem:      firstLineByID[inv.ID],
-				}
+				c := candidateFromDocument(inv, "invoice", firstLineByID[inv.ID])
 				if onlyOpen && !invoiceIsOpen(inv) {
 					continue
 				}
@@ -1312,25 +1409,7 @@ func loadLocalCandidates(onlyOpen bool) ([]reconcileCandidate, error) {
 			if b.State != "posted" {
 				continue
 			}
-			date, journal, payer, account := candidateLastActivity(b.Payments, b.WriteDate, b.PaymentState)
-			c := reconcileCandidate{
-				ID:                 b.ID,
-				Kind:               "bill",
-				MoveType:           b.MoveType,
-				Number:             firstNonEmpty(b.Number, b.Reference),
-				Residual:           candidateResidual(b.ResidualAmount, b.TotalSignedAmount),
-				SignedTotal:        b.TotalSignedAmount,
-				PartnerID:          b.Partner.ID,
-				PartnerName:        firstNonEmpty(b.Partner.DisplayName, b.Partner.Name),
-				Date:               firstNonEmpty(b.InvoiceDate, b.Date),
-				State:              b.State,
-				PaymentState:       b.PaymentState,
-				LastPayment:        date,
-				LastPaymentBy:      journal,
-				LastPaymentPayer:   payer,
-				LastPaymentAccount: account,
-				FirstLineItem:      firstLineByID[b.ID],
-			}
+			c := candidateFromDocument(b, "bill", firstLineByID[b.ID])
 			if onlyOpen && !invoiceIsOpen(b) {
 				continue
 			}
@@ -1392,9 +1471,10 @@ func invoiceIsOpen(inv OdooOutgoingInvoicePrivate) bool {
 // invoiceCacheUpdate captures the post-write fields we refresh in the
 // local private invoice/bill cache after a reconcile.
 type invoiceCacheUpdate struct {
-	State          string
-	PaymentState   string
-	ResidualAmount float64
+	State                string
+	PaymentState         string
+	ResidualAmount       float64 // document currency, as the pull stores it
+	ResidualSignedAmount float64 // company currency, signed
 }
 
 // refreshTouchedInvoiceCache re-fetches payment_state + amount_residual
@@ -1420,14 +1500,11 @@ func refreshTouchedInvoiceCache(creds *OdooCredentials, uid int, moveIDs []int) 
 		if id == 0 {
 			continue
 		}
-		residual := odooFloat(r["amount_residual_signed"])
-		if math.Abs(residual) < 0.005 {
-			residual = odooFloat(r["amount_residual"])
-		}
 		updates[id] = invoiceCacheUpdate{
-			State:          odooString(r["state"]),
-			PaymentState:   odooString(r["payment_state"]),
-			ResidualAmount: residual,
+			State:                odooString(r["state"]),
+			PaymentState:         odooString(r["payment_state"]),
+			ResidualAmount:       odooFloat(r["amount_residual"]),
+			ResidualSignedAmount: odooFloat(r["amount_residual_signed"]),
 		}
 	}
 	if len(updates) == 0 {
@@ -1478,13 +1555,14 @@ func patchPrivateInvoiceCacheFile(path string, updates map[int]invoiceCacheUpdat
 			file.Invoices[i].State = u.State
 			file.Invoices[i].PaymentState = u.PaymentState
 			file.Invoices[i].ResidualAmount = u.ResidualAmount
+			file.Invoices[i].ResidualSignedAmount = u.ResidualSignedAmount
 			patched++
 		}
 		if patched == 0 {
 			return 0
 		}
 		if buf, err := json.MarshalIndent(file, "", "  "); err == nil {
-			_ = os.WriteFile(path, buf, 0o644)
+			_ = os.WriteFile(path, buf, 0o600)
 		}
 		return patched
 	}
@@ -1501,13 +1579,14 @@ func patchPrivateInvoiceCacheFile(path string, updates map[int]invoiceCacheUpdat
 		file.Bills[i].State = u.State
 		file.Bills[i].PaymentState = u.PaymentState
 		file.Bills[i].ResidualAmount = u.ResidualAmount
+		file.Bills[i].ResidualSignedAmount = u.ResidualSignedAmount
 		patched++
 	}
 	if patched == 0 {
 		return 0
 	}
 	if buf, err := json.MarshalIndent(file, "", "  "); err == nil {
-		_ = os.WriteFile(path, buf, 0o644)
+		_ = os.WriteFile(path, buf, 0o600)
 	}
 	return patched
 }

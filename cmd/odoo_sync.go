@@ -5242,6 +5242,13 @@ func OdooFullSync(args []string) error {
 	}
 
 	printOdooFullSyncTally(results)
+	if !dryRun {
+		jids := make([]int, 0, len(targets))
+		for _, acc := range targets {
+			jids = append(jids, acc.OdooJournalID)
+		}
+		printNamedOpenDocumentsReport(jids)
+	}
 
 	if len(pushAttentionHints) > 0 {
 		fmt.Printf("\n  %s⚠ %d journal%s need%s attention:%s\n",
@@ -5595,8 +5602,10 @@ func odooJournalsSyncAll(args []string) error {
 			var row journalSyncRow
 			journalRowSink = &row
 			restore := silenceStdout()
-			err := runWithTimeout(fmt.Sprintf("journal #%d (%s)", t.journalID, t.slug), syncStepTimeout,
-				func() error { return AccountOdooPush(t.slug, args) })
+			// Not under runWithTimeout: an abandoned push keeps writing
+			// (draft → rewrite → repost) while the next journal starts.
+			// Each Odoo RPC has its own HTTP timeout.
+			err := AccountOdooPush(t.slug, args)
 			restore()
 			journalRowSink = nil
 			SetActiveStatusLine(nil)
@@ -5623,8 +5632,7 @@ func odooJournalsSyncAll(args []string) error {
 		// Serial: preserve one-line-per-item ordering, avoid interleaving.
 		for _, t := range targets {
 			printJournalRowPrefix(t.journalID, t.slug)
-			if err := runWithTimeout(fmt.Sprintf("journal #%d (%s)", t.journalID, t.slug), syncStepTimeout,
-				func() error { return AccountOdooPush(t.slug, args) }); err != nil {
+			if err := AccountOdooPush(t.slug, args); err != nil {
 				fmt.Printf("  %s✗ #%d %s: %v%s\n", Fmt.Red, t.journalID, t.slug, err, Fmt.Reset)
 				failed++
 			}
@@ -5641,8 +5649,7 @@ func odooJournalsSyncAll(args []string) error {
 			sem <- struct{}{}
 			go func() {
 				defer func() { <-sem }()
-				err := runWithTimeout(fmt.Sprintf("journal #%d (%s)", t.journalID, t.slug), syncStepTimeout,
-					func() error { return AccountOdooPush(t.slug, args) })
+				err := AccountOdooPush(t.slug, args)
 				resultsCh <- result{slug: t.slug, err: err}
 			}()
 		}
@@ -5657,6 +5664,10 @@ func odooJournalsSyncAll(args []string) error {
 				failed++
 			}
 		}
+	}
+
+	if !HasFlag(args, "--dry-run") {
+		printNamedOpenDocumentsReport(journalIDs)
 	}
 
 	// Closing summary — attention items only, in compact mode. Things
@@ -5827,7 +5838,7 @@ func PrintOdooHelp() {
 	fmt.Printf("  %s%schb odoo journals <id>%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sShow journal details + count of local txs not yet pushed (--verbose lists them all)%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> push%s\n", f.Bold, f.Cyan, f.Reset)
-	fmt.Printf("    %sPush local transactions into one journal. Reconcile runs automatically on small batches (≤%d new lines).%s\n", f.Dim, reconcileAutoThreshold, f.Reset)
+	fmt.Printf("    %sPush local transactions into one journal. Reconcile runs automatically after the push.%s\n", f.Dim, f.Reset)
 	fmt.Printf("    %sUse --dry-run to preview, --history for a full duplicate check%s\n\n", f.Dim, f.Reset)
 	fmt.Printf("  %s%schb odoo journals <id> pull%s\n", f.Bold, f.Cyan, f.Reset)
 	fmt.Printf("    %sRefresh the local journal-lines cache for one journal (cheaper than full chb odoo pull)%s\n\n", f.Dim, f.Reset)

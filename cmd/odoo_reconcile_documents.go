@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 var longDigitRun = regexp.MustCompile(`\d{6,}`)
@@ -142,10 +144,92 @@ func relatedCommercialPartnerIDs(creds *OdooCredentials, uid int, line odooState
 	return res
 }
 
-// lineHasOpenDocument reports whether the line's party has an open
-// invoice/bill of the line's amount (dated within three months before the
-// line to one month after), or one matching its vendor reference.
+// localDocIndex: the reconcile matcher's indexes over the local
+// invoice/bill cache, built once per run (refreshed after 10 minutes), so
+// "should this line be booked to an account?" asks the same matcher as
+// "which invoice does it pay?".
+type localDocIndex struct {
+	open      []reconcileCandidate
+	refs      []refMatchEntry
+	byPartner map[int][]reconcileCandidate
+	byAmount  map[int64][]reconcileCandidate
+}
+
+var (
+	localDocIndexMu    sync.Mutex
+	localDocIndexCache *localDocIndex
+	localDocIndexAt    time.Time
+)
+
+func loadLocalDocIndex() *localDocIndex {
+	localDocIndexMu.Lock()
+	defer localDocIndexMu.Unlock()
+	if localDocIndexCache != nil && time.Since(localDocIndexAt) < 10*time.Minute {
+		return localDocIndexCache
+	}
+	open, all, err := loadLocalCandidatePartitions()
+	if err != nil {
+		return &localDocIndex{}
+	}
+	localDocIndexCache = newLocalDocIndex(open, all)
+	localDocIndexAt = time.Now()
+	return localDocIndexCache
+}
+
+// invalidateLocalDocIndex: the invoice/bill cache changed (a reconcile
+// patched it).
+func invalidateLocalDocIndex() {
+	localDocIndexMu.Lock()
+	localDocIndexCache = nil
+	localDocIndexMu.Unlock()
+}
+
+func newLocalDocIndex(open, all []reconcileCandidate) *localDocIndex {
+	idx := &localDocIndex{open: open, refs: buildRefMatchIndex(all),
+		byPartner: map[int][]reconcileCandidate{}, byAmount: map[int64][]reconcileCandidate{}}
+	for _, c := range open {
+		idx.byPartner[c.PartnerID] = append(idx.byPartner[c.PartnerID], c)
+		idx.byAmount[centsKey(c.ResidualEUR)] = append(idx.byAmount[centsKey(c.ResidualEUR)], c)
+	}
+	return idx
+}
+
+// openDocumentFor: the open document the matcher ties the line to — named
+// in its memo (number, reference, sale order, structured communication),
+// or of the same partner and amount (EUR, or within the FX tolerance for
+// a foreign-currency document), or of the same amount with the document's
+// partner named in the memo. An amount alone does not count.
+func (idx *localDocIndex) openDocumentFor(ln OdooCacheLine) (bool, string) {
+	if idx == nil || ln.Amount == 0 {
+		return false, ""
+	}
+	hits, note := matchLineToCandidates(ln, idx.open, idx.refs, idx.byPartner, idx.byAmount)
+	if strings.HasPrefix(note, "amount-only") {
+		return false, ""
+	}
+	for _, c := range hits {
+		if c.IsOpen() {
+			return true, c.label()
+		}
+	}
+	return false, ""
+}
+
+func statementLineAsCacheLine(l odooStatementLineForReconcile) OdooCacheLine {
+	return OdooCacheLine{ID: l.ID, MoveID: l.MoveID, PartnerID: l.PartnerID, Date: l.Date, PaymentRef: l.PaymentRef,
+		UniqueImportID: l.UniqueImportID, Amount: l.Amount, Narration: l.Narration, Metadata: parseOdooLineNarration(l.Narration)}
+}
+
+// lineHasOpenDocument reports whether the line has an open invoice/bill:
+// the shared matcher over the local cache first (memo references,
+// structured communication, partner + amount, FX), then live in Odoo the
+// line's party (partner, or every partner holding its IBAN) with a
+// document of the line's amount dated within three months before the line
+// to one month after, or a vendor reference among its digits.
 func lineHasOpenDocument(creds *OdooCredentials, uid int, line odooStatementLineForReconcile) (bool, string) {
+	if has, doc := loadLocalDocIndex().openDocumentFor(statementLineAsCacheLine(line)); has {
+		return true, doc
+	}
 	if c, err := findOpenMoveCandidatesByVendorRef(creds, uid, line); err == nil && len(c) > 0 {
 		return true, candidateDisplayName(c[0])
 	}
@@ -162,8 +246,10 @@ func lineHasOpenDocument(creds *OdooCredentials, uid int, line odooStatementLine
 
 // holdLinesWithOpenDocuments splits lineIDs into those safe to categorise
 // and those left for bill/invoice matching. Read errors keep the line
-// categorisable (the previous behaviour).
-func holdLinesWithOpenDocuments(creds *OdooCredentials, uid int, lineIDs []int) (keep []int, held map[int]string) {
+// categorisable (the previous behaviour). live adds the per-line Odoo
+// lookups to the local matcher (skip it for big Stripe batches).
+func holdLinesWithOpenDocuments(creds *OdooCredentials, uid int, lineIDs []int, live ...bool) (keep []int, held map[int]string) {
+	checkLive := len(live) == 0 || live[0]
 	held = map[int]string{}
 	if len(lineIDs) == 0 {
 		return lineIDs, held
@@ -182,7 +268,13 @@ func holdLinesWithOpenDocuments(creds *OdooCredentials, uid int, lineIDs []int) 
 			keep = append(keep, id)
 			continue
 		}
-		if has, doc := lineHasOpenDocument(creds, uid, l); has {
+		has, doc := false, ""
+		if checkLive {
+			has, doc = lineHasOpenDocument(creds, uid, l)
+		} else {
+			has, doc = loadLocalDocIndex().openDocumentFor(statementLineAsCacheLine(l))
+		}
+		if has {
 			held[id] = doc
 			continue
 		}
@@ -196,14 +288,24 @@ func holdLinesWithOpenDocuments(creds *OdooCredentials, uid int, lineIDs []int) 
 // party has an open invoice/bill of the same amount stay on the suspense
 // account for bill matching (`chb odoo journals <id> reconcile -i`).
 func applyOdooMappingAccountUnlessDocument(creds *OdooCredentials, uid int, lineIDs []int, accountCode string, progress ...*statusLine) error {
-	keep, held := holdLinesWithOpenDocuments(creds, uid, lineIDs)
+	return applyOdooMappingAccountUnlessDocumentMode(creds, uid, lineIDs, accountCode, true, progress...)
+}
+
+// applyOdooMappingAccountUnlessLocalDocument: the same guard with the local
+// matcher only (no per-line Odoo lookups) — for Stripe's large batches.
+func applyOdooMappingAccountUnlessLocalDocument(creds *OdooCredentials, uid int, lineIDs []int, accountCode string, progress ...*statusLine) error {
+	return applyOdooMappingAccountUnlessDocumentMode(creds, uid, lineIDs, accountCode, false, progress...)
+}
+
+func applyOdooMappingAccountUnlessDocumentMode(creds *OdooCredentials, uid int, lineIDs []int, accountCode string, live bool, progress ...*statusLine) error {
+	keep, held := holdLinesWithOpenDocuments(creds, uid, lineIDs, live)
 	ids := make([]int, 0, len(held))
 	for id := range held {
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
 	for _, id := range ids {
-		Warnf("  %s⚠ line #%d not booked to %s: open document %s of the same amount — left for bill matching%s",
+		Warnf("  %s⚠ line #%d not booked to %s: open document %s matches it — left for invoice/bill matching%s",
 			Fmt.Yellow, id, accountCode, held[id], Fmt.Reset)
 	}
 	if len(keep) == 0 {

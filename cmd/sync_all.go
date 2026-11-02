@@ -335,11 +335,11 @@ func PushAllTargets(args []string) error {
 		// changes — Odoo: <db>" banner above and on the row labels,
 		// so the standalone "Odoo target: …" banner that
 		// printOdooWriteBannerOnce used to add is suppressed here.
-		// Bounded so an unresponsive Odoo can't freeze the whole push;
-		// after syncStepTimeout we surface a clear error and move on to Nostr.
-		if err := runWithTimeout("Odoo push", syncStepTimeout, func() error {
-			return odooJournalsSyncAll(args)
-		}); err != nil && firstErr == nil {
+		// Not under runWithTimeout: the push reconciles (draft → rewrite →
+		// repost), and an abandoned goroutine would keep writing half-done
+		// moves while Nostr runs. Each Odoo RPC has its own HTTP timeout,
+		// so an unresponsive Odoo still fails rather than hangs.
+		if err := odooJournalsSyncAll(args); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -606,7 +606,7 @@ func confirmPushPlan(plan pushConfirmationPlan, args []string) error {
 			fmt.Printf("    #%d %s: %s%s\n", j.JournalID, j.Slug, Pluralize(j.Count, "new transaction", ""), other)
 		}
 		if !HasFlag(args, "--skip-reconcile", "--skip-reconciliation") {
-			fmt.Printf("    %sAuto-reconcile may run on journals with %d or fewer new transactions.%s\n", Fmt.Dim, reconcileAutoThreshold, Fmt.Reset)
+			fmt.Printf("    %sEach journal is reconciled after its push (unambiguous matches only).%s\n", Fmt.Dim, Fmt.Reset)
 		}
 	}
 	if plan.NostrOutbox+plan.NostrTransactions+plan.NostrInvoices+plan.NostrBills > 0 {
@@ -655,9 +655,8 @@ func PrintSyncCronHelp() {
 
   Designed to be safe to run unattended every hour:
     - Pull is read-only on remotes; cannot create duplicates.
-    - Push auto-reconciles only when ≤ %d new lines were created
-      (large back-fills skip auto-reconcile; run
-      %schb odoo journals <id> reconcile%s to handle them explicitly).
+    - Push reconciles every journal it touches: only unambiguous matches
+      are applied; the rest is left for %schb odoo journals <id> reconcile -i%s.
 
 %sOPTIONS%s  (forwarded to both pull and push)
   %s--dry-run%s          Preview without writing anything
@@ -677,7 +676,6 @@ func PrintSyncCronHelp() {
 		Fmt.Bold, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,
 		Fmt.Cyan, Fmt.Reset,
-		reconcileAutoThreshold,
 		Fmt.Cyan, Fmt.Reset, // chb odoo journals <id> reconcile (inline hint)
 		Fmt.Bold, Fmt.Reset,
 		Fmt.Yellow, Fmt.Reset, // --dry-run

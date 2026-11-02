@@ -7,7 +7,8 @@ func TestInvoiceRefTokens(t *testing.T) {
 		"CHB/2025/00204":       {"2025/00204", "00204"},
 		"MEM/2025/00071":       {"2025/00071", "00071"},
 		"Reversal of: RCHB/x":  {"", ""},
-		"S00172":               {"", ""},
+		"S00172":               {"S00172", ""},
+		"2025Q2CHI0099":        {"2025Q2CHI0099", ""},
 		"+++000/0014/46512+++": {"", ""}, // structured comm, not a clean move number
 	}
 	for in, want := range cases {

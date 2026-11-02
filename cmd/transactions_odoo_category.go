@@ -179,20 +179,12 @@ var structuredCommunication = regexp.MustCompile(`(?:\+\+\+|\*\*\*)?\s*\b(\d{3})
 // an invoice's structured communication (first ten digits, last two their
 // mod-97 check, 97 for 0), or 0.
 func invoiceIDFromCommunication(text string) int {
-	for _, m := range structuredCommunication.FindAllStringSubmatch(text, -1) {
-		digits := m[1] + m[2] + m[3]
-		var base int64
+	for _, digits := range structuredComms(text) {
+		base := 0
 		for _, c := range digits[:10] {
-			base = base*10 + int64(c-'0')
+			base = base*10 + int(c-'0')
 		}
-		check := int64((digits[10]-'0')*10 + (digits[11] - '0'))
-		want := base % 97
-		if want == 0 {
-			want = 97
-		}
-		if base > 0 && check == want {
-			return int(base)
-		}
+		return base
 	}
 	return 0
 }

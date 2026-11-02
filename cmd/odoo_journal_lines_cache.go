@@ -14,7 +14,10 @@ import (
 	odoosource "github.com/CommonsHub/chb/providers/odoo"
 )
 
-const odooJournalLinesSchemaVersion = 1
+// odooJournalLinesSchemaVersion: bumped when a line gains a field the
+// incremental refresh would never backfill on unchanged lines; an older
+// cache is refetched in full once. 2: counterpartReconciled.
+const odooJournalLinesSchemaVersion = 2
 
 type OdooJournalLinesFile struct {
 	SchemaVersion int             `json:"schemaVersion"`
@@ -35,14 +38,18 @@ type OdooCacheLine struct {
 	// (income/expense = categorized; asset_receivable/liability_payable =
 	// matched to an invoice/bill). Lets the local reconcile matcher offer
 	// categorized lines for invoice attachment while leaving real matches alone.
-	CounterpartType string                 `json:"counterpartType,omitempty"`
-	Date            string                 `json:"date,omitempty"`
-	PaymentRef      string                 `json:"paymentRef,omitempty"`
-	UniqueImportID  string                 `json:"uniqueImportId,omitempty"`
-	Amount          float64                `json:"amount"`
-	IsReconciled    bool                   `json:"isReconciled,omitempty"`
-	Narration       string                 `json:"narration,omitempty"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	CounterpartType string `json:"counterpartType,omitempty"`
+	// CounterpartReconciled: the counterpart line itself is reconciled. A
+	// counterpart on Outstanding Receipts/Payments (asset_current) is only a
+	// real match when it is.
+	CounterpartReconciled bool                   `json:"counterpartReconciled,omitempty"`
+	Date                  string                 `json:"date,omitempty"`
+	PaymentRef            string                 `json:"paymentRef,omitempty"`
+	UniqueImportID        string                 `json:"uniqueImportId,omitempty"`
+	Amount                float64                `json:"amount"`
+	IsReconciled          bool                   `json:"isReconciled,omitempty"`
+	Narration             string                 `json:"narration,omitempty"`
+	Metadata              map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func writeOdooJournalLinesCache(creds *OdooCredentials, uid int, journalID int) (int, error) {
@@ -54,6 +61,9 @@ func writeOdooJournalLinesCache(creds *OdooCredentials, uid int, journalID int) 
 	// line drops from "page all 700 rows" to "fetch 1 row".
 	cur := LoadSyncCursor(SyncCursorKeyForOdooJournal(journalID))
 	existing, haveCache := loadLatestOdooJournalLinesCache(journalID)
+	if f, ok := loadLatestOdooJournalLinesFile(journalID); ok && f.SchemaVersion < odooJournalLinesSchemaVersion {
+		haveCache = false
+	}
 	if !haveCache || cur.LastWriteDate == "" {
 		return writeOdooJournalLinesCacheFullRefetch(creds, uid, journalID, &cur)
 	}
@@ -180,19 +190,20 @@ func fetchOdooJournalLinesSince(creds *OdooCredentials, uid int, journalID int, 
 		moveID := odooFieldID(row["move_id"])
 		counterpart := counterpartByMoveID[moveID]
 		line := OdooCacheLine{
-			ID:              odooInt(row["id"]),
-			MoveID:          moveID,
-			PartnerID:       odooFieldID(row["partner_id"]),
-			AccountID:       counterpart.AccountID,
-			CounterpartID:   counterpart.LineID,
-			CounterpartType: counterpart.AccountType,
-			Date:            odooString(row["date"]),
-			PaymentRef:      odooString(row["payment_ref"]),
-			UniqueImportID:  odooString(row["unique_import_id"]),
-			Amount:          odooFloat(row["amount"]),
-			IsReconciled:    odooBool(row["is_reconciled"]),
-			Narration:       narration,
-			Metadata:        parseOdooLineNarration(narration),
+			ID:                    odooInt(row["id"]),
+			MoveID:                moveID,
+			PartnerID:             odooFieldID(row["partner_id"]),
+			AccountID:             counterpart.AccountID,
+			CounterpartID:         counterpart.LineID,
+			CounterpartType:       counterpart.AccountType,
+			CounterpartReconciled: counterpart.Reconciled,
+			Date:                  odooString(row["date"]),
+			PaymentRef:            odooString(row["payment_ref"]),
+			UniqueImportID:        odooString(row["unique_import_id"]),
+			Amount:                odooFloat(row["amount"]),
+			IsReconciled:          odooBool(row["is_reconciled"]),
+			Narration:             narration,
+			Metadata:              parseOdooLineNarration(narration),
 		}
 		if line.UniqueImportID == "" {
 			line.UniqueImportID = metaString(line.Metadata, "uniqueImportId")
@@ -349,19 +360,20 @@ func fetchOdooJournalLinesForCacheFull(creds *OdooCredentials, uid int, journalI
 		moveID := odooFieldID(row["move_id"])
 		counterpart := counterpartByMoveID[moveID]
 		line := OdooCacheLine{
-			ID:              odooInt(row["id"]),
-			MoveID:          moveID,
-			PartnerID:       odooFieldID(row["partner_id"]),
-			AccountID:       counterpart.AccountID,
-			CounterpartID:   counterpart.LineID,
-			CounterpartType: counterpart.AccountType,
-			Date:            odooString(row["date"]),
-			PaymentRef:      odooString(row["payment_ref"]),
-			UniqueImportID:  odooString(row["unique_import_id"]),
-			Amount:          odooFloat(row["amount"]),
-			IsReconciled:    odooBool(row["is_reconciled"]),
-			Narration:       narration,
-			Metadata:        parseOdooLineNarration(narration),
+			ID:                    odooInt(row["id"]),
+			MoveID:                moveID,
+			PartnerID:             odooFieldID(row["partner_id"]),
+			AccountID:             counterpart.AccountID,
+			CounterpartID:         counterpart.LineID,
+			CounterpartType:       counterpart.AccountType,
+			CounterpartReconciled: counterpart.Reconciled,
+			Date:                  odooString(row["date"]),
+			PaymentRef:            odooString(row["payment_ref"]),
+			UniqueImportID:        odooString(row["unique_import_id"]),
+			Amount:                odooFloat(row["amount"]),
+			IsReconciled:          odooBool(row["is_reconciled"]),
+			Narration:             narration,
+			Metadata:              parseOdooLineNarration(narration),
 		}
 		if line.UniqueImportID == "" {
 			line.UniqueImportID = metaString(line.Metadata, "uniqueImportId")
@@ -396,19 +408,20 @@ func fetchOdooJournalLinesForCache(creds *OdooCredentials, uid int, journalID in
 		moveID := odooFieldID(row["move_id"])
 		counterpart := counterpartByMoveID[moveID]
 		line := OdooCacheLine{
-			ID:              odooInt(row["id"]),
-			MoveID:          moveID,
-			PartnerID:       odooFieldID(row["partner_id"]),
-			AccountID:       counterpart.AccountID,
-			CounterpartID:   counterpart.LineID,
-			CounterpartType: counterpart.AccountType,
-			Date:            odooString(row["date"]),
-			PaymentRef:      odooString(row["payment_ref"]),
-			UniqueImportID:  odooString(row["unique_import_id"]),
-			Amount:          odooFloat(row["amount"]),
-			IsReconciled:    odooBool(row["is_reconciled"]),
-			Narration:       narration,
-			Metadata:        parseOdooLineNarration(narration),
+			ID:                    odooInt(row["id"]),
+			MoveID:                moveID,
+			PartnerID:             odooFieldID(row["partner_id"]),
+			AccountID:             counterpart.AccountID,
+			CounterpartID:         counterpart.LineID,
+			CounterpartType:       counterpart.AccountType,
+			CounterpartReconciled: counterpart.Reconciled,
+			Date:                  odooString(row["date"]),
+			PaymentRef:            odooString(row["payment_ref"]),
+			UniqueImportID:        odooString(row["unique_import_id"]),
+			Amount:                odooFloat(row["amount"]),
+			IsReconciled:          odooBool(row["is_reconciled"]),
+			Narration:             narration,
+			Metadata:              parseOdooLineNarration(narration),
 		}
 		if line.UniqueImportID == "" {
 			line.UniqueImportID = metaString(line.Metadata, "uniqueImportId")
@@ -555,6 +568,11 @@ func updateOdooJournalLinesCacheCounterparts(journalID int, counterpartsByMoveID
 		}
 		if info.LineID > 0 && lines[i].CounterpartID != info.LineID {
 			lines[i].CounterpartID = info.LineID
+			changed = true
+		}
+		if info.AccountType != "" && (lines[i].CounterpartType != info.AccountType || lines[i].CounterpartReconciled != info.Reconciled) {
+			lines[i].CounterpartType = info.AccountType
+			lines[i].CounterpartReconciled = info.Reconciled
 			changed = true
 		}
 	}

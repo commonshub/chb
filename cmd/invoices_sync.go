@@ -64,6 +64,7 @@ type OdooOutgoingInvoice struct {
 	VATAmount             float64                    `json:"vatAmount"`
 	TotalAmount           float64                    `json:"totalAmount"`
 	ResidualAmount        float64                    `json:"residualAmount,omitempty"`
+	ResidualSignedAmount  float64                    `json:"residualSignedAmount,omitempty"` // company currency (EUR)
 	TotalSignedAmount     float64                    `json:"totalSignedAmount,omitempty"`
 	Currency              string                     `json:"currency,omitempty"`
 	Journal               OdooInvoiceJournal         `json:"journal"`
@@ -115,29 +116,33 @@ type OdooOutgoingInvoicePublic struct {
 }
 
 type OdooOutgoingInvoicePrivate struct {
-	ID                 int                      `json:"id"`
-	Number             string                   `json:"number,omitempty"`
-	Ref                string                   `json:"ref,omitempty"`
-	MoveType           string                   `json:"moveType,omitempty"`
-	State              string                   `json:"state,omitempty"`
-	PaymentState       string                   `json:"paymentState,omitempty"`
-	InvoiceDate        string                   `json:"invoiceDate,omitempty"`
-	Date               string                   `json:"date,omitempty"`
-	DueDate            string                   `json:"dueDate,omitempty"`
-	Reference          string                   `json:"reference,omitempty"`
-	InvoiceOrigin      string                   `json:"invoiceOrigin,omitempty"`
-	ResidualAmount     float64                  `json:"residualAmount,omitempty"`
-	TotalSignedAmount  float64                  `json:"totalSignedAmount,omitempty"`
-	Partner            OdooInvoicePartner       `json:"partner"`
-	CommercialPartner  *OdooInvoicePartner      `json:"commercialPartner,omitempty"`
-	PartnerBank        *OdooInvoiceBankAccount  `json:"partnerBank,omitempty"`
-	Transactions       []OdooInvoiceTx          `json:"transactions,omitempty"`
-	Payments           []OdooInvoicePayment     `json:"payments,omitempty"`
-	Attachments        []OdooDocumentAttachment `json:"attachments,omitempty"`
-	WriteDate          string                   `json:"writeDate,omitempty"`
-	CreateDate         string                   `json:"createDate,omitempty"`
-	InvoiceURL         string                   `json:"invoiceUrl,omitempty"`
-	PartnerDisplayName string                   `json:"partnerDisplayName,omitempty"`
+	ID             int     `json:"id"`
+	Number         string  `json:"number,omitempty"`
+	Ref            string  `json:"ref,omitempty"`
+	MoveType       string  `json:"moveType,omitempty"`
+	State          string  `json:"state,omitempty"`
+	PaymentState   string  `json:"paymentState,omitempty"`
+	InvoiceDate    string  `json:"invoiceDate,omitempty"`
+	Date           string  `json:"date,omitempty"`
+	DueDate        string  `json:"dueDate,omitempty"`
+	Reference      string  `json:"reference,omitempty"`
+	InvoiceOrigin  string  `json:"invoiceOrigin,omitempty"`
+	ResidualAmount float64 `json:"residualAmount,omitempty"`
+	// ResidualSignedAmount is the open amount in company currency (EUR),
+	// signed; Currency is the document's own currency.
+	ResidualSignedAmount float64                  `json:"residualSignedAmount,omitempty"`
+	Currency             string                   `json:"currency,omitempty"`
+	TotalSignedAmount    float64                  `json:"totalSignedAmount,omitempty"`
+	Partner              OdooInvoicePartner       `json:"partner"`
+	CommercialPartner    *OdooInvoicePartner      `json:"commercialPartner,omitempty"`
+	PartnerBank          *OdooInvoiceBankAccount  `json:"partnerBank,omitempty"`
+	Transactions         []OdooInvoiceTx          `json:"transactions,omitempty"`
+	Payments             []OdooInvoicePayment     `json:"payments,omitempty"`
+	Attachments          []OdooDocumentAttachment `json:"attachments,omitempty"`
+	WriteDate            string                   `json:"writeDate,omitempty"`
+	CreateDate           string                   `json:"createDate,omitempty"`
+	InvoiceURL           string                   `json:"invoiceUrl,omitempty"`
+	PartnerDisplayName   string                   `json:"partnerDisplayName,omitempty"`
 }
 
 type OdooInvoiceJournal struct {
@@ -505,7 +510,7 @@ func fetchOutgoingInvoicesFromOdoo(creds *OdooCredentials, uid int, startDate, e
 	fields := []string{
 		"id", "name", "ref", "move_type", "state", "payment_state", "is_move_sent",
 		"invoice_date", "date", "invoice_date_due", "payment_reference",
-		"amount_untaxed", "amount_tax", "amount_total", "amount_residual", "amount_total_signed",
+		"amount_untaxed", "amount_tax", "amount_total", "amount_residual", "amount_residual_signed", "amount_total_signed",
 		"currency_id", "partner_id", "commercial_partner_id", "journal_id",
 		"invoice_origin", "narration", "invoice_line_ids",
 		"write_date", "create_date", "invoice_payments_widget",
@@ -804,25 +809,26 @@ func enrichOutgoingInvoices(creds *OdooCredentials, uid int, rawInvoices []map[s
 	var invoices []OdooOutgoingInvoice
 	for _, raw := range rawInvoices {
 		inv := OdooOutgoingInvoice{
-			ID:                odooInt(raw["id"]),
-			Number:            odooString(raw["name"]),
-			Ref:               odooString(raw["ref"]),
-			MoveType:          odooString(raw["move_type"]),
-			State:             odooString(raw["state"]),
-			PaymentState:      odooString(raw["payment_state"]),
-			Sent:              odooBool(raw["is_move_sent"]),
-			SentAt:            sentAtByInvoiceID[odooInt(raw["id"])],
-			InvoiceDate:       odooString(raw["invoice_date"]),
-			Date:              odooString(raw["date"]),
-			DueDate:           odooString(raw["invoice_date_due"]),
-			Reference:         odooString(raw["payment_reference"]),
-			InvoiceOrigin:     odooString(raw["invoice_origin"]),
-			UntaxedAmount:     odooFloat(raw["amount_untaxed"]),
-			VATAmount:         odooFloat(raw["amount_tax"]),
-			TotalAmount:       odooFloat(raw["amount_total"]),
-			ResidualAmount:    odooFloat(raw["amount_residual"]),
-			TotalSignedAmount: odooFloat(raw["amount_total_signed"]),
-			Currency:          odooFieldName(raw["currency_id"]),
+			ID:                   odooInt(raw["id"]),
+			Number:               odooString(raw["name"]),
+			Ref:                  odooString(raw["ref"]),
+			MoveType:             odooString(raw["move_type"]),
+			State:                odooString(raw["state"]),
+			PaymentState:         odooString(raw["payment_state"]),
+			Sent:                 odooBool(raw["is_move_sent"]),
+			SentAt:               sentAtByInvoiceID[odooInt(raw["id"])],
+			InvoiceDate:          odooString(raw["invoice_date"]),
+			Date:                 odooString(raw["date"]),
+			DueDate:              odooString(raw["invoice_date_due"]),
+			Reference:            odooString(raw["payment_reference"]),
+			InvoiceOrigin:        odooString(raw["invoice_origin"]),
+			UntaxedAmount:        odooFloat(raw["amount_untaxed"]),
+			VATAmount:            odooFloat(raw["amount_tax"]),
+			TotalAmount:          odooFloat(raw["amount_total"]),
+			ResidualAmount:       odooFloat(raw["amount_residual"]),
+			ResidualSignedAmount: odooFloat(raw["amount_residual_signed"]),
+			TotalSignedAmount:    odooFloat(raw["amount_total_signed"]),
+			Currency:             odooFieldName(raw["currency_id"]),
 			Journal: OdooInvoiceJournal{
 				ID:   odooFieldID(raw["journal_id"]),
 				Name: odooFieldName(raw["journal_id"]),
@@ -1607,29 +1613,31 @@ func buildPrivateInvoices(invoices []OdooOutgoingInvoice) []OdooOutgoingInvoiceP
 
 func toPrivateInvoice(inv OdooOutgoingInvoice) OdooOutgoingInvoicePrivate {
 	return OdooOutgoingInvoicePrivate{
-		ID:                 inv.ID,
-		Number:             inv.Number,
-		Ref:                inv.Ref,
-		MoveType:           inv.MoveType,
-		State:              inv.State,
-		PaymentState:       inv.PaymentState,
-		InvoiceDate:        inv.InvoiceDate,
-		Date:               inv.Date,
-		DueDate:            inv.DueDate,
-		Reference:          inv.Reference,
-		InvoiceOrigin:      inv.InvoiceOrigin,
-		ResidualAmount:     inv.ResidualAmount,
-		TotalSignedAmount:  inv.TotalSignedAmount,
-		Partner:            inv.Partner,
-		CommercialPartner:  inv.CommercialPartner,
-		PartnerBank:        inv.PartnerBank,
-		Transactions:       inv.Transactions,
-		Payments:           inv.Payments,
-		Attachments:        inv.Attachments,
-		WriteDate:          inv.WriteDate,
-		CreateDate:         inv.CreateDate,
-		InvoiceURL:         inv.InvoiceURL,
-		PartnerDisplayName: inv.PartnerDisplayName,
+		ID:                   inv.ID,
+		Number:               inv.Number,
+		Ref:                  inv.Ref,
+		MoveType:             inv.MoveType,
+		State:                inv.State,
+		PaymentState:         inv.PaymentState,
+		InvoiceDate:          inv.InvoiceDate,
+		Date:                 inv.Date,
+		DueDate:              inv.DueDate,
+		Reference:            inv.Reference,
+		InvoiceOrigin:        inv.InvoiceOrigin,
+		ResidualAmount:       inv.ResidualAmount,
+		ResidualSignedAmount: inv.ResidualSignedAmount,
+		Currency:             inv.Currency,
+		TotalSignedAmount:    inv.TotalSignedAmount,
+		Partner:              inv.Partner,
+		CommercialPartner:    inv.CommercialPartner,
+		PartnerBank:          inv.PartnerBank,
+		Transactions:         inv.Transactions,
+		Payments:             inv.Payments,
+		Attachments:          inv.Attachments,
+		WriteDate:            inv.WriteDate,
+		CreateDate:           inv.CreateDate,
+		InvoiceURL:           inv.InvoiceURL,
+		PartnerDisplayName:   inv.PartnerDisplayName,
 	}
 }
 
@@ -1638,29 +1646,31 @@ func privateInvoiceToInternal(inv *OdooOutgoingInvoicePrivate) *OdooOutgoingInvo
 		return &OdooOutgoingInvoice{}
 	}
 	return &OdooOutgoingInvoice{
-		ID:                 inv.ID,
-		Number:             inv.Number,
-		Ref:                inv.Ref,
-		MoveType:           inv.MoveType,
-		State:              inv.State,
-		PaymentState:       inv.PaymentState,
-		InvoiceDate:        inv.InvoiceDate,
-		Date:               inv.Date,
-		DueDate:            inv.DueDate,
-		Reference:          inv.Reference,
-		InvoiceOrigin:      inv.InvoiceOrigin,
-		ResidualAmount:     inv.ResidualAmount,
-		TotalSignedAmount:  inv.TotalSignedAmount,
-		Partner:            inv.Partner,
-		CommercialPartner:  inv.CommercialPartner,
-		PartnerBank:        inv.PartnerBank,
-		Transactions:       inv.Transactions,
-		Payments:           inv.Payments,
-		Attachments:        inv.Attachments,
-		WriteDate:          inv.WriteDate,
-		CreateDate:         inv.CreateDate,
-		InvoiceURL:         inv.InvoiceURL,
-		PartnerDisplayName: inv.PartnerDisplayName,
+		ID:                   inv.ID,
+		Number:               inv.Number,
+		Ref:                  inv.Ref,
+		MoveType:             inv.MoveType,
+		State:                inv.State,
+		PaymentState:         inv.PaymentState,
+		InvoiceDate:          inv.InvoiceDate,
+		Date:                 inv.Date,
+		DueDate:              inv.DueDate,
+		Reference:            inv.Reference,
+		InvoiceOrigin:        inv.InvoiceOrigin,
+		ResidualAmount:       inv.ResidualAmount,
+		ResidualSignedAmount: inv.ResidualSignedAmount,
+		Currency:             inv.Currency,
+		TotalSignedAmount:    inv.TotalSignedAmount,
+		Partner:              inv.Partner,
+		CommercialPartner:    inv.CommercialPartner,
+		PartnerBank:          inv.PartnerBank,
+		Transactions:         inv.Transactions,
+		Payments:             inv.Payments,
+		Attachments:          inv.Attachments,
+		WriteDate:            inv.WriteDate,
+		CreateDate:           inv.CreateDate,
+		InvoiceURL:           inv.InvoiceURL,
+		PartnerDisplayName:   inv.PartnerDisplayName,
 	}
 }
 
@@ -1704,29 +1714,31 @@ func loadCachedInvoiceMonth(dataDir, year, month string) []OdooOutgoingInvoice {
 		if json.Unmarshal(data, &file) == nil {
 			for _, inv := range file.Invoices {
 				privateByID[inv.ID] = OdooOutgoingInvoice{
-					ID:                 inv.ID,
-					Number:             inv.Number,
-					Ref:                inv.Ref,
-					MoveType:           inv.MoveType,
-					State:              inv.State,
-					PaymentState:       inv.PaymentState,
-					InvoiceDate:        inv.InvoiceDate,
-					Date:               inv.Date,
-					DueDate:            inv.DueDate,
-					Reference:          inv.Reference,
-					InvoiceOrigin:      inv.InvoiceOrigin,
-					ResidualAmount:     inv.ResidualAmount,
-					TotalSignedAmount:  inv.TotalSignedAmount,
-					Partner:            inv.Partner,
-					CommercialPartner:  inv.CommercialPartner,
-					PartnerBank:        inv.PartnerBank,
-					Transactions:       inv.Transactions,
-					Payments:           inv.Payments,
-					Attachments:        inv.Attachments,
-					WriteDate:          inv.WriteDate,
-					CreateDate:         inv.CreateDate,
-					InvoiceURL:         inv.InvoiceURL,
-					PartnerDisplayName: inv.PartnerDisplayName,
+					ID:                   inv.ID,
+					Number:               inv.Number,
+					Ref:                  inv.Ref,
+					MoveType:             inv.MoveType,
+					State:                inv.State,
+					PaymentState:         inv.PaymentState,
+					InvoiceDate:          inv.InvoiceDate,
+					Date:                 inv.Date,
+					DueDate:              inv.DueDate,
+					Reference:            inv.Reference,
+					InvoiceOrigin:        inv.InvoiceOrigin,
+					ResidualAmount:       inv.ResidualAmount,
+					ResidualSignedAmount: inv.ResidualSignedAmount,
+					Currency:             inv.Currency,
+					TotalSignedAmount:    inv.TotalSignedAmount,
+					Partner:              inv.Partner,
+					CommercialPartner:    inv.CommercialPartner,
+					PartnerBank:          inv.PartnerBank,
+					Transactions:         inv.Transactions,
+					Payments:             inv.Payments,
+					Attachments:          inv.Attachments,
+					WriteDate:            inv.WriteDate,
+					CreateDate:           inv.CreateDate,
+					InvoiceURL:           inv.InvoiceURL,
+					PartnerDisplayName:   inv.PartnerDisplayName,
 				}
 			}
 		}
@@ -1789,6 +1801,12 @@ func mergePrivateOdooDocument(dst *OdooOutgoingInvoice, src OdooOutgoingInvoice)
 	}
 	if src.ResidualAmount != 0 {
 		dst.ResidualAmount = src.ResidualAmount
+	}
+	if src.ResidualSignedAmount != 0 {
+		dst.ResidualSignedAmount = src.ResidualSignedAmount
+	}
+	if src.Currency != "" {
+		dst.Currency = src.Currency
 	}
 	if src.TotalSignedAmount != 0 {
 		dst.TotalSignedAmount = src.TotalSignedAmount

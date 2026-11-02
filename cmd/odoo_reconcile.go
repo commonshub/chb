@@ -46,6 +46,10 @@ type odooMoveCandidate struct {
 	PartnerID      int
 	PartnerName    string
 	AmountResidual float64
+	// AssignPartner: the bank memo names this document, so the statement
+	// line is booked to the document's partner even when another partner
+	// paid (a company paying for its employee).
+	AssignPartner bool
 }
 
 type odooLineReconcileResult struct {
@@ -111,6 +115,18 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 					Warnf("  %s⚠ Stripe customer-id attach skipped: %v%s", Fmt.Yellow, err, Fmt.Reset)
 				}
 			}
+		}
+	}
+
+	// Live runs match against Odoo's current lines: a push that just
+	// created lines only queues their refetch for the end of the command,
+	// so without this the lines a sync creates were never matched in that
+	// same sync (SL 41015 stayed on suspense). Incremental: cheap.
+	if !dryRun && creds != nil {
+		Progress("refreshing journal-lines cache")
+		FlushOdooCacheRefetches(creds, uid)
+		if _, err := writeOdooJournalLinesCache(creds, uid, journalID); err != nil {
+			Warnf("  %s⚠ journal cache refresh failed, matching on the cached lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
 		}
 	}
 
@@ -188,6 +204,7 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 			PartnerID:      cand.PartnerID,
 			PartnerName:    cand.PartnerName,
 			AmountResidual: cand.Residual,
+			AssignPartner:  w.ByReference,
 		}
 		// Auto/batch: never break an already-settled match. When the only way to
 		// attach would be unreconcile + reattach, collect it for the operator to
@@ -261,6 +278,7 @@ func odooJournalReconcileInteractive(creds *OdooCredentials, uid int, journalID 
 			fmt.Printf("  %s↻ Refreshed local cache for journal #%d (%d line%s)%s\n",
 				Fmt.Dim, journalID, count, plural(count), Fmt.Reset)
 		}
+		invalidateLocalDocIndex()
 		if patched, err := refreshTouchedInvoiceCache(creds, uid, touchedInvoiceMoveIDs); err != nil {
 			fmt.Printf("  %s⚠ invoice cache refresh failed: %v%s\n", Fmt.Yellow, err, Fmt.Reset)
 		} else if patched > 0 {
@@ -1456,9 +1474,14 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 	// bank account" mid-write. The reconcile call below still runs the
 	// full validation, so skipping the intermediate check is safe.
 	if err := withOdooMoveTemporarilyDraft(creds, uid, line.MoveID, func() error {
+		vals := map[string]interface{}{"account_id": arAccountID}
+		if move.AssignPartner && move.PartnerID > 0 {
+			// The receivable/payable line carries the document's partner.
+			vals["partner_id"] = move.PartnerID
+		}
 		_, werr := odooExec(creds.URL, creds.DB, uid, creds.Password,
 			"account.move.line", "write",
-			[]interface{}{[]interface{}{counterpartID}, map[string]interface{}{"account_id": arAccountID}},
+			[]interface{}{[]interface{}{counterpartID}, vals},
 			odooStatementLineMetadataWriteContext())
 		if werr != nil {
 			return fmt.Errorf("rewrite counterpart line #%d: %v", counterpartID, werr)
@@ -1526,7 +1549,7 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 	// the right invoices without manual searching. Best-effort: errors
 	// downgrade to warnings since the reconcile itself already succeeded.
 	if move.PartnerID > 0 {
-		if err := attributeBankLineToPartnerAfterReconcile(creds, uid, line.ID, move.PartnerID); err != nil {
+		if err := attributeBankLineToPartnerAfterReconcile(creds, uid, line.ID, move.PartnerID, move.AssignPartner); err != nil {
 			fmt.Printf("  %s⚠ post-reconcile partner attribution on line #%d failed: %v%s\n",
 				Fmt.Dim, line.ID, err, Fmt.Reset)
 		}
@@ -1545,7 +1568,13 @@ func reconcileStatementLineWithMove(creds *OdooCredentials, uid int, line odooSt
 // statement line is preserved (the operator may have set it deliberately).
 // The res.partner.bank record itself is always ensured (search-then-
 // create), so even pre-attributed lines contribute to future auto-match.
-func attributeBankLineToPartnerAfterReconcile(creds *OdooCredentials, uid int, statementLineID, partnerID int) error {
+//
+// assign (a memo-named document) books the line to partnerID even when it
+// already names another partner. The payer's IBAN is registered on the
+// document's partner only when the line had no partner or that same one:
+// a third party's IBAN on the invoiced partner would attribute all their
+// future payments to the wrong partner.
+func attributeBankLineToPartnerAfterReconcile(creds *OdooCredentials, uid int, statementLineID, partnerID int, assign bool) error {
 	if statementLineID == 0 || partnerID <= 0 {
 		return nil
 	}
@@ -1580,7 +1609,8 @@ func attributeBankLineToPartnerAfterReconcile(creds *OdooCredentials, uid int, s
 	// Ensure (IBAN, invoice partner) record. Skipped silently when no
 	// IBAN is available (Stripe / blockchain journals).
 	var newBankID int
-	if iban != "" {
+	samePayer := currentPartnerID == 0 || currentPartnerID == partnerID
+	if iban != "" && samePayer {
 		newBankID, err = ensurePartnerBankAccount(creds, uid, iban, partnerID)
 		if err != nil {
 			return fmt.Errorf("ensure partner bank account: %v", err)
@@ -1588,7 +1618,7 @@ func attributeBankLineToPartnerAfterReconcile(creds *OdooCredentials, uid int, s
 	}
 
 	updates := map[string]interface{}{}
-	if currentPartnerID == 0 {
+	if currentPartnerID == 0 || (assign && currentPartnerID != partnerID) {
 		updates["partner_id"] = partnerID
 	}
 	if currentBankID == 0 && newBankID > 0 {

@@ -497,7 +497,7 @@ func applyOdooJournalAccountReclassification(creds *OdooCredentials, uid int, fi
 	sort.Strings(codes)
 	done := 0
 	for _, code := range codes {
-		if err := applyOdooMappingAccount(creds, uid, byCode[code], code, status); err != nil {
+		if err := applyOdooMappingAccountUnlessDocument(creds, uid, byCode[code], code, status); err != nil {
 			Warnf("  %s⚠ Could not set account %s on %s: %v%s", Fmt.Yellow, code, Pluralize(len(byCode[code]), "line", ""), err, Fmt.Reset)
 			continue
 		}
