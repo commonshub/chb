@@ -41,13 +41,14 @@ func refTokens(s string) []string {
 	return out
 }
 
-// tokensContainSeq reports whether needle appears as a contiguous run of
-// whole tokens in hay: "INV/2025/0001" is not found in "INV/2025/00010".
-func tokensContainSeq(hay, needle []string) bool {
-	if len(needle) == 0 || len(needle) > len(hay) {
-		return false
+// seqIndex: the first index ≥ from where needle appears as a contiguous
+// run of whole tokens in hay ("INV/2025/0001" is not in "INV/2025/00010"),
+// or -1.
+func seqIndex(hay, needle []string, from int) int {
+	if len(needle) == 0 {
+		return -1
 	}
-	for i := 0; i+len(needle) <= len(hay); i++ {
+	for i := from; i+len(needle) <= len(hay); i++ {
 		ok := true
 		for j, t := range needle {
 			if hay[i+j] != t {
@@ -56,8 +57,71 @@ func tokensContainSeq(hay, needle []string) bool {
 			}
 		}
 		if ok {
-			return true
+			return i
 		}
+	}
+	return -1
+}
+
+// memoRef is a memo tokenised for reference lookups: its tokens, and for
+// each token whether it continues the previous one within the same word
+// (glued, or joined by - / _ .): "S00091-1" is [s 00091 1] with 00091
+// and 1 joined, so the reference S00091 is not in it.
+type memoRef struct {
+	toks   []string
+	joined []bool // joined[i]: toks[i] continues toks[i-1]
+}
+
+func newMemoRef(s string) memoRef {
+	var m memoRef
+	var cur []rune
+	kind := 0
+	gap := "" // separators since the last token
+	start := true
+	flush := func() {
+		if len(cur) > 0 {
+			m.toks = append(m.toks, string(cur))
+			cur = cur[:0]
+		}
+	}
+	for _, r := range strings.ToLower(s) {
+		k := 0
+		switch {
+		case r >= '0' && r <= '9':
+			k = 2
+		case unicode.IsLetter(r):
+			k = 1
+		}
+		if k == 0 {
+			flush()
+			gap += string(r)
+			kind = 0
+			continue
+		}
+		if k != kind {
+			flush()
+			m.joined = append(m.joined, !start && (gap == "" || gap == "-" || gap == "/" || gap == "_" || gap == "."))
+			gap = ""
+		}
+		start = false
+		kind = k
+		cur = append(cur, r)
+	}
+	flush()
+	return m
+}
+
+// names reports whether the memo names ref: its tokens appear in order and
+// the run is not continued by another token of the same word ("S00091"
+// is not named by "S00091-1"; "2026_RCC_72" is named by "Factuur 2026 RCC
+// 72," and by "Invoice 2026.RCC.72").
+func (m memoRef) names(ref []string) bool {
+	for i := seqIndex(m.toks, ref, 0); i >= 0; i = seqIndex(m.toks, ref, i+1) {
+		end := i + len(ref)
+		if end < len(m.toks) && m.joined[end] {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -70,7 +134,7 @@ func refMentioned(memo, ref string) bool {
 	if !isRefMatchable(ref) {
 		return false
 	}
-	return tokensContainSeq(refTokens(memo), refTokens(ref))
+	return newMemoRef(memo).names(refTokens(ref))
 }
 
 // structuredComms returns the 12 digits of every Belgian structured
@@ -202,11 +266,14 @@ func findNamedDocuments(all []reconcileCandidate, linesByJournal map[int][]OdooC
 			for _, c := range refHits(lineMemo(ln), ln.Amount, refIdx) {
 				why := ""
 				switch {
+				case c.AwaitsBankLine():
+					// A registered payment waits for its bank line:
+					// reconcile settles it.
 				case matched && c.IsOpen():
 					why = "elsewhere"
 				case !matched && c.IsOpen():
 					why = "open"
-				case !matched:
+				case !matched && strings.EqualFold(c.PaymentState, "paid"):
 					why = "paid"
 				}
 				if why != "" {

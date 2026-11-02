@@ -163,10 +163,17 @@ func (c reconcileCandidate) IsOpen() bool {
 	if c.State != "" && c.State != "posted" {
 		return false
 	}
-	if strings.EqualFold(c.PaymentState, "paid") {
+	switch strings.ToLower(c.PaymentState) {
+	case "paid", "reversed":
 		return false
 	}
 	return true
+}
+
+// AwaitsBankLine: open only because a registered payment waits for its
+// bank line (in_payment) — reconcile settles it, nothing to report.
+func (c reconcileCandidate) AwaitsBankLine() bool {
+	return strings.EqualFold(c.PaymentState, "in_payment")
 }
 
 // key returns a stable identity for the candidate suitable for use as a
@@ -253,6 +260,11 @@ func reconcileCounterpartIsCategorized(accountType string) bool {
 // 552002) only parks the money: the line is matched once that counterpart
 // is itself reconciled (with a payment on the invoice), not before.
 func bankLineMatchedToDocument(ln OdooCacheLine) bool {
+	if ln.DocumentMatched {
+		// Fully or partly: a partial plus a suspense remainder is still
+		// that document's payment, never offered for another.
+		return true
+	}
 	if !ln.IsReconciled || reconcileCounterpartIsCategorized(ln.CounterpartType) {
 		return false
 	}
@@ -1095,6 +1107,11 @@ type refMatchEntry struct {
 func buildRefMatchIndex(allPosted []reconcileCandidate) []refMatchEntry {
 	out := make([]refMatchEntry, 0, len(allPosted))
 	for _, c := range allPosted {
+		if strings.EqualFold(c.PaymentState, "reversed") {
+			// Cancelled by a credit note: a memo naming it pays its
+			// replacement, if anything (MEM/2025/00074 → MEM/2026/00055).
+			continue
+		}
 		e := refMatchEntry{Kind: c.Kind, Cand: c}
 		for _, r := range c.Refs {
 			e.RefTokens = append(e.RefTokens, refTokens(r))
@@ -1228,7 +1245,7 @@ func refHits(memo string, lineAmount float64, refIndex []refMatchEntry) []reconc
 	if strings.TrimSpace(memo) == "" {
 		return nil
 	}
-	memoTokens := refTokens(memo)
+	memoTokens := newMemoRef(memo)
 	comms := structuredComms(memo)
 	var hits []reconcileCandidate
 	seen := map[int]bool{}
@@ -1246,7 +1263,7 @@ func refHits(memo string, lineAmount float64, refIndex []refMatchEntry) []reconc
 			}
 		}
 		for _, r := range e.RefTokens {
-			if !named && tokensContainSeq(memoTokens, r) {
+			if !named && memoTokens.names(r) {
 				named = true
 			}
 		}
@@ -1453,7 +1470,7 @@ func invoiceIsOpen(inv OdooOutgoingInvoicePrivate) bool {
 	if inv.State != "posted" {
 		return false
 	}
-	if strings.EqualFold(inv.PaymentState, "paid") {
+	if strings.EqualFold(inv.PaymentState, "paid") || strings.EqualFold(inv.PaymentState, "reversed") {
 		return false
 	}
 	if math.Abs(inv.ResidualAmount) > 0.005 {

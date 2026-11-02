@@ -204,3 +204,73 @@ func TestNamedDocumentsReport(t *testing.T) {
 		t.Fatal("a memo naming a paid document must need review")
 	}
 }
+
+func TestSaleOrderSuffixIsAnotherOrder(t *testing.T) {
+	// SL 37322 "S00091-1" pays MEM/2026/00055 (origin S00091-1), not
+	// MEM/2025/00074 (origin S00091).
+	if refMentioned("S00091-1", "S00091") {
+		t.Error("S00091 must not be named by S00091-1")
+	}
+	for _, memo := range []string{"S00091", "S00091, thanks", "order S00091 / membership", "QUOTATION   S00091"} {
+		if !refMentioned(memo, "S00091") {
+			t.Errorf("%q must name S00091", memo)
+		}
+	}
+	for _, memo := range []string{"Invoice 2026.RCC.47, dated 18.09.2026", "Factuur 2026 RCC 47", "CHB-S/2026/06/0015 - 2026-17905"} {
+		ref := "2026_RCC_47"
+		if memo[0] == 'C' {
+			ref = "CHB-S/2026/06/0015"
+		}
+		if !refMentioned(memo, ref) {
+			t.Errorf("%q must name %s", memo, ref)
+		}
+	}
+	old := invoiceCand(74, "MEM/2025/00074", "", "S00091", 1, 200)
+	repl := invoiceCand(55, "MEM/2026/00055", "", "S00091-1", 1, 200)
+	hits, note := matchOne(t, OdooCacheLine{ID: 37322, Amount: 200, PaymentRef: "S00091-1"}, old, repl)
+	wantSingle(t, hits, note, 55)
+}
+
+func TestReversedDocumentsAreClosed(t *testing.T) {
+	// MEM/2025/00074 and bill 134 were reversed by credit notes: the lines
+	// naming them (SL 32518's Stripe description "S00091", SL 14732) are
+	// not reported as paying the wrong document.
+	rev := invoiceCand(74, "MEM/2025/00074", "", "S00091", 1, 200)
+	rev.PaymentState = "reversed"
+	if rev.IsOpen() {
+		t.Fatal("a reversed document is closed")
+	}
+	lines := map[int][]OdooCacheLine{48: {{ID: 32518, Amount: 200, IsReconciled: true, CounterpartType: "asset_receivable",
+		CounterpartReconciled: true, PaymentRef: "commonshub", Metadata: map[string]interface{}{"stripeDescription": "S00091"}}}}
+	if got := findNamedDocuments([]reconcileCandidate{rev}, lines); len(got) != 0 {
+		t.Fatalf("reversed document reported: %+v", got)
+	}
+	if hits := refHits("S00091", 200, buildRefMatchIndex([]reconcileCandidate{rev})); len(hits) != 0 {
+		t.Fatalf("a reversed document must not be matched by reference: %+v", hits)
+	}
+}
+
+func TestPartialsOnTheSameMoveAreOnePayment(t *testing.T) {
+	// SL 39438 pays CHB-S/2026/06/0015 in two partials of the same move,
+	// with a −9.09 remainder on 499000: the line is matched, not "paid by
+	// another payment", and never offered to another document.
+	bill := reconcileCandidate{ID: 15, Kind: "bill", MoveType: "in_invoice", Number: "CHB-S/2026/06/0015", State: "posted",
+		PaymentState: "paid", Refs: []string{"CHB-S/2026/06/0015"}}
+	ln := OdooCacheLine{ID: 39438, Amount: -244.90, PaymentRef: "CHB-S/2026/06/0015 - 2026-17905",
+		CounterpartType: "liability_payable", CounterpartReconciled: true, DocumentMatched: true}
+	if !reconcileMatcherSkipsLine(ln) {
+		t.Fatal("a partly matched line is matched")
+	}
+	if got := findNamedDocuments([]reconcileCandidate{bill}, map[int][]OdooCacheLine{44: {ln}}); len(got) != 0 {
+		t.Fatalf("same-move partials reported: %+v", got)
+	}
+}
+
+func TestInPaymentNotReported(t *testing.T) {
+	inv := invoiceCand(1, "MEM/2026/00090", "", "", 1, 100)
+	inv.PaymentState = "in_payment"
+	lines := map[int][]OdooCacheLine{45: {{ID: 1, Amount: 100, PaymentRef: "MEM/2026/00090"}}}
+	if got := findNamedDocuments([]reconcileCandidate{inv}, lines); len(got) != 0 {
+		t.Fatalf("in_payment reported: %+v", got)
+	}
+}

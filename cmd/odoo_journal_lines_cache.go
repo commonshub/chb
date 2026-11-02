@@ -17,7 +17,8 @@ import (
 // odooJournalLinesSchemaVersion: bumped when a line gains a field the
 // incremental refresh would never backfill on unchanged lines; an older
 // cache is refetched in full once. 2: counterpartReconciled.
-const odooJournalLinesSchemaVersion = 2
+// 3: documentMatched.
+const odooJournalLinesSchemaVersion = 3
 
 type OdooJournalLinesFile struct {
 	SchemaVersion int             `json:"schemaVersion"`
@@ -42,14 +43,18 @@ type OdooCacheLine struct {
 	// CounterpartReconciled: the counterpart line itself is reconciled. A
 	// counterpart on Outstanding Receipts/Payments (asset_current) is only a
 	// real match when it is.
-	CounterpartReconciled bool                   `json:"counterpartReconciled,omitempty"`
-	Date                  string                 `json:"date,omitempty"`
-	PaymentRef            string                 `json:"paymentRef,omitempty"`
-	UniqueImportID        string                 `json:"uniqueImportId,omitempty"`
-	Amount                float64                `json:"amount"`
-	IsReconciled          bool                   `json:"isReconciled,omitempty"`
-	Narration             string                 `json:"narration,omitempty"`
-	Metadata              map[string]interface{} `json:"metadata,omitempty"`
+	CounterpartReconciled bool `json:"counterpartReconciled,omitempty"`
+	// DocumentMatched: a receivable/payable line of the move is matched,
+	// fully or partly — the line pays a document even if a remainder sits
+	// on suspense (DelivCo's two partials on one move).
+	DocumentMatched bool                   `json:"documentMatched,omitempty"`
+	Date            string                 `json:"date,omitempty"`
+	PaymentRef      string                 `json:"paymentRef,omitempty"`
+	UniqueImportID  string                 `json:"uniqueImportId,omitempty"`
+	Amount          float64                `json:"amount"`
+	IsReconciled    bool                   `json:"isReconciled,omitempty"`
+	Narration       string                 `json:"narration,omitempty"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func writeOdooJournalLinesCache(creds *OdooCredentials, uid int, journalID int) (int, error) {
@@ -197,6 +202,7 @@ func fetchOdooJournalLinesSince(creds *OdooCredentials, uid int, journalID int, 
 			CounterpartID:         counterpart.LineID,
 			CounterpartType:       counterpart.AccountType,
 			CounterpartReconciled: counterpart.Reconciled,
+			DocumentMatched:       counterpart.DocumentMatched,
 			Date:                  odooString(row["date"]),
 			PaymentRef:            odooString(row["payment_ref"]),
 			UniqueImportID:        odooString(row["unique_import_id"]),
@@ -367,6 +373,7 @@ func fetchOdooJournalLinesForCacheFull(creds *OdooCredentials, uid int, journalI
 			CounterpartID:         counterpart.LineID,
 			CounterpartType:       counterpart.AccountType,
 			CounterpartReconciled: counterpart.Reconciled,
+			DocumentMatched:       counterpart.DocumentMatched,
 			Date:                  odooString(row["date"]),
 			PaymentRef:            odooString(row["payment_ref"]),
 			UniqueImportID:        odooString(row["unique_import_id"]),
@@ -415,6 +422,7 @@ func fetchOdooJournalLinesForCache(creds *OdooCredentials, uid int, journalID in
 			CounterpartID:         counterpart.LineID,
 			CounterpartType:       counterpart.AccountType,
 			CounterpartReconciled: counterpart.Reconciled,
+			DocumentMatched:       counterpart.DocumentMatched,
 			Date:                  odooString(row["date"]),
 			PaymentRef:            odooString(row["payment_ref"]),
 			UniqueImportID:        odooString(row["unique_import_id"]),
@@ -570,9 +578,10 @@ func updateOdooJournalLinesCacheCounterparts(journalID int, counterpartsByMoveID
 			lines[i].CounterpartID = info.LineID
 			changed = true
 		}
-		if info.AccountType != "" && (lines[i].CounterpartType != info.AccountType || lines[i].CounterpartReconciled != info.Reconciled) {
+		if info.AccountType != "" && (lines[i].CounterpartType != info.AccountType || lines[i].CounterpartReconciled != info.Reconciled || lines[i].DocumentMatched != info.DocumentMatched) {
 			lines[i].CounterpartType = info.AccountType
 			lines[i].CounterpartReconciled = info.Reconciled
+			lines[i].DocumentMatched = info.DocumentMatched
 			changed = true
 		}
 	}

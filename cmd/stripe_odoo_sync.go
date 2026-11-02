@@ -3579,6 +3579,10 @@ type counterpartMoveLineInfo struct {
 	AccountID   int
 	AccountType string // "asset_receivable", "liability_payable", "income", "expense", …
 	Reconciled  bool   // counterpart A/R or A/P line reconciled with an invoice/bill
+	// DocumentMatched: some receivable/payable line of the move is matched
+	// (fully or partly) — the payment settles a document even when another
+	// counterpart (a suspense remainder) comes first.
+	DocumentMatched bool
 }
 
 func fetchCounterpartAccountIDsByMoveID(creds *OdooCredentials, uid int, moveIDs []int) (map[int]int, error) {
@@ -3598,17 +3602,25 @@ func fetchCounterpartMoveLinesByMoveID(creds *OdooCredentials, uid int, moveIDs 
 	}
 	rows, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
 		[]interface{}{[]interface{}{"move_id", "in", intsToInterfaces(moveIDs)}},
-		[]string{"id", "move_id", "account_id", "account_type", "reconciled"},
+		[]string{"id", "move_id", "account_id", "account_type", "reconciled", "matched_debit_ids", "matched_credit_ids"},
 		"id asc")
 	if err != nil {
 		return result, err
 	}
+	docMatched := map[int]bool{}
 	for _, row := range rows {
 		moveID := odooFieldID(row["move_id"])
-		if moveID <= 0 || result[moveID].AccountID > 0 {
+		if moveID <= 0 {
 			continue
 		}
 		t := odooString(row["account_type"])
+		if (t == "asset_receivable" || t == "liability_payable") &&
+			(odooBool(row["reconciled"]) || len(odooIDList(row["matched_debit_ids"])) > 0 || len(odooIDList(row["matched_credit_ids"])) > 0) {
+			docMatched[moveID] = true
+		}
+		if result[moveID].AccountID > 0 {
+			continue
+		}
 		if t == "asset_cash" || t == "liability_credit_card" {
 			continue
 		}
@@ -3618,6 +3630,11 @@ func fetchCounterpartMoveLinesByMoveID(creds *OdooCredentials, uid int, moveIDs 
 			AccountType: t,
 			Reconciled:  odooBool(row["reconciled"]),
 		}
+	}
+	for moveID, ok := range docMatched {
+		info := result[moveID]
+		info.DocumentMatched = ok
+		result[moveID] = info
 	}
 	return result, nil
 }
