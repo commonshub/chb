@@ -87,8 +87,10 @@ type GuildMembersFile struct {
 type websiteDiscordLink struct {
 	DiscordID string `json:"discordId"`
 	EmailHash string `json:"emailHash"`
-	// login, email (address confirmed with a code) or name (the member
-	// confirmed a name match: weaker, never written to Odoo unreviewed).
+	// login, email (address confirmed with a code), name (the member
+	// confirmed a name match) or checkout (paid from the dashboard; the
+	// email typed at Stripe is unverified). name and checkout are weaker:
+	// never written to Odoo unreviewed.
 	Source string `json:"source,omitempty"`
 }
 
@@ -314,7 +316,7 @@ type discordPartnerInputs struct {
 	TagID     int               // the "Discord" partner category, 0 if absent
 	Hand      map[string]string // "odoo:<id>" → Discord id
 	HashLinks map[string]string // emailHash → Discord id (unambiguous)
-	NameLinks map[string]string // same, from website name matches: review only
+	NameLinks map[string]string // same, from website name or checkout links: review only
 	Salt      string
 	Emails    map[string]PartnerEmailSubmission // Discord id → newest submission
 }
@@ -435,7 +437,7 @@ func buildDiscordPartnersPlan(in discordPartnerInputs) DiscordPartnersPlan {
 					}
 					if len(named) > 0 {
 						sort.Ints(named)
-						review(m, "matched by name on the website: link by hand in members-discord.json if it is them", named)
+						review(m, "linked on the website by name or by a Stripe checkout (unverified email): link by hand in members-discord.json if it is them", named)
 						continue
 					}
 				}
@@ -515,7 +517,8 @@ func loadGuildMembers(dataDir string) (GuildMembersFile, bool) {
 }
 
 // loadWebsiteHashLinks splits the website's links: login and email links
-// may link a partner, name links only put the member up for review.
+// may link a partner; name and checkout links only put the member up for
+// review (a checkout's email was typed at Stripe, never verified).
 func loadWebsiteHashLinks(dataDir string) (hash, name map[string]string) {
 	var f websiteDiscordLinksFile
 	if data, err := os.ReadFile(discordLinksPath(dataDir)); err == nil {
@@ -523,7 +526,7 @@ func loadWebsiteHashLinks(dataDir string) (hash, name map[string]string) {
 	}
 	var strong, weak []websiteDiscordLink
 	for _, l := range f.Links {
-		if l.Source == "name" {
+		if l.Source == "name" || l.Source == "checkout" {
 			weak = append(weak, l)
 		} else {
 			strong = append(strong, l)

@@ -144,3 +144,19 @@ func websiteNostrPubkeyForTest(pk string) string {
 	websiteNostrPubkey = pk
 	return old
 }
+
+func TestWebsiteCheckoutLinksAreReviewOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	if err := writePrivateJSON(discordLinksPath(dir), websiteDiscordLinksFile{Links: []websiteDiscordLink{
+		{DiscordID: "100000000000000001", EmailHash: "h1", Source: "login"},
+		{DiscordID: "100000000000000002", EmailHash: "h2", Source: "checkout"},
+		{DiscordID: "100000000000000003", EmailHash: "h3", Source: "name"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	strong, weak := loadWebsiteHashLinks(dir)
+	if len(strong) != 1 || strong["h1"] == "" || len(weak) != 2 || weak["h2"] == "" || weak["h3"] == "" {
+		t.Fatalf("strong %v weak %v", strong, weak)
+	}
+}
