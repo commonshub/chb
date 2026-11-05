@@ -160,6 +160,20 @@ func providerCommandSpecs() []providerCommandSpec {
 			Generate:    GenerateTransactions,
 		},
 		{
+			Name:        "bitcoin",
+			Description: "Bitcoin on-chain transaction archives (mempool.space / Esplora).",
+			Commands:    []string{"sync", "generate"},
+			Sync:        syncTransactionsProvider("bitcoin"),
+			Generate:    GenerateTransactions,
+		},
+		{
+			Name:        "coinos",
+			Description: "coinos.io wallet payment archives (needs COINOS_TOKEN).",
+			Commands:    []string{"sync", "generate"},
+			Sync:        syncTransactionsProvider("coinos"),
+			Generate:    GenerateTransactions,
+		},
+		{
 			Name:        "discord",
 			Description: "Discord message and image attachment archives.",
 			Commands:    []string{"sync", "generate"},

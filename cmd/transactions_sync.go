@@ -833,6 +833,16 @@ func TransactionsSync(args []string) (int, error) {
 		}
 	}
 
+	// --- Bitcoin on-chain (Esplora / mempool.space) ---
+	if sourceFilter == "" || sourceFilter == "bitcoin" || sourceFilter == "btc" {
+		totalProcessed += syncBitcoinAccounts(settings, slugFilter, accountSyncMode)
+	}
+
+	// --- coinos.io wallet ---
+	if sourceFilter == "" || sourceFilter == "coinos" {
+		totalProcessed += syncCoinosAccounts(settings, slugFilter, accountSyncMode)
+	}
+
 	// --- Nostr metadata sync ---
 	// Run after Monerium so the account sync output reads as:
 	// blockchain delta → Monerium enrichment → Nostr metadata.
