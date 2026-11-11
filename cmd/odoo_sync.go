@@ -631,6 +631,11 @@ func OdooJournals(args []string) error {
 			// latest local cache (e.g. Monerium enrichment that landed
 			// after the original push, so "mint EURe" → the real memo).
 			if HasFlag(args, "--metadata") {
+				// --bare: only lines still labelled "mint EURe"/"burn EURe"
+				// (what `chb odoo sync` heals by itself).
+				if HasFlag(args, "--bare") {
+					return odooJournalHealBareLines(creds, uid, journalID, since, HasFlag(args, "--dry-run"), HasFlag(args, "--yes", "-y"))
+				}
 				return odooJournalRefreshMetadata(creds, uid, journalID, since, HasFlag(args, "--dry-run"), HasFlag(args, "--yes", "-y"))
 			}
 			return odooJournalFix(creds, uid, journalID, HasFlag(args, "--yes", "-y"), HasFlag(args, "--dry-run"), HasFlag(args, "--remap"), since)
@@ -1125,12 +1130,15 @@ changed mapping (e.g. 612011→612300) across already-assigned history.
   %s--metadata%s             Run ONLY the metadata step: refresh payment_ref +
                           narration on existing lines from the latest local
                           cache (heals "mint EURe" once enrichment landed).
+                          With %s--bare%s: only lines still labelled "mint EURe" /
+                          "burn EURe" (what 'chb odoo sync' heals by itself).
                           Honours --since.
   %s--dry-run%s              Preview only; no writes to Odoo
   %s--remap%s                Also re-account already-assigned (chb-owned) lines
   %s-y%s, %s--yes%s             Skip the interactive confirmation
 `,
 			f.Bold, f.Reset, f.Cyan, f.Reset, f.Bold, f.Reset,
+			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
 			f.Yellow, f.Reset,
@@ -5024,6 +5032,20 @@ func odooJournalRefreshMetadata(creds *OdooCredentials, uid, journalID int, sinc
 	return AccountOdooPush(acc.Slug, pushArgs)
 }
 
+// odooJournalHealBareLines is `fix --metadata --bare`: the bare-line heal
+// of `chb odoo sync`, for one journal, on a freshly fetched journal cache.
+func odooJournalHealBareLines(creds *OdooCredentials, uid, journalID int, since time.Time, dryRun, assumeYes bool) error {
+	acc := linkedAccountForJournal(journalID)
+	if acc == nil {
+		return fmt.Errorf("journal #%d has no linked account; --metadata needs an account to re-derive descriptions from", journalID)
+	}
+	if _, err := writeOdooJournalLinesCache(creds, uid, journalID); err != nil {
+		return fmt.Errorf("refresh journal #%d cache: %v", journalID, err)
+	}
+	_, _, err := refreshBlockchainOdooLineMetadata(creds, uid, acc, since, time.Time{}, dryRun, assumeYes, true)
+	return err
+}
+
 // odooJournalFullSync makes all three balances for a journal agree in one
 // command:
 //
@@ -5117,6 +5139,8 @@ type odooSyncJournalResult struct {
 	Pulled        int // new source txs that landed in the local mirror
 	Pushed        int // new lines created in the Odoo journal
 	Held          int // EURe mint/burn txs withheld until Monerium metadata lands
+	Healed        int // bare "mint EURe" lines relabelled from the Monerium order
+	Bare          int // bare "mint EURe" lines still in Odoo (no Monerium metadata yet)
 	Reconciled    int // lines auto-reconciled to invoices/bills
 	Categorized   int // suspense lines moved onto their rule-mapped GL account
 	Err           error
@@ -5317,6 +5341,30 @@ func odooSyncOneJournal(creds *OdooCredentials, uid int, acc AccountConfig, loca
 		return res
 	}
 
+	// 3b. Heal lines pushed before their Monerium order was known: a bare
+	//     "mint EURe" whose local tx now has the memo gets its payment_ref,
+	//     narration and partner, categorised or not (a line matched to an
+	//     invoice/bill is left alone). The reconcile below then sees the
+	//     reference. Found offline in the journal cache; lines still without
+	//     metadata are counted so they cannot sit unnoticed.
+	if cached, ok := loadLatestOdooJournalLinesCache(acc.OdooJournalID); ok {
+		healable, waiting := bareMoneriumLines(&acc, cached)
+		res.Bare = len(waiting)
+		if len(healable) > 0 {
+			_, healed, err := refreshBlockchainOdooLineMetadata(creds, uid, &acc, time.Time{}, time.Time{}, dryRun, assumeYes, true)
+			if err != nil {
+				Warnf("  %s⚠ heal bare mint/burn lines: %v%s", Fmt.Yellow, err, Fmt.Reset)
+			}
+			if dryRun {
+				healed = len(healable)
+			}
+			res.Healed = healed
+			if healed < len(healable) {
+				res.Bare += len(healable) - healed
+			}
+		}
+	}
+
 	// 4. Push the new local txs into Odoo, then auto-reconcile them (the push
 	//    reconciles small batches itself; large back-fills queue an attention
 	//    hint pointing at the dedicated reconcile verb).
@@ -5386,6 +5434,12 @@ func odooSyncRowSummary(res odooSyncJournalResult) string {
 	if res.Held > 0 {
 		parts = append(parts, fmt.Sprintf("%s⚠ %s held (awaiting Monerium metadata)%s", Fmt.Yellow, Pluralize(res.Held, "tx", ""), Fmt.Reset))
 	}
+	if res.Healed > 0 {
+		parts = append(parts, fmt.Sprintf("%s healed (Monerium memo)", Pluralize(res.Healed, "bare line", "")))
+	}
+	if res.Bare > 0 {
+		parts = append(parts, fmt.Sprintf("%s⚠ %s still bare (mint/burn without Monerium memo)%s", Fmt.Yellow, Pluralize(res.Bare, "line", ""), Fmt.Reset))
+	}
 	if res.Reconciled > 0 {
 		parts = append(parts, fmt.Sprintf("%s reconciled", Pluralize(res.Reconciled, "line", "")))
 	}
@@ -5410,7 +5464,7 @@ func printOdooFullSyncTally(results []odooSyncJournalResult) {
 			failed++
 			continue
 		}
-		if r.Pushed == 0 && r.Reconciled == 0 && r.Categorized == 0 && r.Pulled == 0 {
+		if r.Pushed == 0 && r.Reconciled == 0 && r.Categorized == 0 && r.Pulled == 0 && r.Healed == 0 && r.Bare == 0 {
 			upToDate++
 		}
 	}

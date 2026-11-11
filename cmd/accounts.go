@@ -3064,9 +3064,13 @@ var lastPushHeldCount int
 // bare "mint EURe" line with no partner and nothing for the reconciler to
 // match — so the push holds it back instead.
 //
-// Enrichment markers (see plugin_monerium.go ProcessTransaction): memo /
-// description in metadata, or moneriumKind. INTERNAL redeems are marked as
-// such *by* the enrichment, so they never reach the MINT/BURN check here.
+// Enrichment markers (see plugin_monerium.go ProcessTransaction): the memo,
+// moneriumKind / moneriumState, or the source:monerium tag — what only the
+// Monerium order sets. A description alone does not count: a rule or a
+// Nostr annotation can describe a mint before its order is known, and the
+// line would go out without the payer's reference and partner. INTERNAL
+// redeems are marked as such *by* the enrichment, so they never reach the
+// MINT/BURN check here.
 func txAwaitingMoneriumMetadata(acc *AccountConfig, tx TransactionEntry) bool {
 	if acc == nil || !strings.EqualFold(acc.Provider, "etherscan") {
 		return false
@@ -3079,12 +3083,62 @@ func txAwaitingMoneriumMetadata(acc *AccountConfig, tx TransactionEntry) bool {
 	default:
 		return false
 	}
-	if stringMetadata(tx.Metadata, "memo") != "" ||
-		stringMetadata(tx.Metadata, "description") != "" ||
-		stringMetadata(tx.Metadata, "moneriumKind") != "" {
+	return stringMetadata(tx.Metadata, "memo") == "" &&
+		stringMetadata(tx.Metadata, "moneriumState") == "" &&
+		!isMoneriumTransaction(tx)
+}
+
+// bareTypeFallbackRef is the payment_ref a tx gets when it has neither a
+// description nor a counterparty: lowercase type + currency ("mint EURe").
+func bareTypeFallbackRef(txType, currency string) string {
+	return strings.TrimSpace(strings.ToLower(strings.TrimSpace(txType)) + " " + strings.TrimSpace(currency))
+}
+
+// isBareTypeFallbackRef: ref is that fallback for tx — as pushed (mint or
+// burn, whatever the enrichment later made of the type: a redeem to our own
+// IBAN becomes INTERNAL).
+func isBareTypeFallbackRef(ref string, tx TransactionEntry) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || tx.Currency == "" {
 		return false
 	}
-	return true
+	for _, t := range []string{tx.Type, stringMetadata(tx.Metadata, "direction"), "mint", "burn"} {
+		if t != "" && strings.EqualFold(ref, bareTypeFallbackRef(t, tx.Currency)) {
+			return true
+		}
+	}
+	return false
+}
+
+// bareMoneriumLines scans an EURe account's cached Odoo journal lines for
+// the bare type fallback, offline: healable ones (the local tx now has a
+// real payment_ref) and those still without Monerium metadata.
+func bareMoneriumLines(acc *AccountConfig, lines []OdooCacheLine) (healable, waiting []OdooCacheLine) {
+	if acc == nil || !strings.EqualFold(acc.Provider, "etherscan") || acc.Token == nil || !strings.EqualFold(acc.Token.Symbol, "EURe") {
+		return nil, nil
+	}
+	var byImportID map[string]TransactionEntry
+	for _, ln := range lines {
+		ref := strings.TrimSpace(ln.PaymentRef)
+		if !strings.EqualFold(ref, bareTypeFallbackRef("mint", acc.Token.Symbol)) && !strings.EqualFold(ref, bareTypeFallbackRef("burn", acc.Token.Symbol)) {
+			continue
+		}
+		if byImportID == nil {
+			byImportID = map[string]TransactionEntry{}
+			for _, tx := range loadAccountTransactionsForOdoo(acc) {
+				if id := buildUniqueImportID(acc, tx); id != "" {
+					byImportID[id] = tx
+				}
+			}
+		}
+		tx, ok := byImportID[ln.UniqueImportID]
+		if want := buildOdooPaymentRef(tx); ok && want != "" && !isBareTypeFallbackRef(want, tx) {
+			healable = append(healable, ln)
+		} else {
+			waiting = append(waiting, ln)
+		}
+	}
+	return healable, waiting
 }
 
 func AccountOdooPush(slug string, args []string) error {
@@ -5107,6 +5161,17 @@ type metadataUpdatePlan struct {
 	NarrNew      string
 	PartnerID    int    // resolved partner to set (0 = leave as-is)
 	PartnerName  string // for the preview
+	// CreatePartner: no Odoo partner matches the counterpart; one is
+	// created from Tx at apply time — never while planning, so a dry-run
+	// writes nothing.
+	CreatePartner bool
+	Tx            TransactionEntry
+	// LabelOnly: the line is matched to an invoice/bill and still carries
+	// the bare type fallback. Only payment_ref + narration are written, on
+	// the posted move, without unreconciling anything; partner and
+	// accounts stay as the match left them.
+	LabelOnly     bool
+	KeepPartnerID int // LabelOnly: the statement line's partner, to verify after the write
 	IsReconciled bool   // needs unreconcile → draft → write → post
 	// RestoreAccountID/Code hold the counterpart GL account a categorised line
 	// sat on before we drafted its move. Drafting + reposting a bank line
@@ -5141,7 +5206,7 @@ func planChangedFields(p metadataUpdatePlan) string {
 	if p.NarrChange {
 		fields = append(fields, "narration")
 	}
-	if p.PartnerID > 0 {
+	if p.PartnerID > 0 || p.CreatePartner {
 		fields = append(fields, "partner")
 	}
 	if len(fields) == 0 {
@@ -5151,10 +5216,21 @@ func planChangedFields(p metadataUpdatePlan) string {
 	if p.IsReconciled {
 		label += " (reconciled)"
 	}
+	if p.LabelOnly {
+		label += " (matched to a document: label only, match untouched)"
+	}
 	return label
 }
 
 func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time, dryRun, assumeYes bool) (reviewed, updated int, err error) {
+	return refreshBlockchainOdooLineMetadata(creds, uid, acc, since, until, dryRun, assumeYes, false)
+}
+
+// refreshBlockchainOdooLineMetadata is the metadata stage. bareOnly narrows
+// it to the heal `chb odoo sync` runs by itself: only lines still carrying
+// the bare type fallback ("mint EURe") whose local tx has since received
+// its Monerium memo.
+func refreshBlockchainOdooLineMetadata(creds *OdooCredentials, uid int, acc *AccountConfig, since, until time.Time, dryRun, assumeYes, bareOnly bool) (reviewed, updated int, err error) {
 	// Local cache → index by unique_import_id.
 	local := loadAccountTransactionsForOdoo(acc)
 	localByImportID := make(map[string]TransactionEntry, len(local))
@@ -5209,6 +5285,9 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		curRef := odooString(row["payment_ref"])
 		curNarr := odooString(row["narration"])
 		refChange := wantRef != "" && wantRef != curRef
+		if bareOnly && !(refChange && isBareTypeFallbackRef(curRef, tx) && !isBareTypeFallbackRef(wantRef, tx)) {
+			continue
+		}
 		// Odoo wraps stored narration in <p>...</p> but
 		// buildOdooNarration emits raw JSON. Normalize both sides
 		// before comparing so the wrapper alone doesn't classify a
@@ -5218,14 +5297,14 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		// Partner: only fill a line that has none — never override a partner an
 		// operator (or an invoice reconciliation) already set. Resolve/create
 		// from the tx's counterpart (Monerium IBAN + name, or on-chain address).
-		wantPartnerID, wantPartnerName := 0, ""
+		wantPartnerID, wantPartnerName, createPartner := 0, "", false
 		if odooFieldID(row["partner_id"]) == 0 {
-			if pid := resolveOrCreateOdooPartnerForBlockchainTx(creds, uid, tx); pid > 0 {
-				wantPartnerID = pid
+			wantPartnerID, createPartner = findOdooPartnerForBlockchainTx(creds, uid, tx)
+			if wantPartnerID > 0 || createPartner {
 				wantPartnerName = strings.TrimSpace(tx.Counterparty)
 			}
 		}
-		partnerChange := wantPartnerID > 0
+		partnerChange := wantPartnerID > 0 || createPartner
 
 		if !refChange && !narrChange && !partnerChange {
 			continue
@@ -5233,22 +5312,32 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 
 		reconciled := odooBool(row["is_reconciled"])
 		restoreAccountID := 0
-		if reconciled {
-			// A line reconciled against an invoice/bill (receivable/payable
-			// counterpart) is left alone: unreconciling it to relabel would
-			// break a real payment link, and its payment_ref/partner are
-			// already meaningful. Categorised-only lines (e.g. a rent redeem on
-			// 610100) have no reconcilable counterpart, so they're safe to
-			// unreconcile → draft → write → repost — capturing the counterpart
-			// account so we can restore the categorisation afterwards.
-			if moveID := odooFieldID(row["move_id"]); moveID > 0 {
-				if cp, cerr := fetchCounterpartMoveLinesByMoveID(creds, uid, []int{moveID}); cerr == nil {
-					if stripeCounterpartIsInvoiceMatched(cp[moveID]) {
-						skippedReconciled++
-						continue
-					}
-					restoreAccountID = cp[moveID].AccountID
+		// A line matched to an invoice/bill (fully or partly) is left alone:
+		// unreconciling it to relabel would break a real payment link, and
+		// its payment_ref/partner are already meaningful. Categorised-only
+		// lines (e.g. a rent redeem on 610100) have no reconcilable
+		// counterpart, so they're safe to unreconcile → draft → write →
+		// repost — capturing the counterpart account so we can restore the
+		// categorisation afterwards. A line whose counterpart cannot be read
+		// is skipped too, rather than relabelled blind.
+		labelOnly := false
+		if moveID := odooFieldID(row["move_id"]); moveID > 0 {
+			cp, cerr := fetchCounterpartMoveLinesByMoveID(creds, uid, []int{moveID})
+			switch {
+			case cerr != nil:
+				skippedReconciled++
+				continue
+			case stripeCounterpartIsInvoiceMatched(cp[moveID]) || cp[moveID].DocumentMatched:
+				// Matched, yet still labelled "mint EURe": the reference is
+				// written in place, the match is not touched.
+				if !refChange || !isBareTypeFallbackRef(curRef, tx) || isBareTypeFallbackRef(wantRef, tx) {
+					skippedReconciled++
+					continue
 				}
+				labelOnly = true
+				wantPartnerID, wantPartnerName, createPartner = 0, "", false
+			case reconciled:
+				restoreAccountID = cp[moveID].AccountID
 			}
 		}
 		plan = append(plan, metadataUpdatePlan{
@@ -5262,7 +5351,11 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 			NarrNew:          wantNarr,
 			PartnerID:        wantPartnerID,
 			PartnerName:      wantPartnerName,
-			IsReconciled:     reconciled,
+			CreatePartner:    createPartner,
+			Tx:               tx,
+			IsReconciled:     reconciled && !labelOnly,
+			LabelOnly:        labelOnly,
+			KeepPartnerID:    odooFieldID(row["partner_id"]),
 			RestoreAccountID: restoreAccountID,
 		})
 	}
@@ -5281,7 +5374,7 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 
 	// Bucket the plan by which attribute(s) actually change so the
 	// preview header tells the operator exactly what's about to move.
-	refCount, narrCount, partnerCount, reconciledCount := 0, 0, 0, 0
+	refCount, narrCount, partnerCount, reconciledCount, labelOnlyCount := 0, 0, 0, 0, 0
 	for _, p := range plan {
 		if p.New != p.Old {
 			refCount++
@@ -5289,11 +5382,14 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		if p.NarrChange {
 			narrCount++
 		}
-		if p.PartnerID > 0 {
+		if p.PartnerID > 0 || p.CreatePartner {
 			partnerCount++
 		}
 		if p.IsReconciled {
 			reconciledCount++
+		}
+		if p.LabelOnly {
+			labelOnlyCount++
 		}
 	}
 
@@ -5326,6 +5422,9 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 	if reconciledCount > 0 {
 		fmt.Printf("    %s%d of them are reconciled%s — unreconciled first, then re-posted\n", Fmt.Dim, reconciledCount, Fmt.Reset)
 	}
+	if labelOnlyCount > 0 {
+		fmt.Printf("    %s%d are matched to an invoice/bill%s — label written in place, match untouched\n", Fmt.Dim, labelOnlyCount, Fmt.Reset)
+	}
 	fmt.Println()
 
 	previewLimit := 5
@@ -5356,6 +5455,9 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		if p.PartnerID > 0 {
 			fmt.Printf("      %spartner:%s     %s→ %s%s (#%d)%s\n",
 				Fmt.Dim, Fmt.Reset, Fmt.Green, truncate(p.PartnerName, 40), "", p.PartnerID, Fmt.Reset)
+		} else if p.CreatePartner {
+			fmt.Printf("      %spartner:%s     %s→ %s (new partner)%s\n",
+				Fmt.Dim, Fmt.Reset, Fmt.Green, truncate(p.PartnerName, 40), Fmt.Reset)
 		}
 	}
 	if len(plan) > previewLimit {
@@ -5431,6 +5533,15 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 			failed++
 			continue
 		}
+		if p.LabelOnly {
+			if lerr := relabelMatchedStatementLine(creds, uid, p); lerr != nil {
+				Warnf("    %s⚠ line #%d relabel: %v%s", Fmt.Yellow, p.LineID, lerr, Fmt.Reset)
+				failed++
+				continue
+			}
+			updated++
+			continue
+		}
 		// A reconciled line can't be drafted/rewritten while its counterpart is
 		// still reconciled — break it first (benign for a categorised-only line
 		// with no reconcilable move lines, which is the case we let through the
@@ -5478,6 +5589,9 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		}
 		if p.NarrChange {
 			patch["narration"] = p.NarrNew
+		}
+		if p.CreatePartner && p.PartnerID == 0 {
+			p.PartnerID = resolveOrCreateOdooPartnerForBlockchainTx(creds, uid, p.Tx)
 		}
 		if p.PartnerID > 0 {
 			patch["partner_id"] = p.PartnerID
@@ -5539,6 +5653,56 @@ func syncBlockchainOdooMetadataStage(creds *OdooCredentials, uid int, acc *Accou
 		}
 	}
 	return reviewed, updated, nil
+}
+
+// relabelMatchedStatementLine writes the real payment_ref (and narration)
+// on a bank line that is matched to an invoice/bill, in place: the move
+// stays posted and reconciled. The journal items that carried the old bare
+// label get the new one too, best effort — Odoo allows a label change on a
+// posted item, and a refusal leaves only the ledger label behind.
+func relabelMatchedStatementLine(creds *OdooCredentials, uid int, p metadataUpdatePlan) error {
+	patch := map[string]interface{}{"payment_ref": p.New}
+	if p.NarrChange {
+		patch["narration"] = p.NarrNew
+	}
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.bank.statement.line", "write",
+		[]interface{}{[]interface{}{p.LineID}, patch}, odooStatementLineMetadataWriteContext()); err != nil {
+		return err
+	}
+	items, err := odooSearchReadAllMaps(creds, uid, "account.move.line",
+		[]interface{}{[]interface{}{"move_id", "=", p.MoveID}, []interface{}{"name", "=", p.Old}},
+		[]string{"id"}, "id asc")
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	ids := make([]interface{}, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, odooInt(it["id"]))
+	}
+	// Without the skip-sync context Odoo copies the bank journal item back
+	// onto the statement line — partner included, and that item often has
+	// none: the line would lose its partner.
+	if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+		"account.move.line", "write",
+		[]interface{}{ids, map[string]interface{}{"name": p.New}}, odooStatementLineMetadataWriteContext()); err != nil {
+		Warnf("    %s⚠ line #%d: journal item labels not updated: %v%s", Fmt.Yellow, p.LineID, err, Fmt.Reset)
+	}
+	// Belt and braces: the statement line keeps the partner it had.
+	if after, err := odooReadMapsByIDs(creds, uid, "account.bank.statement.line", []int{p.LineID}, []string{"partner_id"}); err == nil && len(after) == 1 {
+		if now := odooFieldID(after[0]["partner_id"]); now != p.KeepPartnerID {
+			var keep interface{} = false
+			if p.KeepPartnerID > 0 {
+				keep = p.KeepPartnerID
+			}
+			if _, err := odooExec(creds.URL, creds.DB, uid, creds.Password,
+				"account.bank.statement.line", "write",
+				[]interface{}{[]interface{}{p.LineID}, map[string]interface{}{"partner_id": keep}}, odooStatementLineMetadataWriteContext()); err != nil {
+				return fmt.Errorf("partner changed from #%d to #%d and could not be restored: %v", p.KeepPartnerID, now, err)
+			}
+		}
+	}
+	return nil
 }
 
 func printOdooBlockchainDryRunPlan(creds *OdooCredentials, uid int, acc *AccountConfig, txs []TransactionEntry, existingIDs map[string]bool, limit int) error {

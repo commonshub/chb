@@ -750,33 +750,46 @@ func partnerIDForStatementLine(creds *OdooCredentials, uid int, line odooStateme
 // there's nothing to resolve on. Used by the metadata refresh so a relabelled
 // mint/redeem also gets its partner linked.
 func resolveOrCreateOdooPartnerForBlockchainTx(creds *OdooCredentials, uid int, tx TransactionEntry) int {
-	if _, pid := resolveOdooPartnerBankForTransaction(creds, uid, tx); pid > 0 {
+	pid, create := findOdooPartnerForBlockchainTx(creds, uid, tx)
+	if pid > 0 || !create {
 		return pid
+	}
+	iban := transactionBankAccountNumber(tx)
+	pid, err := createOdooPartner(creds, uid, strings.TrimSpace(tx.Counterparty))
+	if err != nil || pid == 0 {
+		return 0
+	}
+	if _, err := createOdooPartnerBank(creds, uid, pid, iban); err != nil {
+		Warnf("    %s⚠ link IBAN %s to partner #%d: %v%s", Fmt.Yellow, iban, pid, err, Fmt.Reset)
+	}
+	return pid
+}
+
+// findOdooPartnerForBlockchainTx is the read-only half: the existing partner
+// for the tx's counterpart (by bank account, else by exact name when exactly
+// one partner carries it), or wouldCreate when a named counterpart with an
+// IBAN matches no partner at all. Several partners with that name: neither —
+// the line stays without a partner rather than guess or add another.
+func findOdooPartnerForBlockchainTx(creds *OdooCredentials, uid int, tx TransactionEntry) (pid int, wouldCreate bool) {
+	if _, pid := resolveOdooPartnerBankForTransaction(creds, uid, tx); pid > 0 {
+		return pid, false
 	}
 	name := strings.TrimSpace(tx.Counterparty)
 	if isEVMAddress(name) || ibanLikePattern.MatchString(name) {
 		name = "" // a raw address / IBAN is not a partner name
 	}
+	if name == "" {
+		return 0, false // never create a nameless partner
+	}
+	pid, n, err := findOdooPartnerByExactName(creds, uid, name)
+	if err != nil || n > 1 {
+		return 0, false
+	}
+	if n == 1 {
+		return pid, false
+	}
 	iban := transactionBankAccountNumber(tx)
-	if iban != "" && !isEVMAddress(iban) {
-		if name == "" {
-			return 0 // never create a nameless partner
-		}
-		pid, err := createOdooPartner(creds, uid, name)
-		if err != nil || pid == 0 {
-			return 0
-		}
-		if _, err := createOdooPartnerBank(creds, uid, pid, iban); err != nil {
-			Warnf("    %s⚠ link IBAN %s to partner #%d: %v%s", Fmt.Yellow, iban, pid, err, Fmt.Reset)
-		}
-		return pid
-	}
-	if name != "" {
-		if pid, _, err := findOdooPartnerByExactName(creds, uid, name); err == nil && pid > 0 {
-			return pid
-		}
-	}
-	return 0
+	return 0, iban != "" && !isEVMAddress(iban)
 }
 
 func resolveOdooPartnerBankForTransaction(creds *OdooCredentials, uid int, tx TransactionEntry) (int, int) {

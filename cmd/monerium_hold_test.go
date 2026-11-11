@@ -59,13 +59,20 @@ func TestTxAwaitingMoneriumMetadata(t *testing.T) {
 		}
 	})
 
-	t.Run("mint with description is pushed", func(t *testing.T) {
+	t.Run("mint with only a rule/annotation description is held", func(t *testing.T) {
 		tx := TransactionEntry{
 			Type:     "MINT",
 			Metadata: map[string]interface{}{"description": "Rent May 2026"},
 		}
+		if !txAwaitingMoneriumMetadata(acc, tx) {
+			t.Fatal("a description without the Monerium order (no memo/kind/state/tag) must still be held")
+		}
+	})
+
+	t.Run("mint tagged source:monerium is pushed", func(t *testing.T) {
+		tx := TransactionEntry{Type: "MINT", Tags: [][]string{{"source", "monerium"}}}
 		if txAwaitingMoneriumMetadata(acc, tx) {
-			t.Fatal("an enriched mint (description present) must not be held")
+			t.Fatal("a mint enriched from its Monerium order (empty memo) must not be held")
 		}
 	})
 
