@@ -47,6 +47,25 @@ func TestVATImportAndGenerate(t *testing.T) {
 		}
 	}
 
+	// Every filing, superseded ones included, has a redacted public copy.
+	for _, p := range []string{"2026/06/public/intervat/69270977.xml", "2026/06/public/intervat/69272513.xml", "2025/12/public/intervat/64898909.xml"} {
+		got, err := os.ReadFile(filepath.Join(dataDir, p))
+		if err != nil {
+			t.Fatalf("%s: public copy missing", p)
+		}
+		for _, leak := range []string{"filer@example.com", "0470000000", "EmailAddress", "Phone"} {
+			if strings.Contains(string(got), leak) {
+				t.Errorf("%s leaks %q", p, leak)
+			}
+		}
+		if !strings.Contains(string(got), "<ns2:VATNumber>0804505132</ns2:VATNumber>") || !strings.Contains(string(got), `GridNumber="54"`) {
+			t.Errorf("%s: the rest of the filing must be kept: %s", p, got)
+		}
+		if st, _ := os.Stat(filepath.Join(dataDir, p)); st.Mode().Perm() != 0o644 {
+			t.Errorf("%s mode = %o, want 644", p, st.Mode().Perm())
+		}
+	}
+
 	raw, err := os.ReadFile(filepath.Join(dataDir, "latest", vatFile))
 	if err != nil {
 		t.Fatal("latest/vat.json missing")
@@ -70,6 +89,9 @@ func TestVATImportAndGenerate(t *testing.T) {
 	q2 := f.Periods[1]
 	if q2.StatementID != "69272513" || q2.Amendments != 1 || q2.Totals.Due != 5000 || !q2.Totals.Consistent {
 		t.Errorf("Q2 = %+v", q2)
+	}
+	if q2.Filings[0].XML != "2026/06/public/intervat/69270977.xml" || q2.Filings[1].XML != "2026/06/public/intervat/69272513.xml" {
+		t.Errorf("Q2 filing xml paths = %q, %q", q2.Filings[0].XML, q2.Filings[1].XML)
 	}
 	if len(q2.Filings) != 2 || !q2.Filings[0].Superseded || q2.Filings[1].Superseded || q2.Filings[1].Replaces == "" {
 		t.Errorf("Q2 filings = %+v", q2.Filings)

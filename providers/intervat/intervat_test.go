@@ -1,6 +1,9 @@
 package intervat
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const q2 = `<VATDeclarationType SequenceNumber="1" xmlns="http://www.minfin.fgov.be/VATConsignment" xmlns:ns2="http://www.minfin.fgov.be/InputCommon"><ReplacedVATDeclaration>1-0804505132-202632</ReplacedVATDeclaration><Declarant><ns2:VATNumber>0804505132</ns2:VATNumber><ns2:Name>CHB</ns2:Name><ns2:CountryCode>BE</ns2:CountryCode><ns2:EmailAddress>filer@example.com</ns2:EmailAddress></Declarant><Period><Quarter>2</Quarter><Year>2026</Year></Period><Data><Amount GridNumber="0">2030.00</Amount><Amount GridNumber="54">10974.81</Amount><Amount GridNumber="55">482.01</Amount><Amount GridNumber="57">13.01</Amount><Amount GridNumber="61">3546.99</Amount><Amount GridNumber="63">10.82</Amount><Amount GridNumber="59">2698.04</Amount><Amount GridNumber="64">550.87</Amount><Amount GridNumber="71">11778.73</Amount></Data><ClientListingNihil>NO</ClientListingNihil><Ask Restitution="NO"/></VATDeclarationType>`
 
@@ -65,5 +68,28 @@ func TestCreditPeriodAndMonthlyPeriod(t *testing.T) {
 	g, _ := d.Grids()
 	if tot := ComputeTotals(g); !tot.Consistent || tot.Credit != 1550 {
 		t.Errorf("totals = %+v", tot)
+	}
+}
+
+func TestRedactRemovesOnlyFilerContact(t *testing.T) {
+	in := `<?xml version="1.0"?>
+<VATDeclarationType xmlns="http://www.minfin.fgov.be/VATConsignment" xmlns:ns2="http://www.minfin.fgov.be/InputCommon"><Declarant><ns2:VATNumber>0804505132</ns2:VATNumber><ns2:Name>CHB</ns2:Name><ns2:Street>Rue X 1</ns2:Street><ns2:EmailAddress>filer@example.com</ns2:EmailAddress><ns2:Phone>+32 470 00 00 00</ns2:Phone></Declarant><Period><Quarter>2</Quarter><Year>2026</Year></Period><Data><Amount GridNumber="54">1.00</Amount></Data></VATDeclarationType>`
+	out := string(Redact([]byte(in)))
+	for _, leak := range []string{"filer@example.com", "470", "EmailAddress", "Phone"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("redacted copy still contains %q: %s", leak, out)
+		}
+	}
+	want := strings.Replace(strings.Replace(in, "<ns2:EmailAddress>filer@example.com</ns2:EmailAddress>", "", 1), "<ns2:Phone>+32 470 00 00 00</ns2:Phone>", "", 1)
+	if out != want {
+		t.Errorf("everything but the contact elements must stay byte-for-byte:\n got %s\nwant %s", out, want)
+	}
+	for _, v := range []string{`<EmailAddress>a@b.c</EmailAddress>`, `<x:Phone/>`, `<Phone attr="1">1</Phone>`} {
+		if got := string(Redact([]byte("<D>" + v + "</D>"))); got != "<D></D>" {
+			t.Errorf("Redact(%s) = %s", v, got)
+		}
+	}
+	if _, err := Parse([]byte(out)); err != nil {
+		t.Errorf("redacted copy must still parse: %v", err)
 	}
 }

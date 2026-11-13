@@ -279,3 +279,21 @@ var GridLabels = map[string]string{
 	"72": "Amount due by the State",
 	"91": "Actual VAT due for 1–20 December (monthly filers)",
 }
+
+// contactElement matches the filer's contact elements (EmailAddress, Phone)
+// under any namespace prefix, with content or self-closing.
+var contactElement = regexp.MustCompile(`(?s)<((?:[A-Za-z_][\w.-]*:)?(?:EmailAddress|Phone))(?:\s[^>]*)?(?:/>|>.*?</([A-Za-z_][\w.-]*:)?(?:EmailAddress|Phone)\s*>)`)
+
+// Redact returns the declaration's original bytes with only the filer's
+// EmailAddress and Phone elements removed — the public copy. Everything
+// else (organisation name, address, VAT number, grids) is the organisation's
+// own filing and stays byte-for-byte.
+func Redact(data []byte) []byte {
+	return contactElement.ReplaceAll(data, nil)
+}
+
+// PublicRelPath is the redacted copy's path inside a tier of a month:
+// <tier>/intervat/<statementId>.xml.
+func PublicRelPath(statementID string) string {
+	return filepath.Join(Source, statementID+".xml")
+}

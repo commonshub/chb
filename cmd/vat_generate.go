@@ -7,9 +7,12 @@ package cmd
 // for all periods, latest/vat.json. A VAT return is the organisation's own
 // filing with the State — amounts per grid, no counterparties — so it is
 // public and, like hashes.json, identical for every audience: it lives once
-// outside the tiers. The filer's email and phone stay in the raw archive.
+// outside the tiers. The filer's email and phone stay in the raw archive;
+// each filing's XML is also published, without them, in the public tier
+// (YYYY/MM/public/intervat/<statementId>.xml).
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -80,6 +83,7 @@ type VATFiling struct {
 	StatementID    string           `json:"statementId"`
 	SequenceNumber string           `json:"sequenceNumber,omitempty"`
 	Replaces       string           `json:"replaces,omitempty"` // Intervat reference of the declaration it corrects
+	XML            string           `json:"xml"`                // redacted XML, relative to DATA_DIR: YYYY/MM/public/intervat/<id>.xml
 	DeclarantName  string           `json:"declarantName"`
 	Superseded     bool             `json:"superseded"`
 	Grids          map[string]euros `json:"grids"`
@@ -177,6 +181,7 @@ func buildVATPeriods(archives []vatArchive) []VATPeriod {
 				StatementID:    a.id,
 				SequenceNumber: a.decl.SequenceNumber,
 				Replaces:       a.decl.ReplacedDeclaration,
+				XML:            filepath.ToSlash(vatPublicXMLRel(a)),
 				DeclarantName:  strings.TrimSpace(a.decl.Declarant.Name),
 				Superseded:     i < len(list)-1,
 				Grids:          toEuros(g),
@@ -214,6 +219,49 @@ func vatNumberOf(archives []vatArchive) string {
 	return n
 }
 
+// vatPublicXMLRel is the redacted copy's path relative to DATA_DIR,
+// YYYY/MM/public/intervat/<id>.xml (MM = the period's last month, like the
+// raw archive).
+func vatPublicXMLRel(a vatArchive) string {
+	y, m := a.decl.ArchiveMonth()
+	return audiencePath("", y, m, AudiencePublic, intervat.PublicRelPath(a.id))
+}
+
+// writeVATPublicXML writes the redacted copy of every archived filing,
+// superseded ones included. Only the filer's email and phone are removed;
+// the public tier policy runs on the result as a safety net.
+func writeVATPublicXML(dataDir string, archives []vatArchive) error {
+	for _, a := range archives {
+		raw, err := os.ReadFile(a.path)
+		if err != nil {
+			return err
+		}
+		red := intervat.Redact(raw)
+		if _, err := intervat.Parse(red); err != nil {
+			return fmt.Errorf("%s: redacted copy no longer parses: %w", a.path, err)
+		}
+		rel := intervat.PublicRelPath(a.id)
+		data, err := enforceAudiencePolicy(AudiencePublic, rel, red)
+		if err != nil {
+			return fmt.Errorf("%s: %w", a.path, err)
+		}
+		target := filepath.Join(dataDir, vatPublicXMLRel(a))
+		if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, data) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), AudiencePublic.DirMode()); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, AudiencePublic.FileMode()); err != nil {
+			return err
+		}
+		if base, ok := dataBaseForPath(target); ok {
+			_ = applyDataPathPolicy(base, target, false)
+		}
+	}
+	return nil
+}
+
 // generateVAT writes YYYY/vat.json for every year with a declaration and
 // latest/vat.json with all of them. Returns the number of periods.
 func generateVAT(dataDir string) (int, error) {
@@ -223,6 +271,9 @@ func generateVAT(dataDir string) (int, error) {
 	}
 	if len(archives) == 0 {
 		return 0, nil
+	}
+	if err := writeVATPublicXML(dataDir, archives); err != nil {
+		return 0, err
 	}
 	periods := buildVATPeriods(archives)
 	base := VATFile{
