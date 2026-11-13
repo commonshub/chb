@@ -35,6 +35,9 @@ Not income or expense: `internal_transfer` (between our own accounts) and
 `opening_balance` (the first row of a bank journal). Both have type
 `INTERNAL`; leave them out of totals.
 
+Not ours either: `third_party`, money we hold for someone else and pass
+on (Regens Unite tickets collected for All for Climate, WinBooks 489301).
+
 ## Where a transaction's category comes from
 
 In order; the first one that gives a category wins:
@@ -42,6 +45,12 @@ In order; the first one that gives a category wins:
 1. the provider (Stripe products and metadata, the Stripe CSV);
 2. processors (Luma tickets, Monerium memos…);
 3. **rules** (`rules.json`, `rules.local.json`; [rules.md](rules.md));
+   then **bridge pairs**: a BURN on one of our accounts and a MINT of the
+   same amount and currency on another, within 3 days of each other in the
+   same month, with the same memo (EURe moved across chains by Monerium),
+   become `internal_transfer` on both legs, whatever a rule said, unless an
+   annotation set the category. Each leg gets `metadata.bridgePair`, the
+   id of the other;
 4. **Odoo**, the consolidated books, when the bank line is reconciled
    there:
    - reconciled with **invoices, bills or other entries**: the category of
