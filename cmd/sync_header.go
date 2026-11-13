@@ -160,6 +160,16 @@ func pullProviderHeaderItems() []SyncHeaderItem {
 				Scope:    scope,
 				LastSync: t,
 			})
+		case "bitcoin", "coinos":
+			label := "Bitcoin"
+			if strings.EqualFold(acc.Provider, "coinos") {
+				label = "coinos"
+			}
+			items = append(items, SyncHeaderItem{
+				Label:    label,
+				Scope:    acc.Slug,
+				LastSync: accountTime(acc.Slug, state),
+			})
 		}
 	}
 
