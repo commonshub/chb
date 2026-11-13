@@ -3058,6 +3058,10 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// Load CSV enrichment (imported spreadsheet)
 	csvEnrichment := LoadStripeCSVEnrichment()
 
+	// Indexes of transactions whose category a trusted annotation set; the
+	// bridge pairing below leaves them alone.
+	annotatedCategory := map[int]bool{}
+
 	// Apply enrichment priority chain: Nostr > CSV > Odoo > Local rules
 	if settings != nil {
 		for i := range transactions {
@@ -3109,6 +3113,7 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 				if ok && ann != nil {
 					if ann.Category != "" {
 						tx.Category = ann.Category
+						annotatedCategory[i] = true
 					}
 					if ann.Collective != "" {
 						tx.Collective = ann.Collective
@@ -3218,6 +3223,13 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 		for i := range transactions {
 			categorizer.Apply(&transactions[i])
 		}
+	}
+
+	// 4a. Bridge pairs — a BURN on one of our accounts and the matching MINT
+	// on another (EURe moved across chains) are an internal transfer, whatever
+	// a rule made of the memo (bridge_pairs.go).
+	if n := pairBridgeTransfers(transactions, annotatedCategory); n > 0 {
+		fmt.Printf("    %s↔ %s tagged internal_transfer%s\n", Fmt.Dim, Pluralize(n, "bridge pair", ""), Fmt.Reset)
 	}
 
 	// 4b. Canonicalise collective slugs. Upstream sources sometimes use

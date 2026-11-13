@@ -44,6 +44,12 @@ type RuleMatch struct {
 	// description / IBAN / counterparty for the other matchers to lock onto.
 	Kind string `json:"kind,omitempty"`
 
+	// Type matches the transaction type as it stands when the rule runs
+	// (CREDIT, DEBIT, MINT, BURN, INTERNAL, TRANSFER), case-insensitive. Use
+	// it to tell an EURe MINT (money arriving by SEPA) from a plain on-chain
+	// CREDIT. An earlier rule's assign.type is visible to later rules.
+	Type string `json:"type,omitempty"`
+
 	// Uncategorized, when true, makes the rule match only if the transaction
 	// has no category yet at this point in the rule pass. Because rules are
 	// applied in order against the progressively-mutated transaction, this
@@ -113,6 +119,10 @@ type Rule struct {
 	// IBAN rules belong in that layering. Old binaries parse a marker as a
 	// match-everything / assign-nothing rule, which is a harmless no-op.
 	Include string `json:"include,omitempty"`
+
+	// Note documents why the rule exists (the booking it mirrors, the
+	// invoice it settles, who decided). It is never applied to a record.
+	Note string `json:"note,omitempty"`
 }
 
 // ruleTarget normalises the Target field for comparison. Empty / blank
@@ -510,6 +520,10 @@ func (r *Rule) MatchesTransaction(tx TransactionEntry) bool {
 		}
 	}
 
+	if m.Type != "" && !strings.EqualFold(strings.TrimSpace(m.Type), tx.Type) {
+		return false
+	}
+
 	if m.Direction != "" {
 		if m.Direction == "in" && !tx.IsIncoming() {
 			return false
@@ -690,6 +704,15 @@ func (r *Rule) RuleSummary() string {
 	}
 	if r.Match.Kind != "" {
 		parts = append(parts, fmt.Sprintf("kind: %s", r.Match.Kind))
+	}
+	if r.Match.Type != "" {
+		parts = append(parts, fmt.Sprintf("type: %s", r.Match.Type))
+	}
+	if r.Match.Before != "" {
+		parts = append(parts, fmt.Sprintf("before: %s", r.Match.Before))
+	}
+	if r.Match.After != "" {
+		parts = append(parts, fmt.Sprintf("after: %s", r.Match.After))
 	}
 	if r.Match.Title != "" {
 		parts = append(parts, fmt.Sprintf("title: %s", r.Match.Title))

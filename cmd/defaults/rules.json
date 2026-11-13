@@ -1,6 +1,765 @@
 [
   {
     "match": {
+      "sender": "0x7d4324293304797cb662c6ea1b904b6af2b485f5",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, swap pool USDC/WETH -> EURe (Celo grant / Gitcoin money); counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0x311647b3028c645e89a6505cd93ad90a86e90727",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, swap pool USDC/WETH -> EURe (Celo grant / Gitcoin money); counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0x3ff3ea945a67a13aff115089a6547dd9e9a44cf6",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, swap pool USDC/WETH -> EURe (Celo grant / Gitcoin money); counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0xf2614a233c7c3e7f08b1f887ba133a13f1eb2c55",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, swap USDC -> EURe, Oct 2024; counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0xec7be89e9d109e7e3fec59c222cf297125fefda2",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, bridge from Celo (Celo grant tranche 2); counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0xbc797eb797f00c7eba8dd6ee7365ac5bde1b44d2",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, Wormhole from Celo (WinBooks: WORMHOLE FROM CELO); counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, LI.FI: 14,395.60 USDC Gitcoin matching bridged to Gnosis -> EURe; counted where the money first arrived"
+  },
+  {
+    "match": {
+      "sender": "0x9008d19f58aabd9ed0d60971565aa8510560ab41",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, CoW swap: 5,688 USDC.e GG22 matching via Arbitrum -> EURe; counted where the money first arrived"
+  },
+  {
+    "match": {
+      "recipient": "la regina*",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "debt",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Brussels Pay merchant paid out (EURb redeemed)"
+  },
+  {
+    "match": {
+      "recipient": "acatacos*",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "debt",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Brussels Pay merchant paid out (EURb redeemed)"
+  },
+  {
+    "match": {
+      "recipient": "ories consulting*",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "debt",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Brussels Pay merchant paid out (EURb redeemed)"
+  },
+  {
+    "match": {
+      "description": "*refund*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "refund",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): refund received"
+  },
+  {
+    "match": {
+      "description": "*CH2024*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "rental",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): CH2024xx sales invoice (WinBooks VEN): rental unless listed as coworking/sponsoring below"
+  },
+  {
+    "match": {
+      "description": "*CH202407*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202407 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202410*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202410 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202411*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202411 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202418*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202418 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202419*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202419 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202420*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202420 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202422*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202422 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202427*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202427 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202429*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202429 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202430*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202430 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202432*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202432 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202434*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202434 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202435*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202435 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202437*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202437 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202438*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202438 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202439*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202439 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202441*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202441 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202445*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "coworking",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202445 (WinBooks VEN)"
+  },
+  {
+    "match": {
+      "description": "*CH202433*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): invoice CH202433 (Open Collective)"
+  },
+  {
+    "match": {
+      "sender": "0x08e40e1c0681d072a54fc5868752c02bb3996ffa",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "donation",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regens Unite crypto donations bridged 26-27/12/2023 (Open Collective regensunite 09/01/2024; WinBooks 743000)"
+  },
+  {
+    "match": {
+      "sender": "0x8d382d0689c82c960c2bf5d2181bfd9637ed2804",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): BITSAFE"
+  },
+  {
+    "match": {
+      "sender": "0x27abc2b0dfb20c0314748efad0826266b99d2be0",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Proof of Vibes"
+  },
+  {
+    "match": {
+      "sender": "0x6b252b5df79af72e836d9b9a657ce9411be159b4",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Kolektivo, 2nd invoice (VEN #5), paid 10/07/2024 'LUUKDA' (MON15)"
+  },
+  {
+    "match": {
+      "sender": "0x10e4597ff93cbee194f4879f8f1d54a370db6969",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Gnosis, invoice RV202407 (VEN #8)"
+  },
+  {
+    "match": {
+      "sender": "0x12af066903a962a75959cc915a45aed26d8dfa44",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Plural Everything, invoice RV202411 (VEN #12)"
+  },
+  {
+    "match": {
+      "sender": "0x030d268707fe6b547f45171e9834ddfbb0dec852",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "rental",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Mangrove DAO (ADDMA), VEN #11 on 749000, paid 17/07/2024 (MON15)"
+  },
+  {
+    "match": {
+      "sender": "viva payment services*",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Vegan Brussels card-terminal takings, paid out to Vegan Brussels (WinBooks 489306 / transit)"
+  },
+  {
+    "match": {
+      "description": "*commons hub*",
+      "type": "MINT",
+      "direction": "in",
+      "amount_min": 2000,
+      "after": "2024-05-15",
+      "before": "2024-06-30",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
+  },
+  {
+    "match": {
+      "description": "*contribution*",
+      "type": "MINT",
+      "direction": "in",
+      "amount_min": 2000,
+      "after": "2024-05-15",
+      "before": "2024-06-30",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
+  },
+  {
+    "match": {
+      "description": "*souscription*",
+      "type": "MINT",
+      "direction": "in",
+      "amount_min": 2000,
+      "after": "2024-05-15",
+      "before": "2024-06-30",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
+  },
+  {
+    "match": {
+      "description": "*RV2024*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
+  },
+  {
+    "match": {
+      "description": "*metagovernance*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
+  },
+  {
+    "match": {
+      "description": "*west software*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
+  },
+  {
+    "match": {
+      "description": "*sponsorship*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
+  },
+  {
+    "match": {
+      "description": "*souscription*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
+  },
+  {
+    "match": {
+      "description": "*pret convertible*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
+  },
+  {
+    "match": {
+      "description": "*prêt convertible*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
+  },
+  {
+    "match": {
+      "sender": "*boribon*",
+      "type": "MINT",
+      "account": "savings-polygon",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign; later bridged to Gnosis"
+  },
+  {
+    "match": {
+      "counterparty": "*all for climate*",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "third_party",
+      "collective": "commonshub",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Regens Unite / CHB event money held for All for Climate (489301)"
+  },
+  {
+    "match": {
+      "description": "*crypto wednesday*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "debt",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Zinne tokens bought: tokens issued, a liability (WinBooks booked them as tickets)"
+  },
+  {
+    "match": {
+      "description": "zinne*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "debt",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Zinne tokens bought: tokens issued, a liability (WinBooks booked them as tickets)"
+  },
+  {
+    "match": {
+      "description": "first zinnes*",
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "debt",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Zinne tokens bought: tokens issued, a liability (WinBooks booked them as tickets)"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "*courageous commoner*",
+      "direction": "in",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): \"Become a courageous commoner\" campaign; WinBooks 489308 long-term debt"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "*financial contribution*",
+      "direction": "in",
+      "amount_min": 2000,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "loan",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): \"Become a courageous commoner\" campaign; WinBooks 489308 long-term debt"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "*(member)*",
+      "direction": "in",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "membership",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Monthly contribution (member) tier"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "*liberating journey*",
+      "direction": "in",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "ticket",
+      "override": true
+    },
+    "note": "2023-2024 review (WinBooks): Liberating Structures Journey registration"
+  },
+  {
+    "match": {
       "description": "Internal transfer*"
     },
     "assign": {
@@ -1011,6 +1770,17 @@
     }
   },
   {
+    "match": {
+      "account": "eoa-polygon",
+      "direction": "in",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "citizenwallet"
+    },
+    "note": "2023-2024 review (WinBooks): eoa-polygon income belongs to Citizen Wallet unless a rule said otherwise"
+  },
+  {
     "match": {},
     "assign": {
       "collective": "commonshub"
@@ -1386,5 +2156,317 @@
     "assign": {
       "category": "refund"
     }
+  },
+  {
+    "match": {
+      "description": "*salaire*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "salaries"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "jana mehl*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "salaries"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "*partena*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "HR"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "onss*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "HR"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "*mensura*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "HR"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "*assurances*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "insurance"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "p&v*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "insurance"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*lease registration*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "taxes"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*tax*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "taxes"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*citizen wallet*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "consulting"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "ria bel*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "consulting"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*stewarding*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "consulting"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*regens unite*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "ru2*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*liberating structures*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "123led*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*lamps*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*groceries*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*coffee*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*plates*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "description": "*statutes*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "recipient": "van olmen*",
+      "provider": "etherscan",
+      "currency": "EURe",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 review (WinBooks): expense keyword"
+  },
+  {
+    "match": {
+      "provider": "etherscan",
+      "currency": "EURe",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 review (WinBooks): on-chain expense with no other category"
   }
 ]

@@ -14,6 +14,12 @@ The `description` field has per-target evaluation: on transactions it matches `m
 
 **Amount matching.** `amount` is the exact signed-gross match (back-compat: `"amount": -100` matches a €100 expense). `amount_min` / `amount_max` are inclusive bounds on the ABSOLUTE gross — sign-independent. Combine with `direction: "in"` / `"out"` to scope to one direction. Example: `"amount_min": 500, "direction": "in"` catches any incoming tx ≥ €500 regardless of currency representation. `amount_in` is a list of ABSOLUTE gross amounts, any of which matches: the membership rules use `"amount_in": [10, 100, 200]`, the only membership prices.
 
+**Type matching.** `type` matches the transaction type as it stands when the rule runs (`CREDIT`, `DEBIT`, `MINT`, `BURN`, `INTERNAL`), case-insensitive: `"type": "MINT"` tells EURe that arrived by SEPA from a plain on-chain credit. A type set by an earlier rule's `assign.type` is what later rules see.
+
+**Override order.** Rules run in file order and every match applies. A fallback field is set by the first rule that has a value for it; an `override` rule replaces it, so among override rules the **last** match wins. A block of override rules is therefore written from the lowest to the highest priority.
+
+**Notes.** `note` documents why a rule exists (the booking it mirrors, the invoice it settles, who decided). It is never applied to a record. The `2023-2024 review (WinBooks)` rules at the top and bottom of `rules.json` carry the decisions of the 2023–2024 reconciliation; all are limited to `"before": "2025-01-01"`.
+
 Lives at `$APP_DATA_DIR/settings/rules.json`. Schema (simplified):
 
 ```json

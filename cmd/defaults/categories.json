@@ -437,6 +437,15 @@
     ]
   },
   {
+    "slug": "third_party",
+    "label": "Held for third parties",
+    "direction": "both",
+    "group": "finance",
+    "accounts": [
+      "489301"
+    ]
+  },
+  {
     "slug": "internal_transfer",
     "label": "Internal transfer",
     "direction": "both",
