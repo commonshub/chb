@@ -404,7 +404,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "note": "OpenCollective, Inc. (United States): sponsorship, invoice CH202433 (Sponsoring December 2024): outside the EU, no Belgian VAT, grid 47"
     },
     "note": "2023-2024 review (WinBooks): invoice CH202433 (Open Collective)"
   },
@@ -4423,5 +4424,32 @@
       "override": true
     },
     "note": "One-off financial contributions to Citizen Wallet are donations (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "all for climate*",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "commonshub",
+      "override": true,
+      "note": "All for Climate ASBL (Belgium): balance of collectives transferred to Citizen Spring, donation from non-profit to non-profit"
+    },
+    "note": "All for Climate transfers are collective balances: donations (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "etherscan",
+      "counterparty": "all for climate*",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "donation",
+      "override": true,
+      "note": "All for Climate ASBL (Belgium): balance of collectives transferred to Citizen Spring, donation from non-profit to non-profit"
+    },
+    "note": "Overrides the 2023-2024 review's third_party (489301): money held for the collectives, but within the non-profit, so a donation (Xavier, 2026-11-14)"
   }
 ]
