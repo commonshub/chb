@@ -428,7 +428,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): BITSAFE"
   },
@@ -440,7 +441,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Proof of Vibes"
   },
@@ -452,7 +454,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Kolektivo, 2nd invoice (VEN #5), paid 10/07/2024 'LUUKDA' (MON15)"
   },
@@ -464,7 +467,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Gnosis, invoice RV202407 (VEN #8)"
   },
@@ -476,7 +480,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001): Plural Everything, invoice RV202411 (VEN #12)"
   },
@@ -561,7 +566,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
   },
@@ -574,7 +580,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
   },
@@ -587,7 +594,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
   },
@@ -600,7 +608,8 @@
     },
     "assign": {
       "category": "sponsoring",
-      "override": true
+      "override": true,
+      "collective": "regenvillage"
     },
     "note": "2023-2024 review (WinBooks): Regen Village sponsor (749001)"
   },
@@ -4116,5 +4125,150 @@
       "category": "other-income"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise balance cashback"
+  },
+  {
+    "match": {
+      "description": "*regen village*",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "description": "*regen-village*",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "description": "*regenvillage*",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "jlo concept*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "promo direct*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "terrabio*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "ikast etiket*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "succulente*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "ink - tedeko*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "robinetto*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "counterparty": "apus*",
+      "after": "2024-06-20",
+      "before": "2024-08-15"
+    },
+    "assign": {
+      "collective": "regenvillage",
+      "override": true
+    },
+    "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
   }
 ]
