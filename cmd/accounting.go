@@ -149,6 +149,14 @@ func (c *Categorizer) Apply(tx *TransactionEntry) {
 			}
 			tx.Metadata["description"] = rule.Assign.Description
 		}
+		if note := strings.TrimSpace(rule.Assign.Note); note != "" {
+			if tx.Metadata == nil {
+				tx.Metadata = map[string]interface{}{}
+			}
+			if cur, _ := tx.Metadata["note"].(string); strings.TrimSpace(cur) == "" {
+				tx.Metadata["note"] = note
+			}
+		}
 		for _, spec := range rule.Assign.Tags {
 			// Reuse the CLI tag-spec parser so a rule's tags follow
 			// the same syntax operators use elsewhere:

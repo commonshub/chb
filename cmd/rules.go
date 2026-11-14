@@ -87,6 +87,11 @@ type RuleAssign struct {
 	Type        string   `json:"type,omitempty"`        // override tx.Type (CREDIT/DEBIT/MINT/BURN/INTERNAL/TRANSFER)
 	Description string   `json:"description,omitempty"` // override metadata.description
 	Tags        []string `json:"tags,omitempty"`        // additive labels (e.g. "shifter", "vat:21%")
+	// Note becomes the record's metadata.note (the public, curated text, like
+	// a trusted annotation's) when the record has none yet: an annotation's
+	// note always wins. Use it to state a vendor's legal name, country and
+	// VAT treatment on every payment the rule matches.
+	Note string `json:"note,omitempty"`
 	// Override makes Category/Collective authoritative for this rule: they are
 	// applied even when the transaction already carries a value, instead of the
 	// default fallback (set-only-if-empty) behaviour. Use sparingly for rules

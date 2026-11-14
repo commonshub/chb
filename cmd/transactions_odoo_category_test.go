@@ -164,3 +164,18 @@ func TestStripeMembershipProductIsMembership(t *testing.T) {
 		t.Errorf("a Commons Hub donation product must stay a donation, got %s", don.Category)
 	}
 }
+
+// assign.note fills metadata.note, but never over an annotation's note.
+func TestRuleNoteFillsMetadataNote(t *testing.T) {
+	c := &Categorizer{rules: []Rule{{Match: RuleMatch{Counterparty: "notion*", Direction: "out"}, Assign: RuleAssign{Category: "webservice", Note: "Notion Labs, Inc. (United States): grid 87"}}}}
+	tx := TransactionEntry{Type: "DEBIT", Amount: -38.53, Counterparty: "Notion", Currency: "EUR"}
+	c.Apply(&tx)
+	if tx.Metadata["note"] != "Notion Labs, Inc. (United States): grid 87" {
+		t.Fatalf("note = %v", tx.Metadata["note"])
+	}
+	ann := TransactionEntry{Type: "DEBIT", Amount: -38.53, Counterparty: "Notion", Currency: "EUR", Metadata: map[string]interface{}{"note": "from an annotation"}}
+	c.Apply(&ann)
+	if ann.Metadata["note"] != "from an annotation" {
+		t.Fatalf("an annotation's note must win, got %v", ann.Metadata["note"])
+	}
+}

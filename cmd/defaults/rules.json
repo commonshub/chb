@@ -3532,7 +3532,8 @@
     "assign": {
       "category": "webservice",
       "collective": "citizenwallet",
-      "override": true
+      "override": true,
+      "note": "Chainstack Pte. Ltd. (Singapore; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3547,7 +3548,8 @@
     "assign": {
       "category": "webservice",
       "collective": "citizenwallet",
-      "override": true
+      "override": true,
+      "note": "Chainstack Pte. Ltd. (Singapore; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3592,7 +3594,8 @@
     "assign": {
       "category": "webservice",
       "collective": "citizenwallet",
-      "override": true
+      "override": true,
+      "note": "QuickNode Inc. (United States; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3607,7 +3610,8 @@
     "assign": {
       "category": "webservice",
       "collective": "citizenwallet",
-      "override": true
+      "override": true,
+      "note": "QuickNode Inc. (United States; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3622,7 +3626,8 @@
     "assign": {
       "category": "webservice",
       "collective": "citizenwallet",
-      "override": true
+      "override": true,
+      "note": "Pinata Technologies Inc (United States, Omaha; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3637,7 +3642,8 @@
     "assign": {
       "category": "webservice",
       "collective": "citizenwallet",
-      "override": true
+      "override": true,
+      "note": "Pinata Technologies Inc (United States, Omaha; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3650,7 +3656,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Luma Labs, Inc. (United States; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3663,7 +3670,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Luma Labs, Inc. (United States; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3676,7 +3684,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Cursor (United States, New York; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3689,7 +3698,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Cursor (United States, New York; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3702,7 +3712,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Loom, Inc. (United States, Austin; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3715,7 +3726,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Loom, Inc. (United States, Austin; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3754,7 +3766,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Postmark, billed by ActiveCampaign, LLC (United States, Chicago; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -3767,7 +3780,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Postmark, billed by ActiveCampaign, LLC (United States, Chicago; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
   },
@@ -4066,7 +4080,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Notion Labs, Inc. (United States, San Francisco; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
   },
@@ -4079,7 +4094,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Conveythis, billed by Paddle.com Market Ltd (United Kingdom, London; from its invoice): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
   },
@@ -4092,7 +4108,8 @@
       "before": "2025-01-01"
     },
     "assign": {
-      "category": "webservice"
+      "category": "webservice",
+      "note": "Fathom Analytics (Canada, Victoria BC; from its invoices): service from outside the EU, Belgian VAT self-assessed under reverse charge (grids 87 and 56, deducted in 59)"
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
   },
@@ -4314,5 +4331,55 @@
       "override": true
     },
     "note": "Regens Unite hot wallet: every transaction to it belongs to Regens Unite (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "counterparty": "techi*",
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "note": "TECHI SRL (Belgium): Citizen Wallet / Brussels Pay development, 21% Belgian VAT included"
+    },
+    "note": "TECHI SRL is Belgian; its invoices include 21% VAT (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "counterparty": "xl collective*",
+      "amount": -3000,
+      "direction": "out",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "note": "XL Collective SRL (Belgium, VAT BE0720836593): Citizen Wallet / Brussels Pay development, 21% Belgian VAT included (€520.66)"
+    },
+    "note": "XL Collective's €3,000 Citizen Wallet invoices include €520.66 VAT (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "sender": "0x8d382d0689c82c960c2bf5d2181bfd9637ed2804",
+      "amount": 5,
+      "direction": "in",
+      "before": "2025-01-01",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "category": "donation",
+      "override": true
+    },
+    "note": "The €5 test send from a sponsor wallet is a donation (noise), not sponsoring (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "collective": "regensunite-handbook",
+      "direction": "in",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "donation",
+      "override": true
+    },
+    "note": "Financial contributions to the Regens Unite handbook are donations (Xavier, 2026-11-14)"
   }
 ]
