@@ -521,7 +521,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
   },
@@ -537,7 +538,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
   },
@@ -553,7 +555,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
   },
@@ -622,7 +625,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
   },
@@ -635,7 +639,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
   },
@@ -648,7 +653,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): Commons Hub campaign: convertible loan / subscription (WinBooks 489308)"
   },
@@ -662,7 +668,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): May-June 2024 Commons Hub campaign; later bridged to Gnosis"
   },
@@ -727,7 +734,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): \"Become a courageous commoner\" campaign; WinBooks 489308 long-term debt"
   },
@@ -741,7 +749,8 @@
     },
     "assign": {
       "category": "loan",
-      "override": true
+      "override": true,
+      "collective": "commonshub"
     },
     "note": "2023-2024 review (WinBooks): \"Become a courageous commoner\" campaign; WinBooks 489308 long-term debt"
   },
@@ -4283,5 +4292,27 @@
       "override": true
     },
     "note": "Regen Village (July 2024) is its own collective (Xavier, 2026-11-14): village supplier paid from the Regens Unite balance"
+  },
+  {
+    "match": {
+      "sender": "0x08e40e1c0681d072a54fc5868752c02bb3996ffa",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "collective": "regensunite",
+      "override": true
+    },
+    "note": "Regens Unite hot wallet: every transaction from it belongs to Regens Unite (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "recipient": "0x08e40e1c0681d072a54fc5868752c02bb3996ffa",
+      "provider": "etherscan"
+    },
+    "assign": {
+      "collective": "regensunite",
+      "override": true
+    },
+    "note": "Regens Unite hot wallet: every transaction to it belongs to Regens Unite (Xavier, 2026-11-14)"
   }
 ]
