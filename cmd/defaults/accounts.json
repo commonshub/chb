@@ -302,6 +302,15 @@
     "archivedAt": "2025-04-30"
   },
   {
+    "name": "🅆 WISE Card (88938999)",
+    "slug": "wise-card",
+    "provider": "wise",
+    "wiseBalanceId": "88938999",
+    "currency": "EUR",
+    "odooSyncSince": "2025-01-01",
+    "archivedAt": "2024-12-31"
+  },
+  {
     "name": "🏛️ Brussels Pay Multisig",
     "slug": "brusselspay-multisig",
     "provider": "etherscan",

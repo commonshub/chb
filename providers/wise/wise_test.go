@@ -85,3 +85,25 @@ func TestDedupAcrossOverlappingExports(t *testing.T) {
 		t.Fatalf("got %d txs after dedup, want 3", len(txs))
 	}
 }
+
+func TestRepeatedRowInOneExportIsKept(t *testing.T) {
+	const header = `"TransferWise ID",Date,Amount,Currency,Description,"Payment Reference","Running Balance","Exchange From","Exchange To","Exchange Rate","Payer Name","Payee Name","Payee Account Number",Merchant,"Card Last Four Digits","Card Holder Full Name",Attachment,Note,"Total fees","Exchange To Amount"
+`
+	// One card charge listed twice (charged twice): both are real.
+	twice := header + `CARD-1,05-07-2024,-48.09,EUR,"Card transaction",,51.91,,,,,,,Shop,,,,,0.00,
+CARD-1,05-07-2024,-48.09,EUR,"Card transaction",,100.00,,,,,,,Shop,,,,,0.00,
+`
+	dir := writeTemp(t, "statement_1_EUR_2024-01-01_2024-12-31.csv", twice)
+	// An overlapping export of the same period repeats both rows: still two.
+	os.WriteFile(filepath.Join(dir, "latest", "providers", Source, "statement_1_EUR_2024-07-01_2024-09-30.csv"), []byte(twice), 0o644)
+	txs, err := LoadForBalance(dir, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(txs) != 2 {
+		t.Fatalf("got %d rows, want 2 (charged twice, overlap collapsed)", len(txs))
+	}
+	if txs[0].ImportID() == txs[1].ImportID() {
+		t.Errorf("the repeat must get its own ImportID: %s", txs[0].ImportID())
+	}
+}

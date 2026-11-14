@@ -119,6 +119,7 @@ func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 	// leg keeps the historic ImportID — it's the one already imported into
 	// Odoo — while any additional leg gets a suffixed ImportID below.
 	primaryAmt := map[string]string{}
+	repeat := map[string]bool{} // keys of the 2nd+ identical row in one file
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || strings.HasPrefix(name, "._") || !strings.HasSuffix(strings.ToLower(name), ".csv") {
@@ -132,18 +133,33 @@ func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %v", name, err)
 		}
+		// seen counts identical (balance, id, amount) rows within this file:
+		// Wise sometimes lists one card charge twice (charged twice), and
+		// both are real. The n-th occurrence in one export is the n-th in an
+		// overlapping one, so keying by occurrence collapses overlaps only.
+		seen := map[string]int{}
 		for _, tx := range txs {
 			// Key by amount too: overlapping quarterly exports repeat the
 			// same transaction (identical amount) and must collapse, but a
 			// transfer that was sent then returned appears under one
 			// TransferID as two opposite-sign legs — both are real and must
 			// survive.
-			byKey[fmt.Sprintf("%s|%s|%.2f", tx.BalanceID, tx.TransferID, tx.Amount)] = tx
+			base := fmt.Sprintf("%s|%s|%.2f", tx.BalanceID, tx.TransferID, tx.Amount)
+			seen[base]++
+			key := base
+			if n := seen[base]; n > 1 {
+				key = fmt.Sprintf("%s#%d", base, n)
+				repeat[key] = true
+			}
+			byKey[key] = tx
 			primaryAmt[tx.BalanceID+"|"+tx.TransferID] = fmt.Sprintf("%.2f", tx.Amount)
 		}
 	}
 	out := make([]Transaction, 0, len(byKey))
-	for _, tx := range byKey {
+	for key, tx := range byKey {
+		if repeat[key] {
+			tx.ImportSuffix = tx.Hash // a repeat never shares the first row's ImportID
+		}
 		out = append(out, tx)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -158,7 +174,7 @@ func LoadAllTransactions(dataDir string) ([]Transaction, error) {
 	// collide on Odoo's unique_import_id.
 	for i := range out {
 		k := out[i].BalanceID + "|" + out[i].TransferID
-		if primaryAmt[k] != fmt.Sprintf("%.2f", out[i].Amount) {
+		if out[i].ImportSuffix == "" && primaryAmt[k] != fmt.Sprintf("%.2f", out[i].Amount) {
 			out[i].ImportSuffix = out[i].Hash
 		}
 	}

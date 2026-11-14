@@ -83,6 +83,25 @@ ICS calendar feeds, not accounts. Schema:
 
 `visibility` controls whether events from this feed land in public outputs (`events.json`) or stay in the internal booking view: `public`, `private`, or `auto` (decide per-event from ICS classification).
 
+## History before the Odoo cutoff (KBC, Wise)
+
+`odooSyncSince` (2025-01-01 for KBC and the Wise balances) is where the Odoo
+journal starts, with an opening-balance entry. The months before it were kept
+in WinBooks, so `generate` reads them from the banks' own CSV exports:
+
+| account | before the cutoff | from the cutoff on |
+|---|---|---|
+| KBC (`odooSourceOfTruth`) | `latest/providers/kbcbrussels/*.csv` | the Odoo journal (unchanged) |
+| Wise balances (`wiseBalanceId`) | `latest/providers/wise/statement_<balanceId>_*.csv` | not generated (the journals hold the accountant's import; Wise is archived) |
+
+These rows are never pushed: every push and repair path windows the local
+transactions to `>= odooSyncSince`. A month that only the CSVs know about
+(KBC opened on 28 Sept 2023) is generated too. Wise ids are
+`wise:<balanceId>:tx:<transferId>`, the same key as the Odoo
+`unique_import_id` written by `chb wise sync`. Moves between our own Wise
+balances (same transfer id on two balances) and Wise rows from or to
+"Citizen Spring", top-ups, conversions and jar moves are internal transfers.
+
 ## Adding a new account
 
 The interactive way:

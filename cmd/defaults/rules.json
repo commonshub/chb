@@ -769,6 +769,83 @@
   },
   {
     "match": {
+      "provider": "wise",
+      "description": "received money from citizen spring*"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: money sent to Wise from our own KBC / Monerium accounts (payer name Citizen Spring)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "sent money to citizen spring*"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: money sent from Wise to our own accounts"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "topped up balance*"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: Wise balance topped up from our own bank account or card"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "converted eur to eur*"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: EUR moved between two of our Wise balances"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "*convertis en*"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: EUR moved between two of our Wise balances (French export)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "added eur to *"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: money moved into a Wise jar"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "withdrawn eur from *"
+    },
+    "assign": {
+      "category": "internal_transfer",
+      "type": "INTERNAL"
+    },
+    "note": "Wise: money moved out of a Wise jar"
+  },
+  {
+    "match": {
       "description": "*PYSI*"
     },
     "assign": {

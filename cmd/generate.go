@@ -622,9 +622,18 @@ func getAvailableMonths(dataDir, year string) []string {
 		return nil
 	}
 	var months []string
+	have := map[string]bool{}
 	for _, e := range entries {
 		if e.IsDir() && isMonthSegment(e.Name()) {
 			months = append(months, e.Name())
+			have[e.Name()] = true
+		}
+	}
+	// A month that only the bank CSV exports know about (KBC opened on
+	// 28 Sept 2023, before any other source) has no directory yet.
+	for _, m := range bankHistoryMonths(dataDir)[year] {
+		if !have[m] {
+			months = append(months, m)
 		}
 	}
 	sort.Strings(months)
@@ -2437,7 +2446,8 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 	// loader return nothing for accounts/months with no matching rows.
 	kbcAccounts := kbcAccountsByIBAN()
 	kbcEnabled := len(kbcAccounts) > 0
-	if len(stripePaths) == 0 && !etherscanExists && !moneriumExists && !kbcEnabled {
+	wiseAccounts := wiseAccountsByBalance()
+	if len(stripePaths) == 0 && !etherscanExists && !moneriumExists && !kbcEnabled && len(wiseAccounts) == 0 {
 		return 0
 	}
 
@@ -2993,6 +3003,9 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 					}
 					transactions = append(transactions, entry)
 				}
+				// Before the cutoff Odoo has only the opening entry: the
+				// months before come from the bank's CSV export.
+				transactions = append(transactions, kbcPreCutoffCSVEntries(dataDir, acc, year, month)...)
 				continue
 			}
 			var rows []kbcbrusselssource.Transaction
@@ -3012,6 +3025,10 @@ func generateTransactionsGo(dataDir, year, month string, settings *Settings) int
 			}
 		}
 	}
+
+	// Wise statement exports, before each balance's Odoo cutoff
+	// (generate_bank_history.go).
+	transactions = append(transactions, wiseEntriesForMonth(dataDir, wiseAccounts, year, month)...)
 
 	if len(transactions) == 0 {
 		return 0
