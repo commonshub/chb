@@ -1005,6 +1005,19 @@
     "match": {
       "provider": "stripe",
       "direction": "in",
+      "product": "*commons hub membership*",
+      "uncategorized": true
+    },
+    "assign": {
+      "category": "membership",
+      "collective": "commonshub"
+    },
+    "note": "Stripe payments for the Commons Hub Membership product are memberships, whatever the amount or billing (Xavier, 2026-11-14). Must come before the generic Commons Hub product → donation rule."
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "direction": "in",
       "product": "*Commons Hub*",
       "uncategorized": true
     },

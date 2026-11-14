@@ -135,3 +135,32 @@ func TestDefaultReferenceRules(t *testing.T) {
 		}
 	}
 }
+
+// A Stripe payment for the "Commons Hub Membership" product is a membership,
+// one-off yearly checkout or €10 subscription alike; the generic
+// "Commons Hub" product rule (donation) must not win.
+func TestStripeMembershipProductIsMembership(t *testing.T) {
+	data, err := os.ReadFile("defaults/rules.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rules []Rule
+	if err := json.Unmarshal(data, &rules); err != nil {
+		t.Fatal(err)
+	}
+	c := &Categorizer{rules: rules}
+	for _, amt := range []float64{10, 100, 200, 50} {
+		tx := TransactionEntry{Provider: "stripe", Type: "CREDIT", Amount: amt, Currency: "EUR", Timestamp: 1760400000,
+			Metadata: map[string]interface{}{"product": "Commons Hub Membership"}}
+		c.Apply(&tx)
+		if tx.Category != "membership" || tx.Collective != "commonshub" {
+			t.Errorf("€%v Commons Hub Membership → %s/%s, want membership/commonshub", amt, tx.Category, tx.Collective)
+		}
+	}
+	don := TransactionEntry{Provider: "stripe", Type: "CREDIT", Amount: 25, Currency: "EUR", Timestamp: 1760400000,
+		Metadata: map[string]interface{}{"product": "Donation to the Commons Hub Brussels"}}
+	c.Apply(&don)
+	if don.Category != "donation" {
+		t.Errorf("a Commons Hub donation product must stay a donation, got %s", don.Category)
+	}
+}
