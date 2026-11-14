@@ -2561,5 +2561,1469 @@
       "category": "other-expense"
     },
     "note": "2023-2024 review (WinBooks): on-chain expense with no other category"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-brusselspay",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "brusselspay",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): collective follows the Wise balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-regens",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "regensunite",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): collective follows the Wise balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "account": "wise-openletter",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "collective": "openletter",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): collective follows the Wise balance"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "wise charges for: card-*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "bank_fees"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card fee rows carry the merchant as counterparty"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "description": "charge 01-*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "bank_fees"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): KBC account charges"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "ria bel*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "consulting"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "ria bel*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "consulting"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "airbnb*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "travel"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "airbnb*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "travel"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "european sleeper*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "travel"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "european sleeper*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "travel"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "jlo concept*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "jlo concept*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "robinetto*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "robinetto*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "ink - tedeko*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "ink - tedeko*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "ikast etiket*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "ikast etiket*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "promo direct*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "promo direct*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "bshirt*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "bshirt*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "abc europe*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "abc europe*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "marketing",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "succulente*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "succulente*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "terrabio*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "terrabio*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "yummy bowl*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "yummy bowl*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "tasty break*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "tasty break*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "fdab sprl*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "fdab sprl*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "catering"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "vegan brussels*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "debt"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "vegan brussels*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "debt"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "superlab engineering*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "superlab engineering*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "fedex*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "fedex*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "nicolas springael*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "accounting"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "nicolas springael*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "accounting"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "big bag delivery*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "furniture"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "big bag delivery*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "furniture"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "juma international*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "juma international*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "eu.store.ui.com*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "eu.store.ui.com*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "nisbets*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "nisbets*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "equipment"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "bol.com*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "bol.com*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "alibaba.com*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "alibaba.com*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "*aliexpress*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "*aliexpress*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "2419 brussel*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "2419 brussel*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "dille en kamille*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "dille en kamille*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "momade*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "momade*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "fabriques retail*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "fabriques retail*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "crf exp*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "crf exp*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "brico*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "maintenance"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "brico*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "maintenance"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "stackup*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "stackup*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "chainstack*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "chainstack*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "sentry*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "sentry*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "quicknode*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "quicknode*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "pinata*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "pinata*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "luma labs*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "luma labs*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "cursor*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "cursor*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "loom*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "loom*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "sn.nord*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "sn.nord*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "postmarkapp*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "postmarkapp*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "heroku*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "heroku*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "banxa*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "banxa*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "pdc",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "pdc",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "van de veles*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "van de veles*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "other services*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "other services*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "evamax*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "evamax*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "xl collective*",
+      "description": "*insurance*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "insurance"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "xl collective*",
+      "description": "*etat des lieux*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "no information",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): no counterparty, no message"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "xl collective*",
+      "description": "*insurance*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "insurance"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "xl collective*",
+      "description": "*etat des lieux*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "description": "no information",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-expense"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): no counterparty, no message"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "all for climate*",
+      "description": "*paper tokens*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "supplies",
+      "collective": "regensunite",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): All for Climate (Regens Unite), 2023"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "all for climate*",
+      "description": "*rgn fees*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "services",
+      "collective": "regensunite",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): All for Climate (Regens Unite), 2023"
+  },
+  {
+    "match": {
+      "provider": "kbcbrussels",
+      "counterparty": "all for climate*",
+      "description": "*rgn tokens from*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "debt",
+      "collective": "regensunite",
+      "override": true
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): All for Climate (Regens Unite), 2023"
   }
 ]
