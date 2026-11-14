@@ -4025,5 +4025,96 @@
       "override": true
     },
     "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): All for Climate (Regens Unite), 2023"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "notion*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "conveythis*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "fathom*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "jardin d'en bas*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "counterparty": "les4sources*",
+      "direction": "out",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "events"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise card, Q4 2024"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "balance cashback*",
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-income"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise balance cashback"
+  },
+  {
+    "match": {
+      "provider": "wise",
+      "description": "remise de balance*",
+      "direction": "in",
+      "uncategorized": true,
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "other-income"
+    },
+    "note": "2023-2024 vendor rules (Xavier's go, 2026-11-14): Wise balance cashback"
   }
 ]
