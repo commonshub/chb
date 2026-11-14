@@ -46,6 +46,7 @@
     },
     "assign": {
       "category": "donation",
+      "collective": "citizenwallet",
       "override": true
     },
     "note": "2023-2024 review (WinBooks): EURe from a swap/bridge, swap USDC -> EURe, Oct 2024; money from another chain counts as a donation (Xavier, 2026-11-14)"
