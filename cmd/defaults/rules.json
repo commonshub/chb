@@ -4373,8 +4373,7 @@
     "match": {
       "provider": "stripe",
       "collective": "regensunite-handbook",
-      "direction": "in",
-      "before": "2025-01-01"
+      "direction": "in"
     },
     "assign": {
       "category": "donation",
