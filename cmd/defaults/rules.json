@@ -4451,5 +4451,43 @@
       "note": "All for Climate ASBL (Belgium): balance of collectives transferred to Citizen Spring, donation from non-profit to non-profit"
     },
     "note": "Overrides the 2023-2024 review's third_party (489301): money held for the collectives, but within the non-profit, so a donation (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "etherscan",
+      "counterparty": "opencollective, inc*",
+      "amount": 1000,
+      "direction": "in",
+      "after": "2024-12-01",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "sponsoring",
+      "override": true,
+      "note": "OpenCollective, Inc. (United States): sponsorship, invoice CH202433 (Sponsoring December 2024): outside the EU, no Belgian VAT, grid 47"
+    },
+    "note": "The CH202433 payment's memo is the OC expense number 230563, not the invoice ref (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "counterparty": "relieve*",
+      "direction": "out"
+    },
+    "assign": {
+      "category": "furniture",
+      "override": true
+    },
+    "note": "Relieve Furniture / Relieve Group rent furniture (rented equipment, 21% VAT): furniture and rented equipment, not building rent (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "counterparty": "wenap*",
+      "direction": "out"
+    },
+    "assign": {
+      "category": "furniture",
+      "override": true
+    },
+    "note": "WeNap SRL phone booth lease (rented equipment, 21% VAT): furniture and rented equipment, not building rent (Xavier, 2026-11-14)"
   }
 ]
