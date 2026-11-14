@@ -4381,5 +4381,48 @@
       "override": true
     },
     "note": "Financial contributions to the Regens Unite handbook are donations (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "*citizen wallet (sponsor)*",
+      "amount": 100,
+      "direction": "in",
+      "before": "2025-01-01"
+    },
+    "assign": {
+      "category": "webservice",
+      "collective": "citizenwallet",
+      "override": true,
+      "note": "The Blockchain Socialist cooperative (Germany, Berlin): Citizen Wallet server hosting, €100/month; service to a business in another EU country: EU B2B, reverse charge, grid 44; no invoice issued"
+    },
+    "note": "The €100/month 'sponsor' contribution from opencollective.com/the-blockchain-socialist pays for server hosting (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "*citizen wallet (backer)*",
+      "direction": "in"
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "Citizen Wallet backers are donors (Xavier, 2026-11-14)"
+  },
+  {
+    "match": {
+      "provider": "stripe",
+      "description": "financial contribution to citizen wallet*",
+      "direction": "in",
+      "amount_max": 1999.99
+    },
+    "assign": {
+      "category": "donation",
+      "collective": "citizenwallet",
+      "override": true
+    },
+    "note": "One-off financial contributions to Citizen Wallet are donations (Xavier, 2026-11-14)"
   }
 ]

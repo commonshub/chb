@@ -19,13 +19,19 @@
  },
  "regensunite": {
   "name": "Regens Unite",
-  "icon": "/images/partners/regensunite.avif"
+  "icon": "/images/partners/regensunite.avif",
+  "aliases": [
+   "regensunite-handbook"
+  ]
  },
  "wisecrowds": {
   "name": "wisecrowds"
  },
  "citizenwallet": {
-  "name": "Citizen Wallet"
+  "name": "Citizen Wallet",
+  "aliases": [
+   "citizenwallet-eu"
+  ]
  },
  "brusselspay": {
   "name": "Brussels Pay"
