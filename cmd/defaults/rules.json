@@ -4394,9 +4394,9 @@
       "category": "webservice",
       "collective": "citizenwallet",
       "override": true,
-      "note": "The Blockchain Socialist cooperative (Germany, Berlin): Citizen Wallet server hosting, €100/month; service to a business in another EU country: EU B2B, reverse charge, grid 44; no invoice issued"
+      "note": "Bread Cooperative (Germany, Berlin, https://bread.coop): Citizen Wallet server hosting, €100/month; service to a business in another EU country: EU B2B, reverse charge, grid 44; no invoice issued"
     },
-    "note": "The €100/month 'sponsor' contribution from opencollective.com/the-blockchain-socialist pays for server hosting (Xavier, 2026-11-14)"
+    "note": "The €100/month 'sponsor' contribution from opencollective.com/the-blockchain-socialist (Bread Cooperative) pays for server hosting (Xavier, 2026-11-14; renamed 2026-11-15)"
   },
   {
     "match": {
