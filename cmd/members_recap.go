@@ -52,7 +52,7 @@ import (
 
 const (
 	recapSiteDefault = "https://commonshub.brussels"
-	recapMaxPerRun   = 25
+	recapMaxPerRun   = 100
 	recapDueDays     = 3 // a period is due from day 1 to day 3 of the next one
 )
 
