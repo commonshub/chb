@@ -317,6 +317,8 @@ func docStatus(inv OdooOutgoingInvoice) string {
 		return "partially_paid"
 	case "reversed":
 		return "reversed"
+	case "blocked":
+		return "disputed" // payment blocked in Odoo; still owed in the books
 	}
 	return "pending"
 }

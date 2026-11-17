@@ -118,7 +118,8 @@ treated as an organisation.
 - `kind`: `bill`, `credit_note` (the vendor owes us), or `expense` (someone
   paid out of pocket and is reimbursed).
 - `status`: `pending`, `partially_paid`, `paid`, `reversed` (cancelled by a
-  credit note; excluded from totals), or `submitted` (an expense claim not
+  credit note; excluded from totals), `disputed` (payment blocked in Odoo;
+  still owed in the books), or `submitted` (an expense claim not
   booked yet).
 - `number`: our accounting number. `vendorRef`: the vendor's own invoice
   number.

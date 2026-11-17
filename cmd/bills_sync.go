@@ -301,7 +301,7 @@ func billIsOpen(state, paymentState string) bool {
 		return false
 	}
 	switch paymentState {
-	case "not_paid", "partial", "in_payment":
+	case "not_paid", "partial", "in_payment", "blocked":
 		return true
 	}
 	return false
@@ -347,7 +347,7 @@ func refreshOpenBills(creds *OdooCredentials, uid int, dataDir string, already [
 	}
 	openClause := []interface{}{"&",
 		[]interface{}{"state", "=", "posted"},
-		[]interface{}{"payment_state", "in", []interface{}{"not_paid", "partial", "in_payment"}},
+		[]interface{}{"payment_state", "in", []interface{}{"not_paid", "partial", "in_payment", "blocked"}},
 	}
 	domain := []interface{}{[]interface{}{"move_type", "in", []interface{}{"in_invoice", "in_refund"}}}
 	if len(cachedOpen) > 0 {

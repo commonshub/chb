@@ -48,7 +48,7 @@ type Bill struct {
 	ID           string     `json:"id"`     // deprecated alias ("b-…"), removed in the next release: use uri
 	Number       string     `json:"number"` // our accounting number, e.g. CHB-S/2026/04/0012
 	Type         string     `json:"type"`   // "bill" | "credit_note"
-	Status       string     `json:"status"` // "pending" | "partially_paid" | "paid" | "reversed"
+	Status       string     `json:"status"` // "pending" | "partially_paid" | "paid" | "reversed" | "disputed"
 	Date         string     `json:"date"`
 	DueDate      string     `json:"dueDate,omitempty"`
 	Vendor       BillVendor `json:"vendor"`
@@ -66,6 +66,9 @@ type Bill struct {
 	AmountDue    float64    `json:"amountDue"`
 	HasDocument  bool       `json:"hasDocument"`
 	PaymentState string     `json:"paymentState"` // Odoo's raw value, for reference
+	// Disputed: payment blocked in Odoo (payment_state "blocked"). The bill
+	// stays in the books and in the pending list, but out of the totals.
+	Disputed bool `json:"disputed,omitempty"`
 
 	// Stewards only.
 	Stewards *BillStewards `json:"stewards,omitempty"`
@@ -114,7 +117,9 @@ type BillsFile struct {
 	Scope       string      `json:"scope"`           // "month" | "pending"
 	Month       string      `json:"month,omitempty"` // "2026-04" for a month file
 	Currency    string      `json:"currency"`
-	Totals      BillsTotals `json:"totals"` // EUR bills only; credit notes are listed but not summed
+	Totals      BillsTotals `json:"totals"` // EUR bills only; credit notes and disputed bills are listed but not summed
+	// DisputedTotals sums the disputed EUR bills (payment blocked in Odoo).
+	DisputedTotals *BillsTotals `json:"disputedTotals,omitempty"`
 	// TotalsByCurrency has the same sums per currency, when bills in other
 	// currencies exist (a few SaaS vendors bill in USD).
 	TotalsByCurrency map[string]BillsTotals `json:"totalsByCurrency,omitempty"`
@@ -134,6 +139,8 @@ func billStatus(inv OdooOutgoingInvoice) string {
 		return "partially_paid"
 	case "reversed":
 		return "reversed"
+	case "blocked":
+		return "disputed"
 	}
 	return "pending"
 }
@@ -164,6 +171,7 @@ func billFromInvoice(inv OdooOutgoingInvoice) Bill {
 		AmountDue:    inv.ResidualAmount,
 		HasDocument:  len(inv.Attachments) > 0,
 		PaymentState: inv.PaymentState,
+		Disputed:     inv.PaymentState == "blocked",
 	}
 	if inv.MoveType == "in_refund" {
 		b.Type = "credit_note"
@@ -262,7 +270,7 @@ func billsFileForAudience(f BillsFile, a Audience) BillsFile {
 
 // billIsPending: a posted vendor bill with an amount still to pay.
 func billIsPending(b Bill) bool {
-	return b.Type == "bill" && (b.Status == "pending" || b.Status == "partially_paid") && b.AmountDue > 0
+	return b.Type == "bill" && (b.Status == "pending" || b.Status == "partially_paid" || b.Status == "disputed") && b.AmountDue > 0
 }
 
 // billsTotals sums the EUR bills (see billsTotalsByCurrency for the rest).
@@ -274,7 +282,7 @@ func billsTotals(bills []Bill) BillsTotals {
 func billsTotalsByCurrency(bills []Bill) map[string]BillsTotals {
 	out := map[string]BillsTotals{}
 	for _, b := range bills {
-		if b.Type != "bill" || b.Status == "reversed" {
+		if b.Type != "bill" || b.Status == "reversed" || b.Disputed {
 			continue
 		}
 		t := out[b.Currency]
@@ -284,6 +292,23 @@ func billsTotalsByCurrency(bills []Bill) map[string]BillsTotals {
 		out[b.Currency] = t
 	}
 	return out
+}
+
+// disputedTotals sums the disputed EUR bills; nil when there are none.
+func disputedTotals(bills []Bill) *BillsTotals {
+	var t BillsTotals
+	for _, b := range bills {
+		if b.Type != "bill" || !b.Disputed || b.Currency != "EUR" {
+			continue
+		}
+		t.Count++
+		t.Total = roundCents(t.Total + b.Total)
+		t.AmountDue = roundCents(t.AmountDue + b.AmountDue)
+	}
+	if t.Count == 0 {
+		return nil
+	}
+	return &t
 }
 
 func otherCurrencyTotals(bills []Bill) map[string]BillsTotals {
@@ -366,7 +391,8 @@ func generateBills(dataDir, only string) (int, int) {
 		sortBills(pending)
 		writeBillsTiers(dataDir, "latest", "", pendingBillsFile, BillsFile{
 			GeneratedAt: now, Source: "odoo", Scope: "pending", Currency: "EUR",
-			Totals: billsTotals(pending), TotalsByCurrency: otherCurrencyTotals(pending), Bills: nonNilBills(pending),
+			Totals: billsTotals(pending), TotalsByCurrency: otherCurrencyTotals(pending),
+			DisputedTotals: disputedTotals(pending), Bills: nonNilBills(pending),
 		})
 	}
 	return months, len(pending)
@@ -413,7 +439,7 @@ reconciled with its bank line.
 	}
 	sortBills(pending)
 	if HasFlag(args, "--json") {
-		out, _ := json.MarshalIndent(BillsFile{Source: "odoo", Scope: "pending", Currency: "EUR", Totals: billsTotals(pending), Bills: nonNilBills(pending)}, "", "  ")
+		out, _ := json.MarshalIndent(BillsFile{Source: "odoo", Scope: "pending", Currency: "EUR", Totals: billsTotals(pending), DisputedTotals: disputedTotals(pending), Bills: nonNilBills(pending)}, "", "  ")
 		fmt.Println(string(out))
 		return nil
 	}

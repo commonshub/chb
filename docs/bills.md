@@ -84,10 +84,11 @@ Both files share one schema:
 | `note` | text of a trusted Nostr annotation on the `uri` ([website.md](website.md) §9). |
 | `number` | our accounting number for the bill. Quote it when paying or sponsoring a bill. |
 | `type` | `bill`, or `credit_note` when the vendor owes us. |
-| `status` | `pending`, `partially_paid`, `paid` (includes a payment registered but not yet matched to the bank), or `reversed` (cancelled by a credit note). |
+| `status` | `pending`, `partially_paid`, `paid` (includes a payment registered but not yet matched to the bank), `reversed` (cancelled by a credit note), or `disputed` (payment blocked in Odoo: we contest the bill; it stays in the books and in the pending list). |
 | `vendor.type` | `business` when the vendor is a company or is registered for VAT, otherwise `individual`. |
+| `disputed` | `true` when the payment is blocked in Odoo (Odoo's "Block payment", `paymentState` `blocked`). Don't ask anyone to pay it. Absent otherwise. |
 | `amountDue` | what is still to pay, in the bill's currency. 0 once paid. |
-| `totals` | EUR bills only: count, total and amount due. Credit notes and reversed bills are not summed. `totalsByCurrency` appears when some bills are in another currency. |
+| `totals` | EUR bills only: count, total and amount due. Credit notes, reversed and disputed bills are not summed; `disputedTotals` sums the disputed EUR bills, when there are any. `totalsByCurrency` appears when some bills are in another currency. |
 | `category`, `collective`, `event` | how the expense is classified, when Odoo knows. Often empty. |
 | `hasDocument` | the vendor's invoice PDF is attached in Odoo. The PDF itself is not published. |
 | `paymentState` | Odoo's raw value, for reference. |

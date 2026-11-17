@@ -211,3 +211,28 @@ func TestSoleTraderBillDoesNotLinkPersonToEvent(t *testing.T) {
 		t.Errorf("company bill via a contact = %+v", co)
 	}
 }
+
+func TestBlockedBillIsDisputed(t *testing.T) {
+	b := billFromInvoice(OdooOutgoingInvoice{ID: 1, MoveType: "in_invoice", State: "posted", PaymentState: "blocked",
+		Currency: "EUR", TotalAmount: 729.15, ResidualAmount: 729.15, InvoiceDate: "2026-04-30"})
+	if b.Status != "disputed" || !b.Disputed || b.AmountDue != 729.15 {
+		t.Fatalf("blocked bill = status %q disputed %v due %v", b.Status, b.Disputed, b.AmountDue)
+	}
+	if !billIsPending(b) {
+		t.Error("a disputed bill stays in the pending list")
+	}
+	open := Bill{Type: "bill", Status: "pending", Currency: "EUR", Total: 10, AmountDue: 10}
+	bills := []Bill{open, b}
+	if tot := billsTotals(bills); tot.Count != 1 || tot.AmountDue != 10 {
+		t.Errorf("totals = %+v, disputed bills must not be summed", tot)
+	}
+	if d := disputedTotals(bills); d == nil || d.Count != 1 || d.AmountDue != 729.15 {
+		t.Errorf("disputedTotals = %+v", d)
+	}
+	if disputedTotals([]Bill{open}) != nil {
+		t.Error("no disputedTotals block without disputed bills")
+	}
+	if !billIsOpen("posted", "blocked") {
+		t.Error("blocked bills must keep being refreshed")
+	}
+}
