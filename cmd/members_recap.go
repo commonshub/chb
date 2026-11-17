@@ -4,7 +4,7 @@ package cmd
 // use of the hub (days at the hub, tokens, praise, photos), rendered by the
 // website and sent by chb, which knows the members and their addresses.
 //
-//   - The website renders: GET <site>/api/recap?discordId=<id>&period=P
+//   - The website renders: POST <site>/api/recap {period, discordId, …}
 //     ({member, summary, subject, html, text}; 404 = not in the server).
 //     Its footer carries the member's signed notification-settings link.
 //   - The website holds the preferences: GET <site>/api/notifications/subscribers
@@ -34,10 +34,10 @@ package cmd
 // through Resend (RESEND_API_KEY), from hello@, as the reminders do.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -129,6 +129,7 @@ type recapRecipient struct {
 	DiscordID        string // empty: no linked Discord account (rendered by emailHash)
 	EmailHash        string // accounts.emailHash
 	FirstName        string
+	Interval         string // membership interval: month | year
 	OdooPartnerID    int
 	StripeCustomerID string
 }
@@ -181,7 +182,7 @@ func recapRecipients(members []Member, links map[string]string, web recapWebsite
 		if m.Status != "active" && m.Status != "grace" {
 			continue
 		}
-		r := recapRecipient{FirstName: m.FirstName, EmailHash: m.Accounts.EmailHash, OdooPartnerID: m.OdooPartnerID, StripeCustomerID: m.StripeCustomerID}
+		r := recapRecipient{FirstName: m.FirstName, EmailHash: m.Accounts.EmailHash, Interval: m.Interval, OdooPartnerID: m.OdooPartnerID, StripeCustomerID: m.StripeCustomerID}
 		if m.OdooPartnerID > 0 {
 			r.DiscordID = links[fmt.Sprintf("odoo:%d", m.OdooPartnerID)]
 		}
@@ -414,25 +415,67 @@ type recapMessage struct {
 	Text    string `json:"text"`
 }
 
-// recapQuery: ?discordId= for a member with Discord, else the community-only
-// recap ?emailHash=&name=.
-func recapQuery(r recapRecipient, period string, c *recapContribution) url.Values {
-	q := url.Values{"period": {period}}
+// recapRequest is the POST /api/recap body: ?discordId= for a member with
+// Discord, else the community-only recap by emailHash + name, with the
+// member's contributions and euro transactions.
+type recapRequest struct {
+	Period           string                 `json:"period"`
+	DiscordID        string                 `json:"discordId,omitempty"`
+	EmailHash        string                 `json:"emailHash,omitempty"`
+	Name             string                 `json:"name,omitempty"`
+	Contribution     *float64               `json:"contribution,omitempty"`
+	OrgName          string                 `json:"orgName,omitempty"`
+	OrgContribution  *float64               `json:"orgContribution,omitempty"`
+	EuroTransactions []recapEuroTransaction `json:"euroTransactions,omitempty"`
+}
+
+func newRecapRequest(r recapRecipient, period string, c *recapContribution) recapRequest {
+	q := recapRequest{Period: period}
 	if r.DiscordID != "" {
-		q.Set("discordId", r.DiscordID)
+		q.DiscordID = r.DiscordID
 	} else {
-		q.Set("emailHash", r.EmailHash)
-		q.Set("name", r.FirstName)
+		q.EmailHash, q.Name = r.EmailHash, r.FirstName
 	}
 	if c != nil {
-		c.params(q)
+		personal := roundCents(c.Personal)
+		q.Contribution = &personal
+		if c.OrgName != "" {
+			org := roundCents(c.Org)
+			q.OrgName, q.OrgContribution = c.OrgName, &org
+		}
+		q.EuroTransactions = c.Euro
 	}
 	return q
 }
 
+var recapPost = func(secret, path string, body, out interface{}) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", recapSite()+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return errRecapNotFound
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
 func fetchRecap(secret string, r recapRecipient, period string, c *recapContribution) (recapMessage, error) {
 	var m recapMessage
-	if err := recapGet(secret, "/api/recap?"+recapQuery(r, period, c).Encode(), &m); err != nil {
+	if err := recapPost(secret, "/api/recap", newRecapRequest(r, period, c), &m); err != nil {
 		return m, err
 	}
 	if m.Subject == "" || m.HTML == "" {
@@ -535,9 +578,9 @@ sent twice, even when a member links Discord in between.
 Each recap shows what the member paid over the period (Stripe charges
 matched on their email hash, payments on Odoo invoices of their own
 partner) and, when their Odoo contact belongs to a company, what that
-company paid. The Discord bot's invoice-orgs.json (settings/invoice-orgs.json,
-or CHB_INVOICE_ORGS_FILE) names the company of a Discord member whose
-contact has none.
+company paid, and lists those euro payments next to the tokens. The Discord
+bot's invoice-orgs (GET <site>/api/members/invoice-orgs) names the company
+of a Discord member whose contact has none.
 Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 `)
 		return nil
@@ -566,9 +609,11 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		// The member's Odoo partner, for the contribution amounts.
 		if members, err := loadCurrentMembers(DataDir()); err == nil && r.EmailHash != "" {
 			for _, m := range members {
-				if m.Accounts.EmailHash == r.EmailHash && m.OdooPartnerID > 0 {
-					r.OdooPartnerID = m.OdooPartnerID
-					break
+				if m.Accounts.EmailHash == r.EmailHash {
+					r.Interval = firstNonEmpty(r.Interval, m.Interval)
+					if m.OdooPartnerID > 0 {
+						r.OdooPartnerID = m.OdooPartnerID
+					}
 				}
 			}
 		}
@@ -584,12 +629,14 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		if apiKey == "" {
 			return fmt.Errorf("RESEND_API_KEY must be set in config.env to send")
 		}
-		c := buildRecapContribIndex(DataDir(), os.Getenv("EMAIL_HASH_SALT"), []recapPeriod{p}).contribution(r, p)
+		ix := buildRecapContribIndex(DataDir(), os.Getenv("EMAIL_HASH_SALT"), []recapPeriod{p})
+		ix.invoiceOrgs = recapInvoiceOrgsOrWarn(secret)
+		c := ix.contribution(r, p)
 		fmt.Printf("  contribution €%s", formatRecapEuros(c.Personal))
 		if c.OrgName != "" {
 			fmt.Printf(", %s €%s", c.OrgName, formatRecapEuros(c.Org))
 		}
-		fmt.Println()
+		fmt.Printf(", %d euro transaction(s)\n", len(c.Euro))
 		m, err := fetchRecap(secret, r, p.ID, &c)
 		if err != nil {
 			return err
@@ -655,6 +702,7 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 	}
 	partners := loadPartnerEmails(dataDir)
 	contrib := buildRecapContribIndex(dataDir, os.Getenv("EMAIL_HASH_SALT"), periods)
+	contrib.invoiceOrgs = recapInvoiceOrgsOrWarn(secret)
 	sent, failed, noAddress := 0, 0, 0
 	for i, s := range todo {
 		if send && sent >= limit {
@@ -708,6 +756,17 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 	}
 	fmt.Printf("\n  %d recap(s) sent, %d failed (%d without an email address)\n\n", sent, failed, noAddress)
 	return nil
+}
+
+// recapInvoiceOrgsOrWarn: the website's invoice-orgs; without it, org lines
+// come from Odoo only.
+func recapInvoiceOrgsOrWarn(secret string) map[string][]int {
+	orgs, err := fetchRecapInvoiceOrgs(secret)
+	if err != nil {
+		Warnf("⚠ invoice-orgs: %v (organisations from Odoo only)", err)
+		return map[string][]int{}
+	}
+	return orgs
 }
 
 // recapShortKey: the Discord id, or "e:" + the start of the email hash.

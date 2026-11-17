@@ -16,14 +16,16 @@ package cmd
 //
 // Organisation: the company the member's Odoo contact belongs to
 // (commercial partner). Without one, the bot's invoice-orgs.json
-// ({"<discord id>": [<odoo partner id>, …]}; CHB_INVOICE_ORGS_FILE, default
-// settings/invoice-orgs.json), when it names exactly one partner. Never guessed from names. Its amount is the
+// ({"<discord id>": [<odoo partner id>, …]}, relayed by the website at
+// GET /api/members/invoice-orgs), when it names exactly one partner. Never
+// guessed from names. Its amount is the
 // payments received in the period on all of its customer invoices.
 
 import (
 	"encoding/json"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,17 +40,32 @@ type recapContribPartner struct {
 }
 
 type recapInvoicePayment struct {
-	Partner    int // invoice partner
-	Commercial int // the company it belongs to (= Partner when none)
-	Date       string
-	Amount     float64 // signed: credit notes negative
-	Stripe     bool    // booked on a Stripe journal
+	Partner     int // invoice partner
+	Commercial  int // the company it belongs to (= Partner when none)
+	Date        string
+	Amount      float64 // signed: credit notes negative
+	Stripe      bool    // booked on a Stripe journal
+	Description string  // "Invoice 2026_RCC_104: Satoshi room"
 }
 
 type recapStripeCharge struct {
-	Date   string
-	Amount float64
+	Date     string
+	At       string // RFC3339, Brussels
+	Amount   float64
+	Kind     string // charge | refund
+	Category string
+	Product  string
 }
+
+// recapEuroTransaction is one entry of /api/recap's euroTransactions, from
+// the member's side: a payment to the hub is negative, a refund positive.
+type recapEuroTransaction struct {
+	At          string  `json:"at"`
+	Amount      float64 `json:"amount"`
+	Description string  `json:"description"`
+}
+
+const recapMaxEuroTransactions = 100
 
 type recapContribIndex struct {
 	partners       map[int]recapContribPartner
@@ -108,11 +125,13 @@ func buildRecapContribIndex(dataDir, salt string, periods []recapPeriod) *recapC
 		if inv.MoveType == "out_refund" {
 			sign = -1
 		}
+		desc := recapInvoiceDescription(inv)
 		for _, pay := range inv.Payments {
 			ix.payments = append(ix.payments, recapInvoicePayment{
 				Partner: inv.Partner.ID, Commercial: commercial, Date: pay.Date,
-				Amount: sign * math.Abs(pay.Amount),
-				Stripe: strings.Contains(strings.ToLower(pay.Journal), "stripe"),
+				Amount:      sign * math.Abs(pay.Amount),
+				Stripe:      strings.Contains(strings.ToLower(pay.Journal), "stripe"),
+				Description: desc,
 			})
 		}
 	}
@@ -135,21 +154,103 @@ func buildRecapContribIndex(dataDir, salt string, periods []recapPeriod) *recapC
 					continue
 				}
 				h := hashEmail(em, salt)
+				at := time.Unix(tx.Timestamp, 0).In(BrusselsTZ())
+				cat, _ := tx.Metadata["category"].(string)
+				prod, _ := tx.Metadata["product"].(string)
 				ix.stripeByHash[h] = append(ix.stripeByHash[h], recapStripeCharge{
-					Date:   time.Unix(tx.Timestamp, 0).In(BrusselsTZ()).Format("2006-01-02"),
-					Amount: tx.Amount,
+					Date: at.Format("2006-01-02"), At: at.Format(time.RFC3339),
+					Amount: tx.Amount, Kind: kind, Category: cat, Product: strings.TrimSpace(prod),
 				})
 			}
 		}
 	}
-	path := strings.TrimSpace(os.Getenv("CHB_INVOICE_ORGS_FILE"))
-	if path == "" {
-		path = settingsFilePath("invoice-orgs.json")
-	}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &ix.invoiceOrgs)
-	}
 	return ix
+}
+
+// fetchRecapInvoiceOrgs: the bot's Discord id → Odoo partner ids, relayed
+// by the website. "test-" keys are the website's test user, whose ids come
+// from the test copy of Odoo: never used.
+func fetchRecapInvoiceOrgs(secret string) (map[string][]int, error) {
+	var resp struct {
+		Orgs map[string][]int `json:"orgs"`
+	}
+	if err := recapGet(secret, "/api/members/invoice-orgs", &resp); err != nil {
+		return nil, err
+	}
+	out := map[string][]int{}
+	for k, v := range resp.Orgs {
+		if strings.HasPrefix(k, "test-") || !discordIDPattern.MatchString(k) {
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// recapInvoiceDescription: "Invoice <number>: <what>", "Credit note <number>".
+func recapInvoiceDescription(inv OdooOutgoingInvoice) string {
+	label := "Invoice"
+	if inv.MoveType == "out_refund" {
+		label = "Credit note"
+	}
+	if inv.Number != "" {
+		label += " " + inv.Number
+	}
+	what := strings.TrimSpace(inv.Title)
+	if what == "" {
+		for _, l := range inv.LineItems {
+			if l.DisplayType == "" || l.DisplayType == "product" {
+				if what = strings.TrimSpace(firstNonEmpty(l.Title, l.ProductName)); what != "" {
+					break
+				}
+			}
+		}
+	}
+	if i := strings.IndexByte(what, '\n'); i >= 0 {
+		what = strings.TrimSpace(what[:i])
+	}
+	if what != "" {
+		label += ": " + what
+	}
+	return label
+}
+
+// recapStripeDescription: "Membership (monthly)", "Donation to …", "Refund".
+func recapStripeDescription(c recapStripeCharge, interval string) string {
+	if c.Kind == "refund" || c.Amount < 0 {
+		return "Refund"
+	}
+	switch c.Category {
+	case "membership":
+		switch interval {
+		case "month":
+			return "Membership (monthly)"
+		case "year":
+			return "Membership (yearly)"
+		}
+		return "Membership"
+	case "donation":
+		if c.Product != "" {
+			return c.Product
+		}
+		return "Donation"
+	}
+	if c.Product != "" {
+		return c.Product
+	}
+	if c.Category != "" {
+		return strings.ToUpper(c.Category[:1]) + strings.ReplaceAll(c.Category[1:], "_", " ")
+	}
+	return "Payment"
+}
+
+// recapDateAt: a YYYY-MM-DD payment date as noon Brussels, RFC3339.
+func recapDateAt(d string) string {
+	t, err := time.ParseInLocation("2006-01-02", d, BrusselsTZ())
+	if err != nil {
+		return d
+	}
+	return t.Add(12 * time.Hour).Format(time.RFC3339)
 }
 
 // recapPeriodMonths: every YYYY-MM covered by the periods.
@@ -174,6 +275,9 @@ type recapContribution struct {
 	Personal float64
 	OrgName  string // empty: no organisation
 	Org      float64
+	// Euro: the member's own payments and refunds, oldest first (at most
+	// recapMaxEuroTransactions, the latest kept).
+	Euro []recapEuroTransaction
 }
 
 func (ix *recapContribIndex) contribution(r recapRecipient, p recapPeriod) recapContribution {
@@ -185,6 +289,7 @@ func (ix *recapContribIndex) contribution(r recapRecipient, p recapPeriod) recap
 		for _, s := range ix.stripeByHash[r.EmailHash] {
 			if in(s.Date) {
 				c.Personal += s.Amount
+				c.Euro = append(c.Euro, recapEuroTransaction{At: s.At, Amount: roundCents(-s.Amount), Description: recapStripeDescription(s, r.Interval)})
 			}
 		}
 	}
@@ -206,6 +311,7 @@ func (ix *recapContribIndex) contribution(r recapRecipient, p recapPeriod) recap
 	for _, pay := range ix.payments {
 		if own[pay.Partner] && (pay.Commercial == pay.Partner || pay.Commercial == 0) && !pay.Stripe && in(pay.Date) {
 			c.Personal += pay.Amount
+			c.Euro = append(c.Euro, recapEuroTransaction{At: recapDateAt(pay.Date), Amount: roundCents(-pay.Amount), Description: pay.Description})
 		}
 	}
 	org := 0
@@ -226,6 +332,15 @@ func (ix *recapContribIndex) contribution(r recapRecipient, p recapPeriod) recap
 			}
 		}
 	}
+	sort.SliceStable(c.Euro, func(i, j int) bool { return c.Euro[i].At < c.Euro[j].At })
+	if len(c.Euro) > recapMaxEuroTransactions {
+		c.Euro = c.Euro[len(c.Euro)-recapMaxEuroTransactions:]
+	}
+	for i := range c.Euro {
+		if c.Euro[i].Amount == 0 {
+			c.Euro[i].Amount = 0 // no -0
+		}
+	}
 	c.Personal = roundCents(c.Personal)
 	c.Org = roundCents(c.Org)
 	if c.Personal == 0 {
@@ -235,15 +350,6 @@ func (ix *recapContribIndex) contribution(r recapRecipient, p recapPeriod) recap
 		c.Org = 0
 	}
 	return c
-}
-
-// params: contribution= always, orgName= / orgContribution= with an organisation.
-func (c recapContribution) params(q map[string][]string) {
-	q["contribution"] = []string{formatRecapEuros(c.Personal)}
-	if c.OrgName != "" {
-		q["orgName"] = []string{c.OrgName}
-		q["orgContribution"] = []string{formatRecapEuros(c.Org)}
-	}
 }
 
 func formatRecapEuros(v float64) string {
