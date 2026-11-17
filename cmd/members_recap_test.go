@@ -151,10 +151,10 @@ func TestRecapMembersWithoutDiscord(t *testing.T) {
 	if !reflect.DeepEqual(keys, []string{"333333333333333333", "e:hA", "e:hB"}) {
 		t.Fatalf("keys %v", keys)
 	}
-	if q := recapQuery(rs[1], "2026-11"); q.Get("emailHash") != "hA" || q.Get("name") != "A" || q.Get("discordId") != "" {
+	if q := recapQuery(rs[1], "2026-11", nil); q.Get("emailHash") != "hA" || q.Get("name") != "A" || q.Get("discordId") != "" {
 		t.Errorf("query %v", q)
 	}
-	if q := recapQuery(rs[0], "2026-11"); q.Get("discordId") != "333333333333333333" || q.Get("emailHash") != "" {
+	if q := recapQuery(rs[0], "2026-11", nil); q.Get("discordId") != "333333333333333333" || q.Get("emailHash") != "" {
 		t.Errorf("query %v", q)
 	}
 

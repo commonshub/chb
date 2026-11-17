@@ -416,16 +416,23 @@ type recapMessage struct {
 
 // recapQuery: ?discordId= for a member with Discord, else the community-only
 // recap ?emailHash=&name=.
-func recapQuery(r recapRecipient, period string) url.Values {
+func recapQuery(r recapRecipient, period string, c *recapContribution) url.Values {
+	q := url.Values{"period": {period}}
 	if r.DiscordID != "" {
-		return url.Values{"discordId": {r.DiscordID}, "period": {period}}
+		q.Set("discordId", r.DiscordID)
+	} else {
+		q.Set("emailHash", r.EmailHash)
+		q.Set("name", r.FirstName)
 	}
-	return url.Values{"emailHash": {r.EmailHash}, "name": {r.FirstName}, "period": {period}}
+	if c != nil {
+		c.params(q)
+	}
+	return q
 }
 
-func fetchRecap(secret string, r recapRecipient, period string) (recapMessage, error) {
+func fetchRecap(secret string, r recapRecipient, period string, c *recapContribution) (recapMessage, error) {
 	var m recapMessage
-	if err := recapGet(secret, "/api/recap?"+recapQuery(r, period).Encode(), &m); err != nil {
+	if err := recapGet(secret, "/api/recap?"+recapQuery(r, period, c).Encode(), &m); err != nil {
 		return m, err
 	}
 	if m.Subject == "" || m.HTML == "" {
@@ -512,7 +519,8 @@ USAGE
                                        Send ONE member's recap to <email>
                                        (no ledger; default period: last month).
                                        --email-hash gives the version for a
-                                       member without a linked Discord account.
+                                       member without a linked Discord account
+                                       (with --discord too: only for the amounts).
 
 Recipients: every active and grace member with an address. Members with a
 Discord id, from (in order) settings/members-discord.json ({"odoo:<partner
@@ -523,6 +531,13 @@ rendered by their email hash, with a button to link Discord. Preferences
 come from the website; members who opted out are never emailed. Sent
 recaps are recorded in latest/providers/members/recaps-sent.json and never
 sent twice, even when a member links Discord in between.
+
+Each recap shows what the member paid over the period (Stripe charges
+matched on their email hash, payments on Odoo invoices of their own
+partner) and, when their Odoo contact belongs to a company, what that
+company paid. The Discord bot's invoice-orgs.json (settings/invoice-orgs.json,
+or CHB_INVOICE_ORGS_FILE) names the company of a Discord member whose
+contact has none.
 Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 `)
 		return nil
@@ -548,6 +563,15 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		default:
 			return fmt.Errorf("--send-test needs --discord <discord id>, or --email-hash <hash> --name <first name>")
 		}
+		// The member's Odoo partner, for the contribution amounts.
+		if members, err := loadCurrentMembers(DataDir()); err == nil && r.EmailHash != "" {
+			for _, m := range members {
+				if m.Accounts.EmailHash == r.EmailHash && m.OdooPartnerID > 0 {
+					r.OdooPartnerID = m.OdooPartnerID
+					break
+				}
+			}
+		}
 		per := GetOption(args, "--period")
 		if per == "" {
 			per = lastMonth
@@ -560,7 +584,13 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		if apiKey == "" {
 			return fmt.Errorf("RESEND_API_KEY must be set in config.env to send")
 		}
-		m, err := fetchRecap(secret, r, p.ID)
+		c := buildRecapContribIndex(DataDir(), os.Getenv("EMAIL_HASH_SALT"), []recapPeriod{p}).contribution(r, p)
+		fmt.Printf("  contribution €%s", formatRecapEuros(c.Personal))
+		if c.OrgName != "" {
+			fmt.Printf(", %s €%s", c.OrgName, formatRecapEuros(c.Org))
+		}
+		fmt.Println()
+		m, err := fetchRecap(secret, r, p.ID, &c)
 		if err != nil {
 			return err
 		}
@@ -624,6 +654,7 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		return fmt.Errorf("RESEND_API_KEY must be set in config.env to send")
 	}
 	partners := loadPartnerEmails(dataDir)
+	contrib := buildRecapContribIndex(dataDir, os.Getenv("EMAIL_HASH_SALT"), periods)
 	sent, failed, noAddress := 0, 0, 0
 	for i, s := range todo {
 		if send && sent >= limit {
@@ -637,11 +668,16 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 			noAddress++
 			continue
 		}
+		c := contrib.contribution(s.Recipient, s.Period)
 		if !send {
-			fmt.Printf("    %-9s %-10s %-20s %-12s %s\n", s.Period.Kind, s.Period.ID, recapShortKey(s.Recipient), s.Recipient.FirstName, maskEmail(to))
+			org := ""
+			if c.OrgName != "" {
+				org = fmt.Sprintf("  org %s €%s", c.OrgName, formatRecapEuros(c.Org))
+			}
+			fmt.Printf("    %-9s %-10s %-20s %-12s %-24s €%s%s\n", s.Period.Kind, s.Period.ID, recapShortKey(s.Recipient), s.Recipient.FirstName, maskEmail(to), formatRecapEuros(c.Personal), org)
 			continue
 		}
-		m, err := fetchRecap(secret, s.Recipient, s.Period.ID)
+		m, err := fetchRecap(secret, s.Recipient, s.Period.ID, &c)
 		if err != nil {
 			Warnf("⚠ %s: %v", s.key(), err)
 			failed++
