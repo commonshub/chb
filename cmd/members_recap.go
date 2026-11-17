@@ -8,10 +8,13 @@ package cmd
 //     ({member, summary, subject, html, text}; 404 = not in the server).
 //     Its footer carries the member's signed notification-settings link.
 //   - The website holds the preferences: GET <site>/api/notifications/subscribers
-//     ({default:{monthly,quarterly,yearly}, members:{<discordId>:{…}}});
+//     ({default:{monthly,quarterly,yearly}, members:{<discordId>|e:<emailHash>:{…}}});
 //     all three false = opted out, never email.
-//   - chb picks the recipients: active and grace members (latest members.json,
-//     stewards tier) with a Discord id and an address. The Discord id comes,
+//     Members without a Discord id get the community-only recap:
+//     GET <site>/api/recap?emailHash=<accounts.emailHash>&name=<first name>&period=P
+//     (with a "Link my Discord account" button).
+//   - chb picks the recipients: every active and grace member (latest
+//     members.json, stewards tier) with an address. The Discord id comes,
 //     in order, from the stewards' map settings/members-discord.json
 //     ("odoo:<partner id>" or "stripe:<customer id>" → Discord id), the
 //     member's accounts.discord (when it is a Discord id), or the website's
@@ -22,7 +25,9 @@ package cmd
 //     previous quarter in the first days of Jan/Apr/Jul/Oct, the previous
 //     year in the first days of January (recapDueDays tolerates a missed run).
 //   - Ledger latest/providers/members/recaps-sent.json, keyed
-//     discordId:period: nobody gets the same period twice. At most
+//     discordId:period, or e:<emailHash>:period for a member without Discord.
+//     Nobody gets the same period twice, even after linking Discord in
+//     between: either key already sent for the period skips the member. At most
 //     recapMaxPerRun emails per run; the rest go out on the next run.
 //
 // Both endpoints use Authorization: Bearer RENEW_LINK_SECRET. Mail goes
@@ -77,8 +82,8 @@ type recapSubscribers struct {
 	Members map[string]RecapPrefs `json:"members"`
 }
 
-func (s recapSubscribers) prefs(discordID string) RecapPrefs {
-	if p, ok := s.Members[discordID]; ok {
+func (s recapSubscribers) prefs(key string) RecapPrefs {
+	if p, ok := s.Members[key]; ok {
 		return p
 	}
 	return s.Default
@@ -121,10 +126,28 @@ func dueRecapPeriods(today time.Time) []recapPeriod {
 
 // recapRecipient: a member we could email (no address until sending/preview).
 type recapRecipient struct {
-	DiscordID        string
+	DiscordID        string // empty: no linked Discord account (rendered by emailHash)
+	EmailHash        string // accounts.emailHash
 	FirstName        string
 	OdooPartnerID    int
 	StripeCustomerID string
+}
+
+// key identifies the recipient in the preferences and the ledger: the
+// Discord id, else "e:<emailHash>".
+func (r recapRecipient) key() string {
+	if r.DiscordID != "" {
+		return r.DiscordID
+	}
+	return "e:" + r.EmailHash
+}
+
+// recapCounts: how the active and grace members split.
+type recapCounts struct {
+	Active    int // active + grace members (one per person)
+	Discord   int // with a Discord id
+	NoDiscord int // without one, rendered by emailHash
+	NoHash    int // without Discord and without an emailHash: cannot be rendered
 }
 
 func (r recapRecipient) identity() string {
@@ -148,15 +171,17 @@ func loadRecapDiscordLinks() map[string]string {
 	return out
 }
 
-// recapRecipients: active and grace members with a Discord id. The others
-// are counted in missing (no Discord id), never guessed.
-func recapRecipients(members []Member, links map[string]string, web recapWebsiteLinks) (out []recapRecipient, missing int) {
-	seen := map[string]bool{}
+// recapRecipients: every active and grace member. The Discord id is never
+// guessed; a member without one is rendered by emailHash. A member with
+// neither is counted in NoHash and skipped.
+func recapRecipients(members []Member, links map[string]string, web recapWebsiteLinks) (out []recapRecipient, n recapCounts) {
+	seenDiscord, seenHash := map[string]bool{}, map[string]bool{}
+	var resolved []recapRecipient
 	for _, m := range members {
 		if m.Status != "active" && m.Status != "grace" {
 			continue
 		}
-		r := recapRecipient{FirstName: m.FirstName, OdooPartnerID: m.OdooPartnerID, StripeCustomerID: m.StripeCustomerID}
+		r := recapRecipient{FirstName: m.FirstName, EmailHash: m.Accounts.EmailHash, OdooPartnerID: m.OdooPartnerID, StripeCustomerID: m.StripeCustomerID}
 		if m.OdooPartnerID > 0 {
 			r.DiscordID = links[fmt.Sprintf("odoo:%d", m.OdooPartnerID)]
 		}
@@ -173,17 +198,36 @@ func recapRecipients(members []Member, links map[string]string, web recapWebsite
 			r.DiscordID = web.Hash[m.Accounts.EmailHash]
 		}
 		if !discordIDPattern.MatchString(r.DiscordID) {
-			missing++
+			r.DiscordID = ""
+		}
+		resolved = append(resolved, r)
+	}
+	// One person, two memberships: one recap, the Discord one when there is one.
+	sort.SliceStable(resolved, func(i, j int) bool { return resolved[i].DiscordID != "" && resolved[j].DiscordID == "" })
+	for _, r := range resolved {
+		if (r.DiscordID != "" && seenDiscord[r.DiscordID]) || (r.EmailHash != "" && seenHash[r.EmailHash]) {
 			continue
 		}
-		if seen[r.DiscordID] {
-			continue // one member, two memberships: one recap
+		if r.DiscordID != "" {
+			seenDiscord[r.DiscordID] = true
 		}
-		seen[r.DiscordID] = true
+		if r.EmailHash != "" {
+			seenHash[r.EmailHash] = true
+		}
+		n.Active++
+		switch {
+		case r.DiscordID != "":
+			n.Discord++
+		case r.EmailHash != "":
+			n.NoDiscord++
+		default:
+			n.NoHash++
+			continue
+		}
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DiscordID < out[j].DiscordID })
-	return out, missing
+	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
+	return out, n
 }
 
 func loadCurrentMembers(dataDir string) ([]Member, error) {
@@ -355,6 +399,7 @@ func hashDiscordLinks(links []websiteDiscordLink) map[string]string {
 type recapMessage struct {
 	Member struct {
 		DiscordID string `json:"discordId"`
+		EmailHash string `json:"emailHash"`
 		Username  string `json:"username"`
 		Name      string `json:"name"`
 	} `json:"member"`
@@ -369,14 +414,22 @@ type recapMessage struct {
 	Text    string `json:"text"`
 }
 
-func fetchRecap(secret, discordID, period string) (recapMessage, error) {
+// recapQuery: ?discordId= for a member with Discord, else the community-only
+// recap ?emailHash=&name=.
+func recapQuery(r recapRecipient, period string) url.Values {
+	if r.DiscordID != "" {
+		return url.Values{"discordId": {r.DiscordID}, "period": {period}}
+	}
+	return url.Values{"emailHash": {r.EmailHash}, "name": {r.FirstName}, "period": {period}}
+}
+
+func fetchRecap(secret string, r recapRecipient, period string) (recapMessage, error) {
 	var m recapMessage
-	q := url.Values{"discordId": {discordID}, "period": {period}}
-	if err := recapGet(secret, "/api/recap?"+q.Encode(), &m); err != nil {
+	if err := recapGet(secret, "/api/recap?"+recapQuery(r, period).Encode(), &m); err != nil {
 		return m, err
 	}
 	if m.Subject == "" || m.HTML == "" {
-		return m, fmt.Errorf("recap %s %s: empty subject or html", discordID, period)
+		return m, fmt.Errorf("recap %s %s: empty subject or html", r.key(), period)
 	}
 	return m, nil
 }
@@ -405,12 +458,26 @@ type recapSend struct {
 	Period    recapPeriod
 }
 
-func (s recapSend) key() string { return s.Recipient.DiscordID + ":" + s.Period.ID }
+func (s recapSend) key() string { return s.Recipient.key() + ":" + s.Period.ID }
+
+// sentBefore: this member already got this period, under either key (they
+// may have linked Discord since).
+func (s recapSend) sentBefore(ledger map[string]RecapLedgerEntry) bool {
+	if _, ok := ledger[s.key()]; ok {
+		return true
+	}
+	if s.Recipient.DiscordID != "" && s.Recipient.EmailHash != "" {
+		if _, ok := ledger["e:"+s.Recipient.EmailHash+":"+s.Period.ID]; ok {
+			return true
+		}
+	}
+	return false
+}
 
 // planRecaps: every (member, period) due, wanted and not yet sent.
 func planRecaps(recipients []recapRecipient, periods []recapPeriod, subs recapSubscribers, ledger map[string]RecapLedgerEntry) (todo []recapSend, optedOut, alreadySent int) {
 	for _, r := range recipients {
-		p := subs.prefs(r.DiscordID)
+		p := subs.prefs(r.key())
 		if !p.Monthly && !p.Quarterly && !p.Yearly {
 			optedOut++
 			continue
@@ -420,7 +487,7 @@ func planRecaps(recipients []recapRecipient, periods []recapPeriod, subs recapSu
 				continue
 			}
 			s := recapSend{r, per}
-			if _, done := ledger[s.key()]; done {
+			if s.sentBefore(ledger) {
 				alreadySent++
 				continue
 			}
@@ -441,15 +508,21 @@ USAGE
   chb members recap --period 2026-10   Preview one period (YYYY-MM, YYYY-Qn, YYYY)
   chb members recap --yes              Send (at most ` + strconv.Itoa(recapMaxPerRun) + ` per run; --limit N)
   chb members recap --send-test <email> --discord <id> [--period P]
+  chb members recap --send-test <email> --email-hash <hash> --name <first> [--period P]
                                        Send ONE member's recap to <email>
-                                       (no ledger; default period: last month)
+                                       (no ledger; default period: last month).
+                                       --email-hash gives the version for a
+                                       member without a linked Discord account.
 
-Recipients: active and grace members with a Discord id, from (in order)
-settings/members-discord.json ({"odoo:<partner id>": "<discord id>",
-"stripe:<customer id>": "<discord id>"}), accounts.discord, or the
-website's Discord links matched on the member's email hash. Preferences come from the
-website; members who opted out are never emailed. Sent recaps are
-recorded in latest/providers/members/recaps-sent.json and never sent twice.
+Recipients: every active and grace member with an address. Members with a
+Discord id, from (in order) settings/members-discord.json ({"odoo:<partner
+id>": "<discord id>", "stripe:<customer id>": "<discord id>"}),
+accounts.discord, or the website's Discord links matched on the member's
+email hash, get the full recap. The others get the community recap,
+rendered by their email hash, with a button to link Discord. Preferences
+come from the website; members who opted out are never emailed. Sent
+recaps are recorded in latest/providers/members/recaps-sent.json and never
+sent twice, even when a member links Discord in between.
 Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 `)
 		return nil
@@ -462,9 +535,18 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 	lastMonth := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, today.Location()).AddDate(0, -1, 0).Format("2006-01")
 
 	if to := GetOption(args, "--send-test"); to != "" {
-		discordID := GetOption(args, "--discord")
-		if !discordIDPattern.MatchString(discordID) {
-			return fmt.Errorf("--send-test needs --discord <discord id>")
+		r := recapRecipient{DiscordID: GetOption(args, "--discord"), EmailHash: GetOption(args, "--email-hash"), FirstName: GetOption(args, "--name")}
+		switch {
+		case r.DiscordID != "":
+			if !discordIDPattern.MatchString(r.DiscordID) {
+				return fmt.Errorf("--discord %q is not a Discord id", r.DiscordID)
+			}
+		case r.EmailHash != "":
+			if r.FirstName == "" {
+				return fmt.Errorf("--email-hash needs --name <first name>")
+			}
+		default:
+			return fmt.Errorf("--send-test needs --discord <discord id>, or --email-hash <hash> --name <first name>")
 		}
 		per := GetOption(args, "--period")
 		if per == "" {
@@ -478,7 +560,7 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		if apiKey == "" {
 			return fmt.Errorf("RESEND_API_KEY must be set in config.env to send")
 		}
-		m, err := fetchRecap(secret, discordID, p.ID)
+		m, err := fetchRecap(secret, r, p.ID)
 		if err != nil {
 			return err
 		}
@@ -486,7 +568,7 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		if err != nil {
 			return err
 		}
-		fmt.Printf("  ✓ test recap %s for %s sent to %s — Resend id %s\n", p.ID, m.Member.Username, maskEmail(to), id)
+		fmt.Printf("  ✓ test recap %s for %s sent to %s — Resend id %s\n", p.ID, firstNonEmpty(m.Member.Username, m.Member.Name, r.key()), maskEmail(to), id)
 		return nil
 	}
 
@@ -508,14 +590,18 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		return fmt.Errorf("discord links: %v", err)
 	}
 	handLinks := loadRecapDiscordLinks()
-	recipients, missing := recapRecipients(members, handLinks, webLinks)
+	recipients, counts := recapRecipients(members, handLinks, webLinks)
 	fmt.Printf("\n  Discord links: %d by hand (members-discord.json), %d from the website\n", len(handLinks), nLinks)
 	var ids []string
 	for _, p := range periods {
 		ids = append(ids, p.ID+" ("+p.Kind+")")
 	}
 	fmt.Printf("  Member recaps — due: %s\n", map[bool]string{true: "none today (periods are due on days 1–" + strconv.Itoa(recapDueDays) + "; use --period)", false: strings.Join(ids, ", ")}[len(periods) == 0])
-	fmt.Printf("  %d active/grace member(s) with a Discord id, %d skipped without one\n", len(recipients), missing)
+	fmt.Printf("  %d active/grace member(s): %d with a Discord id, %d without (community recap)", counts.Active, counts.Discord, counts.NoDiscord)
+	if counts.NoHash > 0 {
+		fmt.Printf(", %d skipped (no Discord id and no email hash)", counts.NoHash)
+	}
+	fmt.Println()
 	if len(periods) == 0 || len(recipients) == 0 {
 		fmt.Println()
 		return nil
@@ -538,7 +624,7 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		return fmt.Errorf("RESEND_API_KEY must be set in config.env to send")
 	}
 	partners := loadPartnerEmails(dataDir)
-	sent, failed := 0, 0
+	sent, failed, noAddress := 0, 0, 0
 	for i, s := range todo {
 		if send && sent >= limit {
 			fmt.Printf("\n  %d left for the next run (limit %d)\n", len(todo)-i, limit)
@@ -546,15 +632,16 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		}
 		to, err := recapAddress(dataDir, s.Recipient, partners)
 		if err != nil {
-			fmt.Printf("    ⚠ %-9s %-10s %-20s %s: %v\n", s.Period.Kind, s.Period.ID, s.Recipient.DiscordID, s.Recipient.FirstName, err)
+			fmt.Printf("    ⚠ %-9s %-10s %-20s %s: %v\n", s.Period.Kind, s.Period.ID, recapShortKey(s.Recipient), s.Recipient.FirstName, err)
 			failed++
+			noAddress++
 			continue
 		}
 		if !send {
-			fmt.Printf("    %-9s %-10s %-20s %-12s %s\n", s.Period.Kind, s.Period.ID, s.Recipient.DiscordID, s.Recipient.FirstName, maskEmail(to))
+			fmt.Printf("    %-9s %-10s %-20s %-12s %s\n", s.Period.Kind, s.Period.ID, recapShortKey(s.Recipient), s.Recipient.FirstName, maskEmail(to))
 			continue
 		}
-		m, err := fetchRecap(secret, s.Recipient.DiscordID, s.Period.ID)
+		m, err := fetchRecap(secret, s.Recipient, s.Period.ID)
 		if err != nil {
 			Warnf("⚠ %s: %v", s.key(), err)
 			failed++
@@ -574,12 +661,27 @@ Needs RENEW_LINK_SECRET (website) and, to send, RESEND_API_KEY.
 		fmt.Printf("    ✓ %s %s → %s\n", s.Period.ID, s.Recipient.FirstName, maskEmail(to))
 	}
 	if !send {
+		if noAddress > 0 {
+			fmt.Printf("\n  %d without an email address (skipped)\n", noAddress)
+		}
 		if len(todo) > 0 {
 			fmt.Printf("\n  %s(preview — nothing sent; add --yes to send)%s\n", Fmt.Dim, Fmt.Reset)
 		}
 		fmt.Println()
 		return nil
 	}
-	fmt.Printf("\n  %d recap(s) sent, %d failed\n\n", sent, failed)
+	fmt.Printf("\n  %d recap(s) sent, %d failed (%d without an email address)\n\n", sent, failed, noAddress)
 	return nil
+}
+
+// recapShortKey: the Discord id, or "e:" + the start of the email hash.
+func recapShortKey(r recapRecipient) string {
+	if r.DiscordID != "" {
+		return r.DiscordID
+	}
+	h := r.EmailHash
+	if len(h) > 12 {
+		h = h[:12]
+	}
+	return "e:" + h
 }

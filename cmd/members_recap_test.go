@@ -58,9 +58,9 @@ func TestRecapRecipientsAndPlan(t *testing.T) {
 		{FirstName: "F", Status: "active", Accounts: MemberAccounts{Discord: str("666666666666666666")}},
 	}
 	links := map[string]string{"odoo:7": "222222222222222222", "stripe:cus_c": "333333333333333333"}
-	rs, missing := recapRecipients(members, links, recapWebsiteLinks{})
-	if len(rs) != 4 || missing != 1 {
-		t.Fatalf("recipients %d missing %d", len(rs), missing)
+	rs, n := recapRecipients(members, links, recapWebsiteLinks{})
+	if len(rs) != 4 || n != (recapCounts{Active: 5, Discord: 4, NoHash: 1}) {
+		t.Fatalf("recipients %d counts %+v", len(rs), n)
 	}
 
 	subs := recapSubscribers{
@@ -99,9 +99,10 @@ func TestRecapHashLinks(t *testing.T) {
 		{FirstName: "B", Status: "active", Accounts: MemberAccounts{EmailHash: "h2"}},                   // ambiguous: skipped
 		{FirstName: "C", Status: "active", OdooPartnerID: 9, Accounts: MemberAccounts{EmailHash: "h4"}}, // hand map wins
 	}
-	rs, missing := recapRecipients(members, map[string]string{"odoo:9": "999999999999999999"}, recapWebsiteLinks{Hash: hl})
-	if missing != 1 || len(rs) != 2 || rs[0].DiscordID != "111111111111111111" || rs[1].DiscordID != "999999999999999999" {
-		t.Errorf("recipients %+v missing %d", rs, missing)
+	rs, n := recapRecipients(members, map[string]string{"odoo:9": "999999999999999999"}, recapWebsiteLinks{Hash: hl})
+	// B (ambiguous hash) gets the community recap by email hash.
+	if n.NoDiscord != 1 || len(rs) != 3 || rs[0].DiscordID != "111111111111111111" || rs[1].DiscordID != "999999999999999999" || rs[2].key() != "e:h2" {
+		t.Errorf("recipients %+v counts %+v", rs, n)
 	}
 }
 
@@ -118,13 +119,50 @@ func TestRecapCheckoutLinksMapBySubscription(t *testing.T) {
 		{ID: "sub_1QoXXXFAha...", FirstName: "B", Status: "active", Accounts: MemberAccounts{EmailHash: "hB"}},
 		{ID: "sub_1QoYYYFAha...", FirstName: "C", Status: "active", Accounts: MemberAccounts{EmailHash: "hC"}},
 	}
-	rs, missing := recapRecipients(members, nil, web)
+	rs, _ := recapRecipients(members, nil, web)
 	got := map[string]string{}
 	for _, r := range rs {
-		got[r.FirstName] = r.DiscordID
+		got[r.FirstName] = r.key()
 	}
-	want := map[string]string{"A": "111111111111111111", "C": "333333333333333333"}
-	if !reflect.DeepEqual(got, want) || missing != 1 {
-		t.Fatalf("recipients %v missing %d (B, whose email was typed by someone else, must get no recap)", got, missing)
+	want := map[string]string{"A": "111111111111111111", "B": "e:hB", "C": "333333333333333333"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("recipients %v (B, whose email was typed by someone else, must not get A's Discord recap)", got)
+	}
+}
+
+func TestRecapMembersWithoutDiscord(t *testing.T) {
+	str := func(s string) *string { return &s }
+	members := []Member{
+		{FirstName: "A", Status: "active", Accounts: MemberAccounts{EmailHash: "hA"}},
+		{FirstName: "B", Status: "active", Accounts: MemberAccounts{EmailHash: "hB"}},
+		// One person, two memberships, only one linked to Discord: one Discord recap.
+		{FirstName: "C", Status: "active", Accounts: MemberAccounts{EmailHash: "hC"}},
+		{FirstName: "C", Status: "grace", Accounts: MemberAccounts{EmailHash: "hC", Discord: str("333333333333333333")}},
+		{FirstName: "D", Status: "active"}, // nothing to render with
+	}
+	rs, n := recapRecipients(members, nil, recapWebsiteLinks{})
+	if n != (recapCounts{Active: 4, Discord: 1, NoDiscord: 2, NoHash: 1}) {
+		t.Fatalf("counts %+v", n)
+	}
+	var keys []string
+	for _, r := range rs {
+		keys = append(keys, r.key())
+	}
+	if !reflect.DeepEqual(keys, []string{"333333333333333333", "e:hA", "e:hB"}) {
+		t.Fatalf("keys %v", keys)
+	}
+	if q := recapQuery(rs[1], "2026-11"); q.Get("emailHash") != "hA" || q.Get("name") != "A" || q.Get("discordId") != "" {
+		t.Errorf("query %v", q)
+	}
+	if q := recapQuery(rs[0], "2026-11"); q.Get("discordId") != "333333333333333333" || q.Get("emailHash") != "" {
+		t.Errorf("query %v", q)
+	}
+
+	subs := recapSubscribers{Default: RecapPrefs{Monthly: true}, Members: map[string]RecapPrefs{"e:hB": {}}}
+	// C got 2026-10 before linking Discord: not again under the Discord key.
+	ledger := map[string]RecapLedgerEntry{"e:hC:2026-10": {}}
+	todo, optedOut, already := planRecaps(rs, []recapPeriod{{"2026-10", "monthly"}}, subs, ledger)
+	if len(todo) != 1 || todo[0].key() != "e:hA:2026-10" || optedOut != 1 || already != 1 {
+		t.Errorf("todo %+v optedOut %d already %d", todo, optedOut, already)
 	}
 }
