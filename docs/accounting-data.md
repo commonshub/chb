@@ -239,7 +239,12 @@ group many buyers.
   invoices, so a euro booking without such a mention stays null.
   `stewardNeeded` is true when the calendar event's description says
   "Steward needed" or "Stewards needed" (any case). Only the flag is
-  published, in every tier; the description never is.
+  published, in every tier.
+  `description` (members and stewards only, never public) is the calendar
+  entry's description as plain text: HTML and ICS escapes removed, links
+  kept as "text (url)", newlines kept, at most 1000 characters; absent when
+  empty. In members, phone numbers, third-party IBANs and Stripe customer ids
+  are masked, and emails by the audience policy.
 - **`rentals`** come from customer invoice lines on the room-rental income
   account (700100), dated by the invoice. `uri` is the invoice; a trusted
   annotation on it adds `event` and `note` (not in `public/` for an

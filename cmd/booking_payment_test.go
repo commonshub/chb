@@ -1,6 +1,10 @@
 package cmd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestBookingPayment(t *testing.T) {
 	for desc, want := range map[string]string{
@@ -38,5 +42,37 @@ func TestBookingStewardNeeded(t *testing.T) {
 		if got := bookingStewardNeeded(desc); got != want {
 			t.Errorf("%q: got %v", desc, got)
 		}
+	}
+}
+
+func TestBookingPlainDescription(t *testing.T) {
+	desc := `<p>Workshop on <b>care</b></p><p>Steward needed &amp; coffee</p><br><br><br>` +
+		`<a href="https://example.org/x">the form</a> <a href="https://luma.com/abc">https://luma.com/abc</a>\nPaid: 2 CHT`
+	want := "Workshop on care\nSteward needed & coffee\n\nthe form (https://example.org/x) https://luma.com/abc\nPaid: 2 CHT"
+	if got := bookingPlainDescription(desc); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	long := strings.Repeat("é", 1500)
+	if got := bookingPlainDescription(long); utf8.RuneCountInString(got) != bookingDescriptionMax || !strings.HasSuffix(got, "…") {
+		t.Errorf("cap: %d runes", utf8.RuneCountInString(got))
+	}
+	if bookingPlainDescription("  <p> </p> ") != "" {
+		t.Error("empty description must stay empty")
+	}
+}
+
+func TestBookingDescriptionTiers(t *testing.T) {
+	b := BookingRow{Description: "Call +32 475 12 34 56 or 0475/12.34.56, IBAN BE68 5390 0754 7034, cus_ABCDEFGH123"}
+	if bookingForAudience(b, AudiencePublic).Description != "" {
+		t.Error("public must not carry descriptions")
+	}
+	m := bookingForAudience(b, AudienceMembers).Description
+	for _, leak := range []string{"475", "BE68", "cus_"} {
+		if strings.Contains(m, leak) {
+			t.Errorf("members description leaks %q: %s", leak, m)
+		}
+	}
+	if bookingForAudience(b, AudienceStewards).Description != b.Description {
+		t.Error("stewards see the description as is")
 	}
 }

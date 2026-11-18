@@ -896,6 +896,11 @@ type BookingRow struct {
 	// StewardNeeded: the calendar event description says "Steward(s)
 	// needed". Only the flag is published, never the description.
 	StewardNeeded bool `json:"stewardNeeded"`
+	// Description: the calendar entry's description as plain text (at most
+	// bookingDescriptionMax characters). Members and stewards only; in
+	// members, phone numbers, third-party IBANs and Stripe customer ids are
+	// masked (emails by the audience policy).
+	Description string `json:"description,omitempty"`
 }
 
 type RentalRow struct {
@@ -964,6 +969,12 @@ func roomForRentalLine(rooms []RoomInfo, li OdooInvoiceLineItem) string {
 func bookingForAudience(b BookingRow, a Audience) BookingRow {
 	if a == AudiencePublic && !b.Public {
 		b.Title = ""
+	}
+	switch a {
+	case AudiencePublic:
+		b.Description = ""
+	case AudienceMembers:
+		b.Description = maskBookingDescription(b.Description)
 	}
 	return b
 }
@@ -1271,6 +1282,7 @@ func generateAccountingFiles(dataDir string) (int, error) {
 				row.Payment = &p
 			}
 			row.StewardNeeded = bookingStewardNeeded(b.Description)
+			row.Description = bookingPlainDescription(b.Description)
 			get(ym).bookings = append(get(ym).bookings, row)
 		}
 	}

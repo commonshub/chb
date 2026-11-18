@@ -17,6 +17,7 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -63,4 +64,52 @@ var bookingStewardNeededRe = regexp.MustCompile(`(?i)\bstewards?\s+needed\b`)
 // needed", "Stewards needed", any case).
 func bookingStewardNeeded(desc string) bool {
 	return bookingStewardNeededRe.MatchString(bookingDescriptionText(desc))
+}
+
+const bookingDescriptionMax = 1000
+
+var (
+	bookingAnchor     = regexp.MustCompile(`(?is)<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>`)
+	bookingBlockClose = regexp.MustCompile(`(?i)</(?:p|div|li|h[1-6])>`)
+	bookingBlankLines = regexp.MustCompile(`\n{3,}`)
+	bookingPhone      = regexp.MustCompile(`(?:\+|\b00)\d{2}[\d .\-/()]{7,}\d|\b0\d{2,3}[ ./-]?\d{2}[ ./-]?\d{2}[ ./-]?\d{2}\b`)
+)
+
+// bookingPlainDescription: the calendar description as plain text, for
+// bookings.json. Links keep their address ("text (url)"), newlines are
+// kept, blank runs collapse, and it is cut at bookingDescriptionMax.
+func bookingPlainDescription(desc string) string {
+	s := bookingAnchor.ReplaceAllStringFunc(desc, func(m string) string {
+		sm := bookingAnchor.FindStringSubmatch(m)
+		url := html.UnescapeString(sm[1])
+		text := strings.TrimSpace(html.UnescapeString(bookingHTMLTag.ReplaceAllString(sm[2], "")))
+		if text == "" || text == url || strings.TrimPrefix(strings.TrimPrefix(url, "https://"), "http://") == text {
+			return url
+		}
+		return text + " (" + url + ")"
+	})
+	s = bookingBlockClose.ReplaceAllString(s, "\n")
+	s = bookingDescriptionText(s)
+	lines := strings.Split(strings.ReplaceAll(s, "\r", ""), "\n")
+	for i, l := range lines {
+		lines[i] = strings.Join(strings.Fields(strings.ReplaceAll(l, "\u00a0", " ")), " ")
+	}
+	s = strings.TrimSpace(bookingBlankLines.ReplaceAllString(strings.Join(lines, "\n"), "\n\n"))
+	if utf8.RuneCountInString(s) > bookingDescriptionMax {
+		r := []rune(s)
+		s = strings.TrimSpace(string(r[:bookingDescriptionMax-1])) + "…"
+	}
+	return s
+}
+
+// maskBookingDescription: what members may read of a description: no phone
+// numbers, third-party IBANs or Stripe customer ids (emails are masked by
+// the audience policy at write time).
+func maskBookingDescription(s string) string {
+	if s == "" {
+		return s
+	}
+	s = maskBankDetails(s)
+	s = stripeCustomerIDPattern.ReplaceAllString(s, "[customer id]")
+	return bookingPhone.ReplaceAllString(s, "[phone removed]")
 }
