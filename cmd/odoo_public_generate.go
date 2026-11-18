@@ -893,6 +893,9 @@ type BookingRow struct {
 	// Payment: "tokens" | "euros" | null (unknown), from the calendar
 	// event description (cmd/booking_payment.go).
 	Payment *string `json:"payment"`
+	// StewardNeeded: the calendar event description says "Steward(s)
+	// needed". Only the flag is published, never the description.
+	StewardNeeded bool `json:"stewardNeeded"`
 }
 
 type RentalRow struct {
@@ -1267,6 +1270,7 @@ func generateAccountingFiles(dataDir string) (int, error) {
 			if p := bookingPayment(b.Description); p != "" {
 				row.Payment = &p
 			}
+			row.StewardNeeded = bookingStewardNeeded(b.Description)
 			get(ym).bookings = append(get(ym).bookings, row)
 		}
 	}

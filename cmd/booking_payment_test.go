@@ -25,3 +25,18 @@ Booking TX: https://celoscan.io/tx/0xabc`: "tokens",
 		}
 	}
 }
+
+func TestBookingStewardNeeded(t *testing.T) {
+	for desc, want := range map[string]bool{
+		"Steward needed":                    true,
+		"<p>STEWARDS NEEDED</p>":            true,
+		`Workshop\nstewards   needed today`: true,
+		"No steward":                        false,
+		"stewardship needed":                false,
+		"":                                  false,
+	} {
+		if got := bookingStewardNeeded(desc); got != want {
+			t.Errorf("%q: got %v", desc, got)
+		}
+	}
+}

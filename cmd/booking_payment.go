@@ -56,3 +56,11 @@ func bookingPayment(desc string) string {
 	}
 	return ""
 }
+
+var bookingStewardNeededRe = regexp.MustCompile(`(?i)\bstewards?\s+needed\b`)
+
+// bookingStewardNeeded: the description asks for a steward ("Steward
+// needed", "Stewards needed", any case).
+func bookingStewardNeeded(desc string) bool {
+	return bookingStewardNeededRe.MatchString(bookingDescriptionText(desc))
+}

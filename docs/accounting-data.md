@@ -237,6 +237,9 @@ group many buyers.
   "factuur", Stripe, card or a € amount → euros. The key is always present
   (null when unknown), in every tier. Calendar entries are not linked to
   invoices, so a euro booking without such a mention stays null.
+  `stewardNeeded` is true when the calendar event's description says
+  "Steward needed" or "Stewards needed" (any case). Only the flag is
+  published, in every tier; the description never is.
 - **`rentals`** come from customer invoice lines on the room-rental income
   account (700100), dated by the invoice. `uri` is the invoice; a trusted
   annotation on it adds `event` and `note` (not in `public/` for an
