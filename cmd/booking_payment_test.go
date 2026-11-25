@@ -36,8 +36,12 @@ func TestBookingStewardNeeded(t *testing.T) {
 		"<p>STEWARDS NEEDED</p>":            true,
 		`Workshop\nstewards   needed today`: true,
 		"No steward":                        false,
-		"stewardship needed":                false,
-		"":                                  false,
+		"Contact Olivia\nNo steward needed, self organised": false,
+		"Steward not needed":        false,
+		"stewards are not required": false,
+		"No need for a steward":     false,
+		"stewardship needed":        false,
+		"":                          false,
 	} {
 		if got := bookingStewardNeeded(desc); got != want {
 			t.Errorf("%q: got %v", desc, got)
