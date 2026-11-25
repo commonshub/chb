@@ -60,10 +60,16 @@ func bookingPayment(desc string) string {
 
 var bookingStewardNeededRe = regexp.MustCompile(`(?i)\bstewards?\s+needed\b`)
 
+// bookingNoStewardRe: the description says none is needed ("No steward
+// needed", "Steward not needed", "no need for a steward"…).
+var bookingNoStewardRe = regexp.MustCompile(`(?i)\b(?:no|not\s+a|without(?:\s+a)?)\s+stewards?\s+(?:is\s+|are\s+)?(?:needed|required)\b|\bstewards?\s+(?:is\s+|are\s+)?not\s+(?:needed|required)\b|\bno\s+need\s+(?:for|of)\s+(?:a\s+)?stewards?\b`)
+
 // bookingStewardNeeded: the description asks for a steward ("Steward
-// needed", "Stewards needed", any case).
+// needed", "Stewards needed", any case), and doesn't say none is ("No
+// steward needed, self organised").
 func bookingStewardNeeded(desc string) bool {
-	return bookingStewardNeededRe.MatchString(bookingDescriptionText(desc))
+	text := bookingDescriptionText(desc)
+	return bookingStewardNeededRe.MatchString(text) && !bookingNoStewardRe.MatchString(text)
 }
 
 const bookingDescriptionMax = 1000
